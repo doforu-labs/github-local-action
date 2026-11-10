@@ -1,0 +1,24 @@
+[relay]
+# 远程 Worker 的地址（部署 wrangler 后拿到）
+ws_url = "wss://gh-relay.YOUR-SUBDOMAIN.workers.dev/ws"
+
+# 和 wrangler secret put CLIENT_TOKEN 填的值一致
+token = "REPLACE_WITH_A_LONG_RANDOM_STRING"
+
+# 本地 SSE 端口。默认 17891，避开 the desktop app 的 3000 / 17890
+http_port = 17891
+
+# 监听 0.0.0.0 才能被同网段的设备访问；只想本机用就改 127.0.0.1
+http_host = "0.0.0.0"
+
+# 本地库路径（相对 relay.py 所在目录）
+db_path = "events.db"
+
+# 协议层 ping 间隔（秒）：防 NAT / 代理回收空闲连接，30 是常规值
+heartbeat = 30
+
+# 应用层 ping 间隔（秒）：顺带确认对端真的还在处理消息
+app_ping = 120
+
+# 断线重连退避上限（秒）
+reconnect_max = 60

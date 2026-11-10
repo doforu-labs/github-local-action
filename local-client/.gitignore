@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+events.db
+events.db-wal
+events.db-shm
+config.toml

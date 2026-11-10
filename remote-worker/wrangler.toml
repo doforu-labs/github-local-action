@@ -1,0 +1,23 @@
+name = "gh-relay"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+# D1：事件日志。自增 id 就是客户端续传用的游标。
+[[d1_databases]]
+binding = "DB"
+database_name = "gh_relay"
+database_id = "REPLACE_ME"
+
+# Durable Object：持有 WebSocket 连接、负责广播。
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+# 免费计划只支持 SQLite 版 DO，必须写 new_sqlite_classes。
+# 写成 new_classes 在免费计划上会部署失败。
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
+
+[observability]
+enabled = true

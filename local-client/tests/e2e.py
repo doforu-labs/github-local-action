@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+e2e.py —— 端到端验收，不需要 Cloudflare 账号
+
+它验证四件事：
+  1. 本地端能连上 Hub 并收到实时事件
+  2. SSE 端点能把事件推给「局域网设备」（这里用一个 SSE 客户端充当）
+  3. 连接被掐断后能自动重连
+  4. 断线期间产生的事件会被补发，且**不会重复**
+
+跑法： python3 tests/e2e.py
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+import aiohttp
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+MOCK = HERE / "mock_hub.py"
+RELAY = ROOT / "relay.py"
+
+MOCK_PORT = 17901
+RELAY_PORT = 17902
+TOKEN = "test-token"
+
+
+class Checker:
+    def __init__(self) -> None:
+        self.failures: list[str] = []
+        self.passes: list[str] = []
+
+    def check(self, ok: bool, label: str, detail: str = "") -> None:
+        if ok:
+            self.passes.append(label)
+            print(f"  PASS  {label}")
+        else:
+            self.failures.append(f"{label}: {detail}")
+            print(f"  FAIL  {label}  {detail}")
+
+
+async def wait_health(session: aiohttp.ClientSession, timeout: float = 15.0) -> dict:
+    start = time.time()
+    last = {}
+    while time.time() - start < timeout:
+        try:
+            async with session.get(f"http://127.0.0.1:{RELAY_PORT}/health") as r:
+                last = await r.json()
+                if last.get("connected"):
+                    return last
+        except aiohttp.ClientError:
+            pass
+        await asyncio.sleep(0.2)
+    return last
+
+
+async def collect_sse(
+    session: aiohttp.ClientSession, seconds: float, sink: list[int], after: int = 0
+) -> None:
+    """读 SSE 流，把 id 收集进 sink。after 模拟浏览器的 Last-Event-ID 续传。"""
+    url = f"http://127.0.0.1:{RELAY_PORT}/stream"
+    if after:
+        url += f"?after={after}"
+    async with session.get(url) as resp:
+        assert resp.status == 200, f"SSE status {resp.status}"
+        ctype = resp.headers.get("Content-Type", "")
+        assert "text/event-stream" in ctype, ctype
+        deadline = time.time() + seconds
+        buf = ""
+        while time.time() < deadline:
+            try:
+                chunk = await asyncio.wait_for(resp.content.read(1024), timeout=deadline - time.time())
+            except asyncio.TimeoutError:
+                break
+            if not chunk:
+                break
+            buf += chunk.decode("utf-8", "replace")
+            while "\n\n" in buf:
+                frame, buf = buf.split("\n\n", 1)
+                for line in frame.splitlines():
+                    if line.startswith("id:"):
+                        try:
+                            sink.append(int(line[3:].strip()))
+                        except ValueError:
+                            pass
+
+
+async def main() -> int:
+    tmp = tempfile.mkdtemp(prefix="ghrelay-e2e-")
+    db = str(Path(tmp) / "events.db")
+    cfg = Path(tmp) / "config.toml"
+    cfg.write_text(
+        f"""[relay]
+ws_url = "ws://127.0.0.1:{MOCK_PORT}/ws"
+token = "{TOKEN}"
+http_host = "127.0.0.1"
+http_port = {RELAY_PORT}
+db_path = "{db}"
+heartbeat = 5
+app_ping = 5
+reconnect_max = 2
+""",
+        encoding="utf-8",
+    )
+
+    ck = Checker()
+    mock = subprocess.Popen(
+        [sys.executable, str(MOCK), "--port", str(MOCK_PORT), "--token", TOKEN, "--interval", "0.3"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+    )
+    relay = subprocess.Popen(
+        [sys.executable, str(RELAY), "-c", str(cfg), "--log-level", "WARNING"],
+        cwd=tmp,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+    )
+
+    try:
+        await asyncio.sleep(1.0)
+        async with aiohttp.ClientSession() as s:
+            # ── 1. 连上 ──
+            health = await wait_health(s)
+            ck.check(bool(health.get("connected")), "本地端建立 WebSocket 连接", str(health))
+
+            # ── 2. 收到实时事件 ──
+            ids: list[int] = []
+            await collect_sse(s, 2.5, ids)
+            ck.check(len(ids) >= 4, "SSE 收到实时事件", f"只收到 {len(ids)} 条")
+            ck.check(len(ids) == len(set(ids)), "实时阶段无重复", f"{len(ids)} 条里有重复")
+
+            # ── 3. 掐断连接 ──
+            before = max(ids) if ids else 0
+            async with s.post(f"http://127.0.0.1:{MOCK_PORT}/control/drop") as r:
+                dropped = await r.json()
+            ck.check(dropped.get("closed", 0) >= 1, "已掐断连接", str(dropped))
+
+            # 断线期间造 3 条事件
+            async with s.post(f"http://127.0.0.1:{MOCK_PORT}/control/add?n=3") as r:
+                added = (await r.json())["added"]
+            print(f"        断线期间新增 id: {added}")
+
+            # ── 4. 重连 + 补发 ──
+            healed = await wait_health(s, timeout=15)
+            ck.check(bool(healed.get("connected")), "断线后自动重连", str(healed))
+            ck.check(healed.get("connects", 0) >= 2, "重连次数 >= 2", str(healed.get("connects")))
+
+            ids2: list[int] = []
+            await collect_sse(s, 3.0, ids2, after=before)
+            got = set(ids2)
+            missing = [i for i in added if i not in got]
+            ck.check(not missing, "断线期间的事件被补发", f"缺 {missing}")
+
+            all_ids = ids2
+            ck.check(len(all_ids) == len(set(all_ids)), "补发阶段无重复", f"{len(all_ids)} 条里有重复")
+
+            # 起点必须接在上次之后，不能倒回去重放
+            if ids2:
+                ck.check(min(ids2) > before, "补发从游标之后开始", f"min={min(ids2)} before={before}")
+
+            # ── 5. 历史接口 ──
+            async with s.get(f"http://127.0.0.1:{RELAY_PORT}/events?after=0&limit=5") as r:
+                hist = await r.json()
+            ck.check(len(hist.get("events", [])) == 5, "历史接口按 limit 返回", str(len(hist.get("events", []))))
+            seq = [e["id"] for e in hist["events"]]
+            ck.check(seq == sorted(seq), "历史按 id 升序", str(seq))
+
+            # ── 6. 状态页 ──
+            async with s.get(f"http://127.0.0.1:{RELAY_PORT}/") as r:
+                html = await r.text()
+                ctype = r.headers.get("Content-Type", "")
+            ck.check(r.status == 200 and "text/html" in ctype, "状态页返回 HTML", ctype)
+            ck.check("gh-relay" in html and "EventSource" in html, "状态页内容完整", f"{len(html)} 字节")
+
+            async with s.get(f"http://127.0.0.1:{RELAY_PORT}/stats") as r:
+                st = await r.json()
+            ck.check(len(st.get("hourly", [])) == 24, "统计返回 24 个整点桶", str(len(st.get("hourly", []))))
+            ck.check(st.get("total", 0) > 0, "统计有总事件数", str(st.get("total")))
+
+            # ── 7. 挂着 SSE 客户端时能否快速退出 ──
+            # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
+            holder = asyncio.create_task(collect_sse(s, 30, []))
+            await asyncio.sleep(1.5)
+            t0 = time.time()
+            relay.terminate()
+            try:
+                relay.wait(timeout=8)
+                quick = True
+            except subprocess.TimeoutExpired:
+                quick = False
+            elapsed = time.time() - t0
+            ck.check(quick, "挂着 SSE 客户端时能快速退出", f"{elapsed:.1f}s 未退出")
+            ck.check(quick and elapsed < 5, "退出耗时 <5s", f"{elapsed:.2f}s")
+            holder.cancel()
+
+    finally:
+        for p in (relay, mock):
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+    print()
+    if ck.failures:
+        print(f"结果：{len(ck.passes)} 通过 / {len(ck.failures)} 失败")
+        for f in ck.failures:
+            print(f"  - {f}")
+        return 1
+    print(f"结果：{len(ck.passes)} 项全部通过")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
