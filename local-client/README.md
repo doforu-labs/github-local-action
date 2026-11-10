@@ -22,14 +22,14 @@ python3 relay.py
 局域网设备：
 
 ```bash
-curl -N http://<内网IP>:17891/stream
+curl -N http://<内网IP>:18091/stream
 ```
 
-浏览器里 `new EventSource('http://<内网IP>:17891/stream')` 直接用，断线会自动带 `Last-Event-ID` 续传。
+浏览器里 `new EventSource('http://<内网IP>:18091/stream')` 直接用，断线会自动带 `Last-Event-ID` 续传。
 
 ## 状态页
 
-浏览器打开 `http://<内网IP>:17891/` 就能看当前状态，不用命令行：
+浏览器打开 `http://<内网IP>:18091/` 就能看当前状态，不用命令行：
 
 - 顶部状态灯：绿 = 已连接，琥珀 = 连着但一小时没事件，红 = 断了（带错误原因）
 - 六个卡片：游标、今日事件、总事件、距上一条、重连次数、SSE 客户端数
@@ -66,7 +66,7 @@ python3 tests/seed_preview.py /tmp/preview.db
 
 ## 端口
 
-默认 `17891`，避开 the desktop app 自己的 `3000`（Vite）和 `17890`（后端 HTTP）。改 `config.toml` 里的 `http_port`。
+默认 `18091`，避开 the desktop app 自己的 `3000`（Vite）和 `17890`（后端 HTTP）。改 `config.toml` 里的 `http_port`。
 
 ## 两个参数怎么调
 

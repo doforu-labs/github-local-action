@@ -11,7 +11,7 @@ relay.py —— 本地 WS 接收端
 为什么要本地再转一手：远端是公网，局域网设备不该直接连它；
 而且本地有库，断网期间设备重连还能从库里补。
 
-端口默认 17891，避开 the desktop app 自己的 3000 / 17890。
+端口默认 18091，避开 the desktop app 的 3000 / 17890~17892。
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class Config:
     ws_url: str
     token: str
     http_host: str = "0.0.0.0"
-    http_port: int = 17891
+    http_port: int = 18091
     db_path: str = "events.db"
     heartbeat: int = 30       # 协议层 ping：防 NAT / 代理回收空闲连接
     app_ping: int = 120       # 应用层 ping：顺带确认对端活着

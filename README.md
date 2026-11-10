@@ -50,11 +50,11 @@ python3 relay.py
 
 **4. 局域网设备**
 
-浏览器打开 `http://<你的内网IP>:17891/` 就是状态面板；机器可读的接口是：
+浏览器打开 `http://<你的内网IP>:18091/` 就是状态面板；机器可读的接口是：
 
 ```bash
-curl -N http://<你的内网IP>:17891/stream      # SSE 事件流
-curl http://<你的内网IP>:17891/health         # 连接状态
+curl -N http://<你的内网IP>:18091/stream      # SSE 事件流
+curl http://<你的内网IP>:18091/health         # 连接状态
 ```
 
 ## 成本
