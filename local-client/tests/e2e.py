@@ -405,6 +405,27 @@ reconnect_max = 2
             ck.check(sd.get("on") is False, "JIT：停完确实关了", str(sd.get("on")))
             ck.check(sd.get("repos") == {}, "JIT：停下会把仓库开关清空", str(sd.get("repos")))
 
+            # ── 6i. 仓库全量清单（全部仓库 + 最近提交时间）──
+            rl = await s.get(f"{BASE}/github/repos")
+            ck.check(rl.status == 200, "仓库清单：接口可用", str(rl.status))
+            rd = await rl.json()
+            ck.check(isinstance(rd.get("repos"), list), "仓库清单：repos 是数组",
+                     str(type(rd.get("repos"))))
+            ck.check("count" in rd and "error" in rd, "仓库清单：带 count 和 error",
+                     str(sorted(rd))[:80])
+            rows = rd.get("repos") or []
+            ck.check(rd.get("count") == len(rows), "仓库清单：count 跟数组对得上",
+                     str(rd.get("count")))
+            if rows:
+                ck.check(all("repo" in x for x in rows[:20]),
+                         "仓库清单：每行都有 repo 字段", str(rows[0])[:80])
+                stamps = [x.get("pushed_at") or "" for x in rows[:20]]
+                ck.check(stamps == sorted(stamps, reverse=True),
+                         "仓库清单：按最近提交倒序", str(stamps[:3])[:80])
+            else:
+                # gh 没登录时拿不到名单，但接口本身不能挂
+                ck.check(True, "仓库清单：拿不到名单也不报错", "")
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))

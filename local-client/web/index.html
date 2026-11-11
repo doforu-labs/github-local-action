@@ -1068,32 +1068,91 @@ function repoSwitchHtml(repo) {
     ' aria-label="按需接管 ' + esc(repo) + '"><span class="jit-sw-track"></span></label>';
 }
 
-let lastRepos = [];
+let lastRepos = [];      // 事件统计（收到过多少、什么类型）
+let allRepos = [];       // GitHub 那边能看到的全部仓库
 
-function renderRepos(repos) {
-  lastRepos = Array.isArray(repos) ? repos : [];
+// 仓库行的时间：“最近提交”优先，没有就退到“最后一次收到事件”
+function repoSortTime(r) {
+  if (r.pushed_at) return Date.parse(r.pushed_at) || 0;
+  if (r.last_at) return r.last_at * 1000;
+  return 0;
+}
+
+function fmtPushed(iso) {
+  const t = Date.parse(iso || '');
+  if (!t) return '—';
+  const sec = Math.max(0, (Date.now() - t) / 1000);
+  if (sec < 3600) return Math.max(1, Math.floor(sec / 60)) + ' 分钟前';
+  if (sec < 86400) return Math.floor(sec / 3600) + ' 小时前';
+  if (sec < 86400 * 30) return Math.floor(sec / 86400) + ' 天前';
+  const d = new Date(t);
+  return (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
+}
+
+function mergeRepoRows() {
+  const map = new Map();
+  (lastRepos || []).forEach((r) => {
+    map.set(r.repo, { repo: r.repo, types: r.types || {}, last_at: r.last_at || 0 });
+  });
+  (allRepos || []).forEach((r) => {
+    const cur = map.get(r.repo) || { repo: r.repo, types: {}, last_at: 0 };
+    cur.pushed_at = r.pushed_at;
+    cur.private = r.private;
+    cur.archived = r.archived;
+    map.set(r.repo, cur);
+  });
+  const rows = [...map.values()];
+  rows.sort((a, b) => {
+    // 打开的先排上面，剩下的按最近提交
+    const ao = jitSwitchState.get(a.repo) ? 1 : 0;
+    const bo = jitSwitchState.get(b.repo) ? 1 : 0;
+    if (ao !== bo) return bo - ao;
+    return repoSortTime(b) - repoSortTime(a);
+  });
+  return rows;
+}
+
+function renderRepos() {
+  const rows = mergeRepoRows();
   const box = $('repos');
-  if (!repos.length) {
-    box.innerHTML = '<div class="empty"><h3>还没有收到任何事件</h3>' +
-      '<p>把 webhook 指向这个接收端后，仓库会自动出现在这里。</p></div>';
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty"><h3>一个仓库都没有</h3>' +
+      '<p>gh 没登录，或者这个账号下确实没有仓库。</p></div>';
     $('repoSub').textContent = '0';
     return;
   }
-  $('repoSub').textContent = repos.length;
-  box.innerHTML = repos.map((r) => {
+  $('repoSub').textContent = rows.length;
+  box.innerHTML = rows.map((r) => {
     const badges = Object.entries(r.types || {})
       .sort((a, b) => b[1] - a[1])
       .map(([t, n]) =>
         '<span class="Label Label--' + toneOf(t) + '">' + esc(t) +
         '<span class="n">×' + n + '</span></span>')
-      .join('');
+      .join('') || '<span class="hint">还没收到过事件</span>';
+    const flags = (r.private ? '<span class="Label Label--secondary">私有</span>' : '') +
+      (r.archived ? '<span class="Label Label--secondary">已归档</span>' : '');
+    const when = r.pushed_at ? fmtPushed(r.pushed_at)
+      : (r.last_at ? fmtTime(r.last_at) : '—');
+    const tip = r.pushed_at ? ('最近一次提交：' + r.pushed_at) : '';
     return '<div class="repo-row">' +
-      '<span class="repo-name">' + repoHtml(r.repo, true, true) + '</span>' +
+      '<span class="repo-name">' + repoHtml(r.repo, true, true) + flags + '</span>' +
       repoSwitchHtml(r.repo) +
-      '<span class="time" title="' + esc(fmtFull(r.last_at)) + '">' + fmtTime(r.last_at) + '</span>' +
+      '<span class="time" title="' + esc(tip) + '">' + when + '</span>' +
       '<span class="badges">' + badges + '</span>' +
       '</div>';
   }).join('');
+}
+
+async function loadAllRepos(force) {
+  try {
+    const r = await fetch('/github/repos' + (force ? '?refresh=1' : ''));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    allRepos = d.repos || [];
+    renderRepos();
+  } catch (e) {
+    // 拉不到就只显示收到过事件的那几个，不至于空白
+  }
 }
 
 function rel(sec) {
@@ -1211,7 +1270,8 @@ async function pollStats() {
     $('today').textContent = d.today ?? 0;
     $('total').textContent = d.total ?? 0;
     renderAccount(d.account);
-    renderRepos(d.repos || []);
+    lastRepos = Array.isArray(d.repos) ? d.repos : [];
+    renderRepos();
     loadJit();      // 仓库行上的开关得知道现在开着哪几个
 
     const hours = d.hourly || [];
@@ -1836,7 +1896,7 @@ $('jitStop').addEventListener('click', async () => {
     const d = await r.json();
     renderJit(d);
     $('jitHint').textContent = '全部停了（仓库开关都复位）';
-    renderRepos(lastRepos);
+    renderRepos();
   } catch (e) {
     $('jitHint').textContent = '停不下来：' + e.message;
   }
@@ -1857,6 +1917,7 @@ $('repos').addEventListener('change', async (e) => {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     renderJit(d);
+    renderRepos();          // 开着的要排到最上面
     const pool = (d.machines || []).length;
     $('repoHint').textContent = on
       ? (pool ? '已交给按需模式' : '开了，但池子里还没机器')
@@ -1917,7 +1978,7 @@ const VIEWS = {
   overview: ['概览', '接收端运行状态'],
   events: ['事件流', '实时推送的事件，最新的在最上面'],
   actions: ['动作', '工作流运行记录，来自 workflow_run 事件'],
-  repos: ['仓库', '收到过事件的仓库，按最近活跃排序'],
+  repos: ['仓库', '账号下的全部仓库，最近提交的在前；开了按需接管的排最上面'],
   runners: ['Runner', '自建 runner 的在线状态与接入命令'],
   settings: ['设置', '中继连接与本地服务参数']
 };
@@ -2053,6 +2114,8 @@ setInterval(pollHealth, 2000);
 setInterval(pollStats, 30000);
 loadJit();
 setInterval(loadJit, 4000);
+loadAllRepos();
+setInterval(loadAllRepos, 60000);
 </script>
 </body>
 </html>

@@ -944,6 +944,16 @@ def _runner_row(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def handle_github_repos(request: web.Request) -> web.Response:
+    """账号下能看到的全部仓库（含组织），最近提交的在前。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    force = request.query.get("refresh") == "1"
+    repos, err = await _gh_my_repos(force)
+    return web.json_response({"repos": repos, "error": err, "count": len(repos)})
+
+
 async def handle_github_runners(request: web.Request) -> web.Response:
     """列出某个仓库下注册过的 runner 以及它们在不在线。"""
     blocked = _local_only(request)
@@ -1517,6 +1527,35 @@ async def _gh_runner_names(repo: str) -> list[str]:
     except ValueError:
         return []
     return [str(x) for x in data] if isinstance(data, list) else []
+
+
+# 账号下能看到的全部仓库（含组织），带最近提交时间。60 秒缓存，别每次都打 GitHub。
+_REPOS_CACHE: dict[str, Any] = {"at": 0.0, "repos": [], "error": ""}
+_REPOS_TTL = 60.0
+
+
+async def _gh_my_repos(force: bool = False) -> tuple[list[dict[str, Any]], str]:
+    now = time.time()
+    if not force and _REPOS_CACHE["repos"] and now - float(_REPOS_CACHE["at"]) < _REPOS_TTL:
+        return list(_REPOS_CACHE["repos"]), str(_REPOS_CACHE["error"])
+    rc, out, err = await gh_run([
+        "api", "/user/repos?per_page=100&sort=pushed&direction=desc",
+        "--jq",
+        "[.[] | {repo: .full_name, private: .private, archived: .archived,"
+        " pushed_at: .pushed_at, lang: .language}]",
+    ])
+    if rc != 0:
+        msg = (err or out).strip()[:300]
+        # 拉不到就保留上一次的名单，别让整页突然变空
+        _REPOS_CACHE.update(at=now, error=msg)
+        return list(_REPOS_CACHE["repos"]), msg
+    try:
+        data = json.loads(out or "[]")
+    except ValueError:
+        data = []
+    data = [r for r in data if isinstance(r, dict) and r.get("repo")]
+    _REPOS_CACHE.update(at=now, repos=data, error="")
+    return data, ""
 
 
 def _detect_os(box: SshBox, job: dict[str, Any]) -> str:
@@ -2574,6 +2613,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/auth", handle_github_auth)
     app.router.add_get("/github/runs", handle_github_runs)
     app.router.add_get("/github/jobs", handle_github_jobs)
+    app.router.add_get("/github/repos", handle_github_repos)
     app.router.add_get("/github/runners", handle_github_runners)
     app.router.add_post("/github/runners/remove", handle_github_runner_remove)
     app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
