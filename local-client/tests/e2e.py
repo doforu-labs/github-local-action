@@ -242,16 +242,16 @@ reconnect_max = 2
             filtered = await (await s.get(f"{BASE}/actions?repo=demo/repo")).json()
             ck.check(filtered.get("total") == 1, "动作支持按仓库过滤", str(filtered.get("total")))
 
-            # 概览上的「今日动作 / 总动作」：口径得跟动作页对得上
+            # 概览上的「今日运行 / 总运行」：口径得跟动作页对得上
             st2 = await (await s.get(f"{BASE}/stats")).json()
-            ck.check(st2.get("actions_total") == acts.get("total"),
-                     "统计的总动作与动作页一致",
-                     f'{st2.get("actions_total")} vs {acts.get("total")}')
-            ck.check(st2.get("actions_today") == 1, "今日动作数到刚跑的那一次",
-                     str(st2.get("actions_today")))
-            ck.check(isinstance(st2.get("actions_total"), int)
-                     and isinstance(st2.get("actions_today"), int), "动作数是整数而不是字符串",
-                     f'{type(st2.get("actions_total"))} {type(st2.get("actions_today"))}')
+            ck.check(st2.get("runs_total") == acts.get("total"),
+                     "统计的总运行数跟动作页一致",
+                     f'{st2.get("runs_total")} vs {acts.get("total")}')
+            ck.check(st2.get("runs_today") == 1, "今日运行数到刚跑的那一次",
+                     str(st2.get("runs_today")))
+            ck.check(isinstance(st2.get("runs_total"), int)
+                     and isinstance(st2.get("runs_today"), int), "运行数是整数而不是字符串",
+                     f'{type(st2.get("runs_total"))} {type(st2.get("runs_today"))}')
 
             # ── 6e. 借本地 gh 的凭据（没装/未登录时走降级分支） ──
             auth = await (await s.get(f"{BASE}/github/auth")).json()

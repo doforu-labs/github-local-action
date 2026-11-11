@@ -203,11 +203,13 @@ class Store:
         row = self.conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
 
-    def action_count(self, since_ms: int | None = None) -> int:
-        """一共发生过几次运行（动作），只算「次」不算事件条数。
+    def run_count(self, since_ms: int | None = None) -> int:
+        """一共跑过多少次（workflow run）。
 
         一次运行会推 requested / in_progress / completed 好几条 event，按
-        workflow_run.id 去重才是运行个数——跟动作页那个总数对得上。
+        workflow_run.id 去重才是运行次数——跟动作页那个总数对得上。
+        这里不用「构建」：workflow 里跑的不一定都是构建（探针、语法检查、
+        发布都算），也不叫「动作」：Actions 里的 Action 指的是可复用的步骤。
         """
         sql = "SELECT COUNT(DISTINCT json_extract(payload, '$.workflow_run.id')) AS n " \
               "FROM events WHERE event = 'workflow_run' " \
@@ -628,9 +630,9 @@ def build_stats(store: Store) -> dict[str, Any]:
     return {
         "today": store.count_since(midnight_ms),
         "total": store.count_all(),
-        # 动作（运行）的个数，跟「动作」页的总数一个口径
-        "actions_today": store.action_count(midnight_ms),
-        "actions_total": store.action_count(),
+        # 运行（workflow run）的个数，跟「动作」页的总数一个口径
+        "runs_today": store.run_count(midnight_ms),
+        "runs_total": store.run_count(),
         "hourly": hourly,
         "by_type": store.type_counts(),
         "account": store.account(),
