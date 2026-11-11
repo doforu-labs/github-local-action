@@ -474,6 +474,23 @@
   .steps li.ok { color: var(--fg); }
   .steps li.bad { color: var(--danger); }
   .steps li.skip { font-style: italic; }
+  /* 展开后的 job 卡片：头部一条带底色，步骤带编号和用时，日志就地展开 */
+  .job { padding: 0; overflow: hidden; }
+  .job-head { padding: 7px 10px; background: var(--neutral); border-bottom: 1px solid var(--border-muted); }
+  .job-head b { font-size: 12.5px; }
+  .job-head .grow { flex: 1; }
+  .jdur { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .steps { padding: 6px 10px 8px; margin: 0; display: grid; gap: 2px; }
+  .steps li { display: flex; align-items: center; gap: 6px; padding-left: 0; }
+  .steps li.run { color: var(--fg); }
+  .steps .snum { width: 16px; text-align: right; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .steps .sname { flex: 1; }
+  .steps .sdur { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  .joblog {
+    margin: 0; padding: 8px 10px; border-top: 1px solid var(--border-muted);
+    background: #f6f8fa; font: 11.5px/1.55 var(--mono); color: var(--fg);
+    max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
   .btn-sm { height: 26px; padding: 2px 10px; font-size: 12px; }
 
   .note {
@@ -1011,6 +1028,14 @@ const I18N_EN = {
   "用时": "Duration",
   "运行": "Run",
   "加载 job 与步骤": "Load jobs and steps",
+  "查看日志": "View log",
+  "隐藏日志": "Hide log",
+  "正在读取日志…": "Loading log…",
+  "进行中": "running",
+  "这个 job 没有步骤记录": "No step records for this job",
+  "这个运行还没有 job，可能还在排队": "No jobs yet for this run — it may still be queued",
+  "（这个 job 没有输出）": "(this job produced no output)",
+  "…（日志太长，只给了前 2MB）": "… (log too long, first 2MB only)",
   "正在向 GitHub 读取 job…": "Reading jobs from GitHub…",
   "这个运行里没有 job 记录": "This run has no job records",
   "job 与步骤需要本机 gh 已登录才能看": "Jobs and steps need gh to be logged in on this machine",
@@ -1614,53 +1639,182 @@ function runRowHtml(r) {
       '<div class="run-time">' + fmtDur(r.duration_s) + ' · ' +
         relTime(r.started_at || r.seen_at) + '</div>' +
     '</div>' +
-    '<div class="run-detail" hidden>' + detail + '</div>' +
+    '<div class="run-detail" data-repo="' + esc(r.repo) + '" data-run="' + esc(r.id) +
+      '" hidden>' + detail + '</div>' +
   '</div>';
 }
 
-// job 与步骤只有 GitHub API 给得到，所以这里是按需加载的入口
+// job、步骤、日志 webhook 都给不到，只能问 GitHub API。
+// 展开运行就自动去取；还在跑的运行每 5 秒自己刷一次。
+const openRuns = new Set();      // 展开着的运行
+const jobsHtml = new Map();      // run id → 渲染好的 job 区块（重渲染时还原用）
+const openLogs = new Set();      // 已经翻开的日志
+const logText = new Map();       // job id → 日志正文
+const jobTimers = new Map();     // run id → 自动刷新定时器
+const jobTries = new Map();      // run id → 空 job 时已经等了几轮
+
 function jobsBox(r) {
   if (!GH.logged_in) {
     return '<div class="jobs"><div class="hint">job 与步骤需要本机 gh 已登录才能看</div></div>';
   }
-  return '<div class="jobs" data-repo="' + esc(r.repo) + '" data-run="' + esc(r.id) + '">' +
-    '<button class="btn btn-sm" data-jobs>加载 job 与步骤</button></div>';
+  return '<div class="jobs"></div>';
 }
 
-async function loadJobs(box) {
-  const repo = box.dataset.repo;
-  const run = box.dataset.run;
-  if (!repo || !run) return;
-  box.innerHTML = '<div class="hint">正在向 GitHub 读取 job…</div>';
+function durBetween(a, b, live) {
+  const t1 = Date.parse(a || ''), t2 = Date.parse(b || '');
+  if (!t1) return '';
+  if (!t2) return live ? '进行中' : '';
+  return fmtDur(Math.max(0, Math.round((t2 - t1) / 1000)));
+}
+
+function stepCls(s) {
+  if (s.conclusion === 'success') return 'ok';
+  if (s.conclusion === 'skipped' || s.conclusion === 'neutral') return 'skip';
+  if (s.conclusion) return 'bad';
+  return s.status === 'in_progress' ? 'run' : '';
+}
+
+function jobCard(j) {
+  const [icon, cls, label] = statusOf({ status: j.status, conclusion: j.conclusion });
+  const jid = String(j.id);
+  const live = j.status !== 'completed';
+  const steps = (j.steps || []).map((s) => {
+    const [sIcon] = statusOf({ status: s.status, conclusion: s.conclusion });
+    return '<li class="' + stepCls(s) + '">' +
+      '<svg class="octicon" width="12" height="12" aria-hidden="true"><use href="#' + sIcon + '"/></svg>' +
+      '<span class="snum">' + (s.number ?? '') + '</span>' +
+      '<span class="sname">' + esc(s.name) + '</span>' +
+      '<span class="sdur">' + esc(durBetween(s.started_at, s.completed_at, live)) + '</span></li>';
+  }).join('');
+  return '<div class="job" data-job="' + esc(jid) + '">' +
+    '<div class="job-head">' +
+      '<svg class="octicon ' + cls + '" width="14" height="14" aria-hidden="true"><use href="#' + icon + '"/></svg>' +
+      '<b>' + esc(j.name) + '</b>' +
+      '<span class="hint">' + esc(label) + (j.runner_name ? ' · ' + esc(j.runner_name) : '') + '</span>' +
+      '<span class="grow"></span>' +
+      '<span class="jdur">' + esc(durBetween(j.started_at, j.completed_at, live)) + '</span>' +
+      (j.html_url ? '<a class="hint" href="' + esc(j.html_url) +
+        '" target="_blank" rel="noreferrer">GitHub</a>' : '') +
+      '<button class="btn btn-sm" data-joblog="' + esc(jid) + '">查看日志</button>' +
+    '</div>' +
+    '<ol class="steps">' + (steps || '<li class="skip"><span class="sname">这个 job 没有步骤记录</span></li>') + '</ol>' +
+    '<pre class="joblog" data-logfor="' + esc(jid) + '" hidden></pre>' +
+  '</div>';
+}
+
+// 把「哪些日志开着」这个状态刷到刚渲染出来的 DOM 上
+function fillOpenLogs(box) {
+  box.querySelectorAll('.job').forEach((job) => {
+    const pre = job.querySelector('pre.joblog');
+    const btn = job.querySelector('[data-joblog]');
+    if (!pre || !btn) return;
+    const jid = pre.dataset.logfor;
+    const isOpen = openLogs.has(jid);
+    pre.hidden = !isOpen;
+    btn.textContent = isOpen ? '隐藏日志' : '查看日志';
+    if (isOpen) pre.textContent = logText.has(jid) ? logText.get(jid) : '正在读取日志…';
+  });
+}
+
+async function loadJobs(detail, opts) {
+  const repo = detail.dataset.repo, run = detail.dataset.run;
+  const box = detail.querySelector('.jobs');
+  if (!repo || !run || !box) return;
+  const silent = !!(opts && opts.silent);
+  if (!silent) box.innerHTML = '<div class="hint">正在向 GitHub 读取 job…</div>';
+  let d;
   try {
     const r = await fetch('/github/jobs?repo=' + encodeURIComponent(repo) +
       '&run=' + encodeURIComponent(run));
-    const d = await r.json();
+    d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    const jobs = d.jobs || [];
-    if (!jobs.length) {
-      box.innerHTML = '<div class="hint">这个运行里没有 job 记录</div>';
-      return;
-    }
-    box.innerHTML = jobs.map((j) => {
-      const [icon, cls, label] = statusOf({ status: j.status, conclusion: j.conclusion });
-      const steps = (j.steps || []).map((s) => {
-        const k = s.conclusion === 'success' ? 'ok'
-          : (s.conclusion === 'skipped' || s.conclusion === 'neutral') ? 'skip'
-            : s.conclusion ? 'bad' : '';
-        return '<li class="' + k + '">' + esc(s.name) + '</li>';
-      }).join('');
-      return '<div class="job"><div class="job-head">' +
-        '<svg class="octicon ' + cls + '" width="14" height="14" aria-hidden="true">' +
-        '<use href="#' + icon + '"/></svg>' +
-        '<b>' + esc(j.name) + '</b><span class="hint">' + esc(label) + '</span>' +
-        (j.html_url ? '<a class="hint" href="' + esc(j.html_url) +
-          '" target="_blank" rel="noreferrer">在 GitHub 上</a>' : '') +
-        '</div><ol class="steps">' + steps + '</ol></div>';
-    }).join('');
   } catch (e) {
     box.innerHTML = '<div class="hint">读取失败：' + esc(e.message) + '</div>';
+    return;
   }
+  const jobs = d.jobs || [];
+  if (!jobs.length) {
+    // 刚触发的运行还没分配 runner，jobs 接口这时是空的；继续等它出现
+    box.innerHTML = '<div class="hint">这个运行还没有 job，可能还在排队</div>';
+    jobsHtml.set(run, box.innerHTML);
+    const tries = (jobTries.get(run) || 0) + 1;
+    jobTries.set(run, tries);
+    const old = jobTimers.get(run);
+    if (old) clearTimeout(old);
+    if (tries <= 40) {
+      jobTimers.set(run, setTimeout(() => {
+        if (!detail.isConnected) { jobTimers.delete(run); return; }
+        loadJobs(detail, { silent: true });
+      }, 5000));
+    }
+    return;
+  }
+  jobTries.delete(run);
+  box.innerHTML = jobs.map(jobCard).join('');
+  jobsHtml.set(run, box.innerHTML);
+  fillOpenLogs(box);
+
+  const live = jobs.some((j) => j.status !== 'completed');
+  const timer = jobTimers.get(run);
+  if (timer) clearTimeout(timer);
+  if (live) {
+    jobTimers.set(run, setTimeout(() => {
+      // 列表一重渲染，手上的 detail 就被换掉了，别再往死 DOM 里画
+      if (!detail.isConnected) { jobTimers.delete(run); return; }
+      loadJobs(detail, { silent: true });
+    }, 5000));
+  } else {
+    jobTimers.delete(run);
+  }
+}
+
+// 列表每来一个事件就整块重渲染，展开状态和已加载的 job 要按回去
+function restoreDetails(container) {
+  container.querySelectorAll('.run-detail').forEach((detail) => {
+    const rid = detail.dataset.run;
+    if (!rid || !openRuns.has(rid)) return;
+    detail.hidden = false;
+    const box = detail.querySelector('.jobs');
+    if (box && jobsHtml.has(rid)) {
+      box.innerHTML = jobsHtml.get(rid);
+      fillOpenLogs(box);
+    }
+    // 还在跑的运行：定时器绑的是上一份 DOM，这里换到新的 detail 上重新取
+    if (jobTimers.has(rid)) loadJobs(detail, { silent: true });
+    else if (box && !jobsHtml.has(rid)) loadJobs(detail);
+  });
+}
+
+async function toggleJobLog(btn) {
+  const detail = btn.closest('.run-detail');
+  const job = btn.closest('.job');
+  if (!detail || !job) return;
+  const jid = btn.dataset.joblog;
+  const pre = job.querySelector('[data-logfor="' + jid + '"]');
+  if (!pre) return;
+
+  if (openLogs.has(jid)) {
+    openLogs.delete(jid);
+    fillOpenLogs(detail.querySelector('.jobs'));
+    return;
+  }
+  openLogs.add(jid);
+  fillOpenLogs(detail.querySelector('.jobs'));
+  if (logText.has(jid)) return;
+
+  try {
+    const r = await fetch('/github/joblog?repo=' + encodeURIComponent(detail.dataset.repo) +
+      '&job=' + encodeURIComponent(jid));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    let text = (d.text || '').replace(/\s+$/, '');
+    if (!text) text = '（这个 job 没有输出）';
+    if (d.truncated) text += '\n\n…（日志太长，只给了前 2MB）';
+    logText.set(jid, text);
+  } catch (e) {
+    logText.set(jid, '读取失败：' + e.message);
+  }
+  fillOpenLogs(detail.querySelector('.jobs'));
 }
 
 function renderActions(d) {
@@ -1684,6 +1838,7 @@ function renderActions(d) {
     return;
   }
   box.innerHTML = d.runs.map(runRowHtml).join('');
+  restoreDetails(box);
 }
 
 async function loadActions() {
@@ -1783,14 +1938,20 @@ $('actRepo').addEventListener('change', (e) => {
 $('ghPull').addEventListener('click', pullFromGithub);
 $('ghRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') pullFromGithub(); });
 
-// 点一行展开/收起细节；点「加载 job」和详情里的链接不触发折叠
+// 点一行展开/收起细节；展开就自动去拉 job。点日志按钮不触发折叠
 $('view-actions').addEventListener('click', (e) => {
-  const jobsBtn = e.target.closest('[data-jobs]');
-  if (jobsBtn) { loadJobs(jobsBtn.closest('.jobs')); return; }
+  const logBtn = e.target.closest('[data-joblog]');
+  if (logBtn) { toggleJobLog(logBtn); return; }
   const run = e.target.closest('.run');
   if (!run) return;
   const detail = run.parentElement.querySelector('.run-detail');
-  if (detail) detail.hidden = !detail.hidden;
+  if (!detail) return;
+  detail.hidden = !detail.hidden;
+  const rid = detail.dataset.run;
+  if (!rid) return;
+  if (detail.hidden) { openRuns.delete(rid); return; }
+  openRuns.add(rid);
+  loadJobs(detail);
 });
 
 /* ─────────── Runner ─────────── */

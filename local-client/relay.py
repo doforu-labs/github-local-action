@@ -894,8 +894,8 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
     rc, out, err = await gh_run([
         "api", f"repos/{repo}/actions/runs/{run_id}/jobs", "--jq",
         "{total: .total_count, jobs: [.jobs[] | {id, name, status, conclusion, "
-        "started_at, completed_at, html_url, "
-        "steps: [.steps[] | {number, name, status, conclusion}]}]}",
+        "started_at, completed_at, html_url, runner_name, "
+        "steps: [.steps[] | {number, name, status, conclusion, started_at, completed_at}]}]}",
     ])
     if rc != 0:
         return web.json_response({"error": (err or out).strip()[:300]}, status=502)
@@ -904,6 +904,87 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
     except ValueError:
         return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
     return web.json_response(data)
+
+
+# 日志正文带终端颜色码（\x1b[32m 这类），先剥掉再给前端，
+# 否则 pre 里会显示成一堆乱码一样的符号。
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+async def handle_github_joblog(request: web.Request) -> web.Response:
+    """单个 job 的完整日志（纯文本）。
+
+    日志不在 webhook 里，也不在 jobs 接口里：要 /actions/jobs/{id}/logs，
+    它一般 302 到一个签名直链，直链上是纯文本。签名链不需要再带令牌，
+    所以这里只把 location 拿出来自己去取——gh 的令牌始终不出 gh。
+    job 还在跑时 GitHub 直接 404，日志压根还没生成。
+    """
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    repo = (request.query.get("repo") or "").strip()
+    job_id = (request.query.get("job") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
+    if not job_id.isdigit():
+        return web.json_response({"error": "job 要是数字 id"}, status=400)
+    auth = await github_auth()
+    if not auth["logged_in"]:
+        return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
+
+    rc, out, err = await gh_run([
+        "api", "-i", "--allow-escape-sequences",
+        f"repos/{repo}/actions/jobs/{job_id}/logs"])
+    if rc != 0:
+        msg = (err or out).strip()
+        if "404" in msg:
+            return web.json_response(
+                {"error": "GitHub 还没生成这个 job 的日志（要跑完才有）", "pending": True},
+                status=404)
+        return web.json_response({"error": msg[:300]}, status=502)
+
+    # gh api -i 的输出是「状态行 + 头 + 空行 + 体」
+    cut = out.find("\r\n\r\n")
+    sep = 4
+    if cut < 0:
+        cut = out.find("\n\n")
+        sep = 2
+    head = out[:cut] if cut >= 0 else out
+    body = out[cut + sep:] if cut >= 0 else ""
+    location = ""
+    for line in head.splitlines():
+        if line.lower().startswith("location:"):
+            location = line.split(":", 1)[1].strip()
+            break
+
+    limit = 2 * 1024 * 1024
+    if not location:
+        # gh 自己跟了 302（GET 默认跟随），体里就是日志正文
+        raw = body.encode("utf-8", "replace")
+        return web.json_response({
+            "text": _strip_ansi(body[:limit]),
+            "truncated": len(raw) > limit,
+            "bytes": len(raw)})
+
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(location, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    return web.json_response(
+                        {"error": f"下载日志失败 HTTP {resp.status}"}, status=502)
+                raw = await resp.content.read(limit + 1)
+    except Exception as exc:  # noqa: BLE001 - 网络问题原样告诉前端
+        return web.json_response({"error": f"下载日志失败：{exc}"}, status=502)
+
+    return web.json_response({
+        "text": _strip_ansi(raw[:limit].decode("utf-8", "replace")),
+        "truncated": len(raw) > limit,
+        "bytes": len(raw),
+    })
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3284,6 +3365,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/auth", handle_github_auth)
     app.router.add_get("/github/runs", handle_github_runs)
     app.router.add_get("/github/jobs", handle_github_jobs)
+    app.router.add_get("/github/joblog", handle_github_joblog)
     app.router.add_post("/webhook/setup", handle_webhook_setup)
     app.router.add_get("/webhook/status", handle_webhook_status)
     app.router.add_get("/github/repos", handle_github_repos)
