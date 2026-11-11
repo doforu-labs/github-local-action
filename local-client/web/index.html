@@ -3,170 +3,357 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
 <title>gh-relay · 状态</title>
 <style>
+  /* 取值来自 github.com 浅色主题实测：body #fff / 边框 #d1d9e0 / 圆角 6px
+     Box 头 #f6f8fa、Label 描边胶囊 20px 高、正文 14px/1.5 */
   :root {
-    --bg: #0b0e14;
-    --panel: #131822;
-    --panel-2: #171e2b;
-    --line: #222b3a;
-    --text: #e6edf7;
-    --dim: #7d8aa0;
-    --green: #2ecc71;
-    --red: #ff5c5c;
-    --amber: #f0b429;
-    --blue: #4cc9f0;
+    --bg: #ffffff;
+    --bg-muted: #f6f8fa;
+    --border: #d1d9e0;
+    --border-muted: #d1d9e0b3;
+    --fg: #1f2328;
+    --fg-muted: #59636e;
+    --accent: #0969da;
+    --accent-muted: #ddf4ff;
+    --success: #1a7f37;
+    --attention: #9a6700;
+    --danger: #d1242f;
+    --done: #8250df;
+    --sponsors: #bf3989;
+    --neutral: rgba(129, 139, 152, .12);
+    --radius: 6px;
+    --radius-sm: 3px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+            "Noto Sans", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+            "Liberation Mono", monospace;
   }
+
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  ::-webkit-scrollbar { width: 9px; height: 9px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #2b3546; border-radius: 5px; }
-  ::-webkit-scrollbar-thumb:hover { background: #3a4759; }
+
   body {
-    margin: 0; padding: 28px;
-    background: var(--bg); color: var(--text);
-    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 400 14px/1.5 var(--font);
     -webkit-font-smoothing: antialiased;
   }
-  header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; flex-wrap: wrap; }
-  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .02em; }
-  h1 span { color: var(--dim); font-weight: 400; }
-  .pill {
-    display: inline-flex; align-items: center; gap: 7px;
-    padding: 5px 12px; border-radius: 999px;
-    background: var(--panel-2); border: 1px solid var(--line);
-    font-size: 12.5px; color: var(--dim);
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: #d1d9e0; border-radius: 6px; border: 2px solid #fff;
   }
-  .pill.account { padding-left: 6px; color: var(--text); font-weight: 500; }
-  .avatar {
-    width: 20px; height: 20px; border-radius: 50%; display: block;
-    background: var(--line); object-fit: cover;
+  ::-webkit-scrollbar-thumb:hover { background: #b7bfc7; }
+
+  .page { max-width: 1216px; margin: 0 auto; padding: 24px 24px 56px; }
+
+  /* ---------- 页头 ---------- */
+  .page-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px 16px; flex-wrap: wrap;
+    padding-bottom: 16px; margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
   }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
-  .dot.ok { background: var(--green); box-shadow: 0 0 0 0 rgba(46,204,113,.6); animation: pulse 2s infinite; }
-  .dot.bad { background: var(--red); }
-  .dot.idle { background: var(--amber); }
+  .title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.5; }
+  .title .sub { color: var(--fg-muted); font-size: 14px; }
+  .head-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+  /* ---------- Label（GitHub 描边胶囊） ---------- */
+  .Label {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 20px; padding: 0 7px;
+    border: 1px solid var(--border); border-radius: 999px;
+    font-size: 12px; font-weight: 500; line-height: 18px;
+    color: var(--fg); background: transparent; white-space: nowrap;
+  }
+  .Label--secondary { color: var(--fg-muted); }
+  .Label--accent { color: var(--accent); border-color: var(--accent); }
+  .Label--success { color: var(--success); border-color: var(--success); }
+  .Label--attention { color: var(--attention); border-color: var(--attention); }
+  .Label--danger { color: var(--danger); border-color: var(--danger); }
+  .Label--done { color: var(--done); border-color: var(--done); }
+  .Label--sponsors { color: var(--sponsors); border-color: var(--sponsors); }
+  .Label .n { color: var(--fg-muted); font-weight: 400; margin-left: 3px; }
+  .Label--accent .n, .Label--done .n, .Label--success .n,
+  .Label--attention .n, .Label--danger .n, .Label--sponsors .n {
+    color: inherit; opacity: .68;
+  }
+
+  /* 连接状态：靠 :has() 把胶囊配色跟着圆点走，不用改 JS */
+  .Label--state { padding-left: 6px; padding-right: 10px; color: var(--fg-muted); }
+  #statePill:has(.dot.ok) { color: var(--success); border-color: var(--success); }
+  #statePill:has(.dot.idle) { color: var(--attention); border-color: var(--attention); }
+  #statePill:has(.dot.bad) { color: var(--danger); border-color: var(--danger); }
+
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg-muted); flex: none;
+  }
+  .dot.ok { background: var(--success); animation: pulse 2s infinite; }
+  .dot.idle { background: var(--attention); }
+  .dot.bad { background: var(--danger); }
   @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(46,204,113,.5); }
-    70% { box-shadow: 0 0 0 7px rgba(46,204,113,0); }
-    100% { box-shadow: 0 0 0 0 rgba(46,204,113,0); }
+    0%   { box-shadow: 0 0 0 0 rgba(26, 127, 55, .45); }
+    70%  { box-shadow: 0 0 0 6px rgba(26, 127, 55, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(26, 127, 55, 0); }
   }
 
-  .cards {
-    display: grid; gap: 12px; margin-bottom: 22px;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  .Label.account { padding-left: 3px; padding-right: 9px; font-weight: 600; }
+  .avatar {
+    width: 16px; height: 16px; border-radius: 50%; display: block;
+    background: var(--bg-muted); object-fit: cover; flex: none;
   }
-  .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 13px 15px;
-  }
-  .card .k { font-size: 11.5px; color: var(--dim); letter-spacing: .04em; text-transform: uppercase; }
-  .card .v { font-size: 21px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
-  .card .v small { font-size: 12px; color: var(--dim); font-weight: 400; margin-left: 3px; }
 
-  .panel {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    margin-bottom: 22px; overflow: hidden;
+  /* ---------- Box ---------- */
+  .Box {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 24px; overflow: hidden;
   }
-  .panel > .head {
-    display: flex; align-items: baseline; gap: 10px;
-    padding: 13px 16px; border-bottom: 1px solid var(--line);
+  .Box-header {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg-muted);
+    padding: 16px; border-bottom: 1px solid var(--border-muted);
+    font-size: 14px; font-weight: 600;
   }
-  .panel > .head .t { font-weight: 600; font-size: 13.5px; }
-  .panel > .head .s { color: var(--dim); font-size: 12px; }
+  .Box-header .spacer { flex: 1; }
+  .Box-header .hint { font-weight: 400; font-size: 12px; color: var(--fg-muted); }
+  .Counter {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 20px; height: 20px; padding: 0 6px;
+    border-radius: 999px; background: var(--neutral);
+    font-size: 12px; font-weight: 500; line-height: 18px; color: var(--fg);
+  }
 
-  .chart { display: flex; align-items: flex-end; gap: 3px; height: 96px; padding: 16px; }
-  .bar { flex: 1; background: var(--blue); border-radius: 2px 2px 0 0; min-height: 2px; opacity: .75; transition: height .3s; position: relative; }
+  /* ---------- 概览 ---------- */
+  .stats {
+    display: grid; gap: 1px; background: var(--border-muted);
+    grid-template-columns: repeat(6, 1fr);
+  }
+  .stat { background: var(--bg); padding: 12px 16px; min-width: 0; }
+  .stat .k { font-size: 12px; color: var(--fg-muted); line-height: 1.5; }
+  .stat .v {
+    margin-top: 2px; font-size: 20px; font-weight: 600; line-height: 1.3;
+    font-variant-numeric: tabular-nums; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .stat .v small {
+    font-size: 12px; font-weight: 400; color: var(--fg-muted); margin-left: 2px;
+  }
+  @media (max-width: 1100px) { .stats { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 720px)  { .stats { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 480px)  { .stats { grid-template-columns: 1fr; } }
+
+  /* ---------- 柱状图 ---------- */
+  .chart {
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 124px; padding: 16px 16px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .bar {
+    flex: 1; min-height: 2px; border-radius: 2px 2px 0 0;
+    background: var(--accent); opacity: .9;
+    transition: height .25s ease, opacity .15s ease;
+  }
   .bar:hover { opacity: 1; }
-  .bar.zero { background: var(--line); }
+  .bar.zero { background: #eaeef2; opacity: 1; height: 4px !important; }
+  .axis {
+    display: grid; gap: 2px;
+    padding: 6px 16px 10px;
+    font: 400 11px/1.4 var(--mono); color: var(--fg-muted);
+  }
+  .axis span { white-space: nowrap; }
 
-  #events { max-height: 62vh; overflow-y: auto; }
+  /* ---------- 列表 ---------- */
+  #events { max-height: 70vh; overflow-y: auto; }
   .row {
-    display: grid; grid-template-columns: 74px 116px 1fr auto;
+    display: grid;
+    grid-template-columns: 88px 148px minmax(0, 1fr) minmax(0, 108px);
     gap: 12px; align-items: center;
-    padding: 9px 16px; border-bottom: 1px solid rgba(34,43,58,.55);
+    padding: 9px 16px;
+    border-top: 1px solid var(--border-muted);
     font-size: 13px;
   }
-  .row:last-child { border-bottom: 0; }
-  .row.fresh { animation: flash 1.4s ease-out; }
-  @keyframes flash { from { background: rgba(76,201,240,.14); } to { background: transparent; } }
-  .row .time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 12px; }
-  .row .repo { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .act { color: var(--dim); font-size: 12px; white-space: nowrap; }
+  #events .row:first-child { border-top: 0; }
+  .row:hover { background: #f6f8fa80; }
+  .row.fresh { animation: flash 1.5s ease-out; }
+  @keyframes flash {
+    from { background: var(--accent-muted); }
+    to   { background: transparent; }
+  }
+  .row .time {
+    color: var(--fg-muted); font: 400 12px/1.5 var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  /* 窄屏：时间/类型/动作一行，仓库名单独占一整行，避免被截断 */
+  @media (max-width: 720px) {
+    .row {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      row-gap: 4px;
+    }
+    .row .time { grid-column: 1; grid-row: 1; }
+    .row .type { grid-column: 2; grid-row: 1; }
+    .row .act { grid-column: 3; grid-row: 1; }
+    .row .repo { grid-column: 1 / -1; grid-row: 2; }
+  }
+  .row .act {
+    color: var(--fg-muted); font-size: 12px; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .repo, .repo-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .repo-name { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+  .repo-name em, .repo em {
+    color: var(--fg-muted); font-style: normal; font-weight: 400;
+  }
+  .octicon { fill: currentColor; flex: none; }
+  .repo-name .octicon { color: var(--fg-muted); }
+
   .repo-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 7px 12px;
-    align-items: baseline;
-    padding: 11px 16px;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 16px; align-items: center;
+    padding: 12px 16px; border-top: 1px solid var(--border-muted);
   }
-  .repo-row .repo-name { grid-column: 1; grid-row: 1; }
-  .repo-row .time { grid-column: 2; grid-row: 1; }
-  .repo-row .badges { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
-  .repo-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .repo-name em { color: var(--dim); font-style: normal; font-weight: 400; }
-  .badges { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
-  .badge.sm { padding: 1px 6px; font-size: 10.5px; }
-  .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 5px;
-    font-size: 11.5px; font-weight: 500; letter-spacing: .02em;
+  .repo-row:first-child { border-top: 0; }
+  .repo-row:hover { background: #f6f8fa80; }
+  .repo-row .time {
+    grid-column: 2; grid-row: 1;
+    color: var(--fg-muted); font: 400 12px/1.5 var(--mono);
   }
-  .empty { padding: 40px 16px; text-align: center; color: var(--dim); }
-  footer { color: var(--dim); font-size: 12px; display: flex; gap: 18px; flex-wrap: wrap; }
-  code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  .repo-row .badges {
+    grid-column: 1 / -1; grid-row: 2;
+    display: flex; flex-wrap: wrap; gap: 4px;
+  }
+
+  /* ---------- 空状态（Primer blankslate） ---------- */
+  .empty { padding: 32px; text-align: center; }
+  .empty h3 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+  .empty p { margin: 0; color: var(--fg-muted); font-size: 14px; }
+
+  /* ---------- 页脚 ---------- */
+  footer {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px 20px; flex-wrap: wrap;
+    margin-top: 24px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--fg-muted);
+  }
+  footer .links { display: flex; gap: 16px; flex-wrap: wrap; }
+  code {
+    font: 400 11.5px/1.5 var(--mono);
+    background: var(--neutral); border-radius: var(--radius-sm);
+    padding: 1px 5px;
+  }
 </style>
 </head>
 <body>
+<div class="page">
 
-<header>
-  <h1>gh-relay <span>· 本地接收端</span></h1>
-  <div class="pill"><span class="dot" id="dot"></span><span id="statusText">连接中…</span></div>
-  <div class="pill account" id="accountPill" hidden>
-    <img class="avatar" id="avatar" alt="" width="20" height="20" referrerpolicy="no-referrer">
-    <span id="accountName"></span>
-  </div>
-  <div class="pill" id="gapPill" hidden></div>
-</header>
+  <header class="page-head">
+    <div class="title">
+      <h1>gh-relay</h1>
+      <span class="sub">本地接收端</span>
+    </div>
+    <div class="head-meta">
+      <span class="Label Label--state" id="statePill">
+        <span class="dot" id="dot"></span><span id="statusText">连接中…</span>
+      </span>
+      <span class="Label account" id="accountPill" hidden>
+        <img class="avatar" id="avatar" alt="" width="16" height="16" referrerpolicy="no-referrer">
+        <span id="accountName"></span>
+      </span>
+      <span class="Label Label--attention" id="gapPill" hidden></span>
+    </div>
+  </header>
 
-<div class="cards">
-  <div class="card"><div class="k">游标</div><div class="v" id="cursor">–</div></div>
-  <div class="card"><div class="k">今日事件</div><div class="v" id="today">–</div></div>
-  <div class="card"><div class="k">总事件</div><div class="v" id="total">–</div></div>
-  <div class="card"><div class="k">距上一条</div><div class="v" id="since">–</div></div>
-  <div class="card"><div class="k">重连次数</div><div class="v" id="connects">–</div></div>
-  <div class="card"><div class="k">SSE 客户端</div><div class="v" id="clients">–</div></div>
+  <section class="Box">
+    <div class="Box-header">概览</div>
+    <div class="stats">
+      <div class="stat"><div class="k">今日事件</div><div class="v" id="today">–</div></div>
+      <div class="stat"><div class="k">总事件</div><div class="v" id="total">–</div></div>
+      <div class="stat"><div class="k">距上一条</div><div class="v" id="since">–</div></div>
+      <div class="stat"><div class="k">游标位置</div><div class="v" id="cursor">–</div></div>
+      <div class="stat"><div class="k">重连次数</div><div class="v" id="connects">–</div></div>
+      <div class="stat"><div class="k">SSE 客户端</div><div class="v" id="clients">–</div></div>
+    </div>
+  </section>
+
+  <section class="Box">
+    <div class="Box-header">
+      最近 24 小时
+      <div class="spacer"></div>
+      <span class="hint" id="chartSub">每小时事件数</span>
+    </div>
+    <div class="chart" id="chart"></div>
+    <div class="axis" id="chartAxis"></div>
+  </section>
+
+  <section class="Box">
+    <div class="Box-header">
+      仓库
+      <div class="spacer"></div>
+      <span class="Counter" id="repoSub">0</span>
+    </div>
+    <div id="repos">
+      <div class="empty">
+        <h3>还没有收到任何事件</h3>
+        <p>把 webhook 指向这个接收端后，仓库会自动出现在这里。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="Box">
+    <div class="Box-header">
+      事件流
+      <div class="spacer"></div>
+      <span class="hint" id="listSub">等待中…</span>
+    </div>
+    <div id="events">
+      <div class="empty">
+        <h3>还没有事件</h3>
+        <p>触发一次 push 或 issue，几秒内就会出现在这里。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="links">
+      <span>SSE <code>/stream</code></span>
+      <span>历史 <code>/events?after=N</code></span>
+      <span>健康 <code>/health</code></span>
+    </div>
+    <span id="upd"></span>
+  </footer>
+
 </div>
-
-<div class="panel">
-  <div class="head"><span class="t">最近 24 小时</span><span class="s" id="chartSub">每小时事件数</span></div>
-  <div class="chart" id="chart"></div>
-</div>
-
-<div class="panel">
-  <div class="head"><span class="t">仓库</span><span class="s" id="repoSub">—</span></div>
-  <div id="repos"><div class="empty">还没有收到任何仓库的事件</div></div>
-</div>
-
-<div class="panel">
-  <div class="head"><span class="t">事件流</span><span class="s" id="listSub">等待中…</span></div>
-  <div id="events"><div class="empty">还没有事件</div></div>
-</div>
-
-<footer>
-  <span>SSE <code>/stream</code></span>
-  <span>历史 <code>/events?after=N</code></span>
-  <span>健康 <code>/health</code></span>
-  <span id="upd"></span>
-</footer>
 
 <script>
-const COLORS = {
-  push: '#4cc9f0', pull_request: '#b388ff', issues: '#f0b429',
-  issue_comment: '#8d99ae', release: '#2ecc71', workflow_run: '#ff8fab',
-  create: '#94d2bd', delete: '#ff5c5c', fork: '#c9ada7', star: '#ffd166',
-  pull_request_review: '#a0c4ff', workflow_dispatch: '#ff8fab'
+// 事件类型 → Primer Label 配色名，避免在每个标签上写死颜色
+const TONE = {
+  push: 'accent',
+  pull_request: 'done',
+  pull_request_review: 'done',
+  issues: 'success',
+  issue_comment: 'success',
+  release: 'sponsors',
+  workflow_run: 'attention',
+  workflow_dispatch: 'attention',
+  star: 'attention',
+  delete: 'danger',
+  create: 'secondary',
+  fork: 'secondary',
+  ping: 'secondary'
 };
+const toneOf = (t) => TONE[t] || 'secondary';
+const REPO_ICON =
+  '<svg class="octicon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
+  '<path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"/></svg>';
+
 const MAX_ROWS = 200;
 let latestId = 0;
 let seen = new Set();
@@ -175,11 +362,29 @@ const $ = (id) => document.getElementById(id);
 
 function fmtTime(ms) {
   const d = new Date(ms);
-  return d.toLocaleTimeString('zh-CN', { hour12: false });
+  const now = new Date();
+  const clock = d.toLocaleTimeString('zh-CN', { hour12: false });
+  const sameDay = d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  // 跨天的只给时:分，避免「01:17」看不出是哪一天
+  if (sameDay) return clock;
+  const pad = (n) => String(n).padStart(2, '0');
+  return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + clock.slice(0, 5);
+}
+function fmtFull(ms) {
+  return new Date(ms).toLocaleString('zh-CN', { hour12: false });
 }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// owner/name，owner 用弱化色
+function repoHtml(repo, withIcon) {
+  const parts = String(repo || '—').split('/');
+  const owner = parts.length > 1 ? parts[0] : '';
+  const name = parts.length > 1 ? parts.slice(1).join('/') : parts[0];
+  return (withIcon ? REPO_ICON : '') +
+    (owner ? '<em>' + esc(owner) + '/</em>' : '') + esc(name);
 }
 
 function renderAccount(acc) {
@@ -196,29 +401,27 @@ function renderAccount(acc) {
 function renderRepos(repos) {
   const box = $('repos');
   if (!repos.length) {
-    box.innerHTML = '<div class="empty">还没有收到任何仓库的事件</div>';
-    $('repoSub').textContent = '—';
+    box.innerHTML = '<div class="empty"><h3>还没有收到任何事件</h3>' +
+      '<p>把 webhook 指向这个接收端后，仓库会自动出现在这里。</p></div>';
+    $('repoSub').textContent = '0';
     return;
   }
-  $('repoSub').textContent = repos.length + ' 个仓库';
+  $('repoSub').textContent = repos.length;
   box.innerHTML = repos.map((r) => {
-    const parts = String(r.repo).split('/');
-    const owner = parts.length > 1 ? parts[0] : '';
-    const name = parts.length > 1 ? parts.slice(1).join('/') : r.repo;
     const badges = Object.entries(r.types || {})
       .sort((a, b) => b[1] - a[1])
-      .map(([t, n]) => {
-        const c = COLORS[t] || '#8d99ae';
-        return '<span class="badge sm" style="background:' + c + '22;color:' + c + '">' +
-          esc(t) + ' ×' + n + '</span>';
-      }).join('');
-    return '<div class="row repo-row">' +
-      '<span class="repo-name">' + (owner ? '<em>' + esc(owner) + '/</em>' : '') + esc(name) + '</span>' +
+      .map(([t, n]) =>
+        '<span class="Label Label--' + toneOf(t) + '">' + esc(t) +
+        '<span class="n">×' + n + '</span></span>')
+      .join('');
+    return '<div class="repo-row">' +
+      '<span class="repo-name">' + repoHtml(r.repo, true) + '</span>' +
+      '<span class="time" title="' + esc(fmtFull(r.last_at)) + '">' + fmtTime(r.last_at) + '</span>' +
       '<span class="badges">' + badges + '</span>' +
-      '<span class="time">' + fmtTime(r.last_at) + '</span>' +
       '</div>';
   }).join('');
 }
+
 function rel(sec) {
   if (sec == null) return '—';
   if (sec < 60) return sec + 's';
@@ -236,14 +439,13 @@ function renderEvent(ev, fresh) {
   if (empty) empty.remove();
 
   const t = ev.event || 'unknown';
-  const color = COLORS[t] || '#8d99ae';
   const row = document.createElement('div');
   row.className = 'row' + (fresh ? ' fresh' : '');
   row.innerHTML =
-    '<span class="time">' + fmtTime(ev.at) + '</span>' +
-    '<span><span class="badge" style="background:' + color + '22;color:' + color + '">' + t + '</span></span>' +
-    '<span class="repo">' + (ev.repo || '—') + '</span>' +
-    '<span class="act">' + (ev.action || '') + '</span>';
+    '<span class="time" title="' + esc(fmtFull(ev.at)) + '">' + fmtTime(ev.at) + '</span>' +
+    '<span class="type"><span class="Label Label--' + toneOf(t) + '">' + esc(t) + '</span></span>' +
+    '<span class="repo">' + repoHtml(ev.repo, false) + '</span>' +
+    '<span class="act">' + esc(ev.action || '') + '</span>';
 
   box.prepend(row);
   while (box.children.length > MAX_ROWS) box.lastElementChild.remove();
@@ -307,7 +509,8 @@ async function pollHealth() {
     $('cursor').textContent = d.cursor ?? '–';
     $('connects').textContent = d.connects ?? '–';
     $('clients').textContent = d.sse_clients ?? '–';
-    $('since').innerHTML = rel(d.seconds_since_last_event) + (d.seconds_since_last_event != null ? '<small>前</small>' : '');
+    $('since').innerHTML = rel(d.seconds_since_last_event) +
+      (d.seconds_since_last_event != null ? '<small>前</small>' : '');
     $('upd').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch (e) {
     $('dot').className = 'dot bad';
@@ -331,6 +534,15 @@ async function pollStats() {
       return '<div class="' + cls + '" style="height:' + pct + '%" title="' +
         h.label + '：' + h.count + ' 条"></div>';
     }).join('');
+
+    // 坐标轴每 6 小时一格，且每个标签对齐到它那一根柱子
+    const axis = $('chartAxis');
+    if (hours.length) {
+      const step = hours.length > 8 ? 6 : Math.max(1, Math.floor(hours.length / 4));
+      axis.style.gridTemplateColumns = 'repeat(' + hours.length + ', minmax(0, 1fr))';
+      axis.innerHTML = hours.map((h, i) =>
+        '<span>' + (i % step === 0 ? esc(h.label) : '') + '</span>').join('');
+    }
     $('chartSub').textContent = '每小时事件数 · 峰值 ' + max;
   } catch (e) { /* 下一轮再试 */ }
 }

@@ -37,9 +37,23 @@ except ModuleNotFoundError:  # pragma: no cover
 
 log = logging.getLogger("relay")
 
-# 状态页：启动时读进内存，改了 HTML 需要重启进程
+# 状态页：按 mtime 缓存，改完 HTML 刷新浏览器即可生效，不用重启进程
 WEB_DIR = Path(__file__).resolve().parent / "web"
-INDEX_HTML = (WEB_DIR / "index.html").read_text(encoding="utf-8") if (WEB_DIR / "index.html").exists() else ""
+INDEX_FILE = WEB_DIR / "index.html"
+_index_cache: tuple[float, str] = (-1.0, "")
+
+
+def read_index() -> str:
+    """返回状态页 HTML；文件没变就复用缓存。"""
+    global _index_cache
+    try:
+        mtime = INDEX_FILE.stat().st_mtime
+    except OSError:
+        return ""
+    cached_mtime, cached_html = _index_cache
+    if mtime != cached_mtime:
+        _index_cache = (mtime, INDEX_FILE.read_text(encoding="utf-8"))
+    return _index_cache[1]
 
 # ─────────────────────────────────────────────────────────────
 # 配置
@@ -547,9 +561,10 @@ async def handle_stats(request: web.Request) -> web.Response:
 
 
 async def handle_index(request: web.Request) -> web.Response:
-    if INDEX_HTML:
+    html = read_index()
+    if html:
         return web.Response(
-            text=INDEX_HTML,
+            text=html,
             content_type="text/html",
             charset="utf-8",
             headers={"Cache-Control": "no-store"},
