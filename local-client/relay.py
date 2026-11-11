@@ -1049,6 +1049,47 @@ async def handle_github_runs(request: web.Request) -> web.Response:
     return web.json_response({"repo": repo, "runs": runs, "total": len(runs)})
 
 
+# job 说自己还在跑、但那台 runner 早就空了 —— GitHub 的状态回写会滞后。
+# 2026-11-11 webhooks 事故之后实测过两段：开跑时 queued→in_progress 晚 4~5 分钟，
+# 跑完时 completed 也晚 1 分钟以上（机器日志 21:04:03 已经写着 Succeeded，
+# 页面上那个 job 还挂着 in_progress）。界面上照 job 状态写「进行中」，人会以为卡死了。
+# 所以拿 runner 的忙闲做一次交叉校验，对不上就单独标出来：卡的是 GitHub，不是任务。
+_STALE_GRACE_MS = 45_000      # 刚跑完那一下 runner 也会先变空闲，留 45 秒缓冲别误报
+
+
+async def _mark_stale_jobs(jobs: list[dict[str, Any]], repo: str) -> None:
+    """给「说在跑但机器已经空了」的 job 打 stale 标记。就地改，失败就算了。
+
+    只标 in_progress：queued 且已经派到某台 runner 上是很正常的一瞬（拿到活正要开干），
+    标它等于天天喊狼来了。
+    """
+    pending = [j for j in jobs
+               if j.get("status") == "in_progress" and j.get("runner_name")]
+    if not pending:
+        return
+    try:
+        # 这个接口本来每 8 秒就为机器页问一次，缓存命中时基本不要钱
+        runners, _err = await _repo_runners(repo)
+    except Exception as exc:                       # noqa: BLE001
+        log.info("交叉校验 runner 忙闲失败（不影响看 job）：%s", exc)
+        return
+    known = {str(r.get("name") or "").lower(): r for r in runners if r.get("name")}
+    now_ms = int(time.time() * 1000)
+    for job in pending:
+        runner = known.get(str(job.get("runner_name") or "").lower())
+        if runner is None:
+            continue
+        started = _iso_ms(job.get("started_at"))
+        if started and now_ms - started < _STALE_GRACE_MS:
+            continue
+        # busy=false = 机器上已经没有 worker 了；offline = runner 根本没连上。
+        # 这两种情况都不该还有 job 挂在 in_progress。
+        if not runner.get("busy"):
+            job["stale"] = "runner_idle"
+        elif str(runner.get("status") or "") != "online":
+            job["stale"] = "runner_offline"
+
+
 async def handle_github_jobs(request: web.Request) -> web.Response:
     """一次运行里的 job 与每一步状态——这个只有 API 有，webhook 不给。
 
@@ -1099,6 +1140,9 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
         return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
     if data.get("jobs"):
         store.cache_put(key, json.dumps(data, ensure_ascii=False))
+        # 标记放在落库之后：stale 是「此刻机器空没空」的判断，不能跟着 job 一起被
+        # 缓存下来（缓存只在全都跑完时才读，那时候它已经是过去的真相了）
+        await _mark_stale_jobs(data["jobs"], repo)
     return web.json_response(data)
 
 

@@ -490,6 +490,8 @@
   .job-head b { font-size: 12.5px; }
   .job-head .grow { flex: 1; }
   .jdur { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  /* job 说在跑、runner 已经空了：卡的是 GitHub 的回写，不是任务，所以给个描边小标 */
+  .job-head .job-stale { height: 18px; padding: 0 6px; font-size: 11.5px; }
   .steps { padding: 6px 10px 8px; margin: 0; display: grid; gap: 2px; }
   .steps li { display: flex; align-items: center; gap: 6px; padding-left: 0; }
   .steps li.run { color: var(--fg); }
@@ -1260,7 +1262,8 @@ const I18N_EN = {
   "在线 · 空闲": "online · idle",
   "离线": "offline",
   "未注册": "not registered",
-  "状态未知": "unknown"
+  "状态未知": "unknown",
+  "GitHub 状态未回写": "GitHub hasn't caught up"
 };
 const HAS_CJK = (s) => /[\u4e00-\u9fff]/.test(String(s || ''));
 let LANG = localStorage.getItem('ghr.lang') === 'en' ? 'en' : 'zh';
@@ -1824,6 +1827,14 @@ function jobCard(j) {
       '<svg class="octicon ' + cls + '" width="14" height="14" aria-hidden="true"><use href="#' + icon + '"/></svg>' +
       '<b>' + esc(j.name) + '</b>' +
       '<span class="hint">' + esc(label) + (j.runner_name ? ' · ' + esc(j.runner_name) : '') + '</span>' +
+      // 机器已经空了，job 却还挂着 in_progress：是 GitHub 没回写状态（实测能晚几分钟），
+      // 不是任务卡死。不说这一句，人会去看日志、查进程，白忙一场。
+      (j.stale ? '<span class="Label Label--attention job-stale" title="' +
+        esc(L('它那台机器已经' + (j.stale === 'runner_offline' ? '离线' : '空闲') +
+              '，任务其实早结束了 —— 是 GitHub 还没把状态写回来，过几分钟自己会好',
+              'That runner is already ' + (j.stale === 'runner_offline' ? 'offline' : 'idle') +
+              ', so the job is over - GitHub just has not written the status back yet. It catches up in a few minutes.')) +
+        '">' + t('GitHub 状态未回写') + '</span>' : '') +
       '<span class="grow"></span>' +
       '<span class="jdur">' + esc(durBetween(j.started_at, j.completed_at, live)) + '</span>' +
       (j.html_url ? '<a class="hint" href="' + esc(j.html_url) +

@@ -14,6 +14,16 @@ const node = id => {
   return nodes.get(id);
 };
 const context = vm.createContext({$: node,
+  // 界面文案的中英文切换（t/L）是后来才加的，测试得给上桩，
+  // 不然 renderMachineInventory 一调 L 就 ReferenceError，整套跑不起来
+  t: zh => zh,
+  L: (zh, _en) => zh,
+  // 转圈图标和时间格式化也在切片外面（它们住在 job 卡片那段代码里），做个等价物
+  SPIN: '<span class="spin"></span>',
+  fmtFull: ts => String(ts || ''),
+  // 机器页现在分两步加载（清单 + /machines/live 状态），状态到的时候
+  // 只去改已有卡片上的标签。测试里没有真的 DOM，给个空查询就行。
+  document: {querySelectorAll: () => []},
   esc: s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;')});
 vm.runInContext(code, context);
 const machines = [
@@ -27,8 +37,10 @@ assert.equal(context.groupMachines([machines[0], {...machines[0], port:2222}]).l
 assert.doesNotMatch(html, /待关联|id="runnerRepo"|id="sshRepo"|\/github\/runners/, 'machine page no longer queries or manages repository runners');
 (async () => {
   context.fetch = async url => {
-    assert.equal(url, '/runners');
-    return {ok:true, json:async () => ({machines})};
+    if (url === '/runners') return {ok:true, json:async () => ({machines})};
+    // 第二步问机器状态；这个测试只关心清单，状态给个空的
+    if (url === '/machines/live') return {ok:true, json:async () => ({machines:{}, repos:[]})};
+    throw new Error('unexpected request: ' + url);
   };
   await context.loadMachines(false);
   assert.equal(node('machineCount').textContent, '2 台');
