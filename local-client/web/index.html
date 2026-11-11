@@ -2216,14 +2216,42 @@ function fmtWhen(ts) {
 function machineRowHtml(group) {
   const m = group.machine;
   const meta = [m.os, m.arch].filter(Boolean).join(' · ');
+  // 卡片上要的是「这台机器最后一次活着是什么时候」，不是「哪天把它加进来的」——
+  // 加进来之后要是再没上线过，看到的就是那个时间点，一眼能看出它一直没活。
+  const lv = machineLive[m.name] || {};
+  const seen = lv.last_online_at || m.last_ok || 0;
   return '<div class="machine-card" data-machine="' + esc(m.name) + '"><div class="machine-summary"><div class="runner-main">' +
     '<div class="runner-name"><span class="runner-id">' + esc(m.name || m.host) +
     '</span><span class="tag">' + esc(meta) + '</span></div><div class="runner-labels"><span class="chip">' +
     esc(m.user + '@' + m.host + ':' + m.port) + '</span><span class="chip">' + t('已接入') +
-    '</span><span class="hint">' + esc(fmtWhen(m.added_at || m.last_ok)) +
+    '</span><span class="hint machine-seen" title="' + esc(L('接入于 ', 'added ') + fmtStamp(m.added_at)) +
+    '">' + esc(L('最后在线 · ', 'last online ') + fmtSeen(seen)) +
     '</span></div></div>' + machineLiveHtml(m) +
     '<div class="machine-actions"><button class="btn machine-delete" data-machine-delete>' + t('删除') +
     '</button></div></div></div>';
+}
+
+/* 时钟显示：11-11 22:19 这种，不看时区不猜语言 */
+function fmtStamp(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+/* 最后在线：越近越口语化，超过一小时就给绝对时间 */
+function fmtSeen(ts) {
+  if (!ts) return L('从未在线', 'never seen');
+  const d = new Date(ts * 1000);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 90) return L('刚刚', 'just now');
+  if (diff < 3600) {
+    const mins = Math.max(1, Math.floor(diff / 60));
+    return L(mins + ' 分钟前', mins + 'm ago');
+  }
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  if (d.toDateString() === new Date().toDateString()) return L('今天 ' + hm, 'today ' + hm);
+  return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm;
 }
 
 // 状态标签：忙的时候直接写正在跑哪个 workflow，而且能点（跳到动作页那次运行）。
@@ -2303,10 +2331,16 @@ async function loadMachines(quiet) {
 // 只换状态标签，不动整块 DOM：否则每 8 秒轮一次会把页面洗一遍
 function paintMachineLive() {
   document.querySelectorAll('#machines .machine-card').forEach((card) => {
-    const box = card.querySelector('.machine-live');
-    if (!box) return;
     const name = card.dataset.machine;
     const m = machineInventory.find((x) => x.name === name) || { name };
+    // 「最后在线 · 3 分钟前」也要跟着轮询重算，不然字会一直停在第一次渲染时
+    const seenEl = card.querySelector('.machine-seen');
+    if (seenEl) {
+      const lv = machineLive[name] || {};
+      seenEl.textContent = L('最后在线 · ', 'last online ') + fmtSeen(lv.last_online_at || m.last_ok || 0);
+    }
+    const box = card.querySelector('.machine-live');
+    if (!box) return;
     const holder = document.createElement('span');
     holder.innerHTML = machineLiveHtml(m);
     const fresh = holder.firstElementChild;

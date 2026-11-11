@@ -1498,10 +1498,15 @@ class MachineStore:
         self.conn.commit()
         return cur
 
-    def touch(self, name: str) -> None:
-        """记下最近一次连上是几点——哪台连不上了，一眼能看出来。"""
-        self.conn.execute("UPDATE machines SET last_ok=? WHERE name=?",
-                          (int(time.time()), name))
+    def touch(self, name: str, at: float | None = None, min_gap: int = 20) -> None:
+        """记下这台机器最近一次确认在线是几点。
+
+        节流靠 SQL 自己的 WHERE 做：同一条记录 min_gap 秒内不会被重复写，
+        页面 8 秒刷一次、live 缓存 4 秒，也不至于把磁盘写热。
+        """
+        now = int(at or time.time())
+        self.conn.execute("UPDATE machines SET last_ok=? WHERE name=? AND last_ok < ?",
+                          (now, name, now - int(min_gap)))
         self.conn.commit()
 
     def remove_many(self, names: list[str]) -> None:
@@ -2918,7 +2923,8 @@ async def _machines_live_view(repos: list[str]) -> dict[str, Any]:
         reason = auth.get("error") or "gh 未登录"
         for row in rows:
             out[row["name"]] = {"state": "unknown", "runner": "", "labels": [],
-                                "job": None, "repo": row.get("repo") or "", "error": reason}
+                                "job": None, "repo": row.get("repo") or "", "error": reason,
+                                "last_online_at": int(row.get("last_ok") or 0)}
         return {"machines": out, "repos": [], "errors": {}, "error": reason,
                 "checked_at": time.time()}
 
@@ -2988,6 +2994,11 @@ async def _machines_live_view(repos: list[str]) -> dict[str, Any]:
             entry["state"] = "missing"
         if errors:
             entry["error"] = next(iter(errors.values()))
+        # 只有真的在 GitHub 上看到它 online 才算「在线过」；offline/missing 不刷新，
+        # 这样卡片上的最后在线时间会一直停在上次活着的时刻。
+        if entry["state"] in ("idle", "busy"):
+            _machines_live().touch(name, min_gap=20)
+        entry["last_online_at"] = int(_machines_live().get(name, {}).get("last_ok") or 0)
         out[name] = entry
 
     return {"machines": out, "repos": list(repos), "errors": errors,

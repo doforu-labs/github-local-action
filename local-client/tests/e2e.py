@@ -468,6 +468,13 @@ reconnect_max = 2
             ck.check(all((v.get("job") is None) or (v.get("state") == "busy")
                          for v in (lvd.get("machines") or {}).values()),
                      "机器状态：没在跑就不给 job", "")
+            # 卡片上要显示「最后在线」，不是「接入时间」。这两个数就得能在 live 里拿到，
+            # 而且必须是整数时间戳（0 = 从未在线过，前端会写「从未在线」）。
+            ck.check(all(isinstance(v.get("last_online_at"), int)
+                         for v in (lvd.get("machines") or {}).values()),
+                     "机器状态：每台都带 last_online_at", str(lvd.get("machines"))[:160])
+            ck.check(all(isinstance(r.get("last_ok"), int) for r in (md.get("machines") or [])),
+                     "机器清单：每台都带 last_ok", str(md.get("machines"))[:160])
 
             # 页面现在只让填四样：地址/端口/用户/密码。机器名和目录都不传也得能交上去
             # （名字连上后读主机名，目录从 ~/actions-runner 顺延），所以不能报 400。
