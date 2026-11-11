@@ -673,7 +673,35 @@ async def handle_actions(request: web.Request) -> web.Response:
 
 # 这些接口会拿用户的 GitHub 凭据去读私有仓库，所以只对本机开放
 GH_TIMEOUT = 25.0
-_REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+# GitHub 里 runner 能挂在三处：仓库、组织、企业。这里只区分前两种，判法跟
+# actions/runner 自己的 create-latest-svc.sh 一样——带斜杠是仓库级，不带是组织级。
+_REPO_RE = re.compile(r"^[\w.-]+(/[\w.-]+)?$")
+
+
+def _gh_scope(repo: str) -> str:
+    """把用户填的 scope 翻成接口路径前缀。
+
+    "owner/name" → "repos/owner/name"（只对这一个仓库可见）
+    "org"        → "orgs/org"        （整个组织下所有仓库共用）
+    """
+    return f"repos/{repo}" if "/" in repo else f"orgs/{repo}"
+
+
+def _gh_error_text(raw: str, repo: str) -> str:
+    """GitHub 的原始报错经常就一句 'gh: Not Found (HTTP 404)'，看不出错在哪。
+
+    两种最常见的踩坑：把仓库名当组织名填了（没有斜杠），或者查组织却没
+    admin:org 权限。这两种都换成人话。
+    """
+    msg = (raw or "").strip()
+    low = msg.lower()
+    if "404" in msg or "not found" in low:
+        kind = "组织" if "/" not in repo else "仓库"
+        return f"GitHub 上找不到这个{kind}：{repo}。名字拼错了？还是没权限？"
+    if "403" in msg and "admin:org" in low:
+        return (f"{repo} 是组织级，读它要 admin:org 权限。"
+                f"先跑：gh auth refresh -h github.com -s admin:org")
+    return msg[:300]
 _gh_auth: dict[str, Any] = {"at": 0.0, "value": None}
 
 
@@ -822,7 +850,7 @@ async def handle_github_runs(request: web.Request) -> web.Response:
         return blocked
     repo = (request.query.get("repo") or "").strip()
     if not _REPO_RE.match(repo):
-        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+        return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
     auth = await github_auth()
     if not auth["logged_in"]:
         return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
@@ -855,7 +883,7 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
     repo = (request.query.get("repo") or "").strip()
     run_id = (request.query.get("run") or "").strip()
     if not _REPO_RE.match(repo):
-        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+        return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
     if not run_id.isdigit():
         return web.json_response({"error": "run 要是数字 id"}, status=400)
     auth = await github_auth()
@@ -923,18 +951,18 @@ async def handle_github_runners(request: web.Request) -> web.Response:
         return blocked
     repo = (request.query.get("repo") or "").strip()
     if not _REPO_RE.match(repo):
-        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+        return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
     auth = await github_auth()
     if not auth["logged_in"]:
         return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
 
     rc, out, err = await gh_run([
-        "api", f"repos/{repo}/actions/runners", "--jq",
+        "api", f"{_gh_scope(repo)}/actions/runners", "--jq",
         "{total: .total_count, runners: [.runners[] | {id, name, status, busy, "
         "labels: [.labels[].name]}]}",
     ])
     if rc != 0:
-        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
+        return web.json_response({"error": _gh_error_text(err or out, repo)}, status=502)
     try:
         data = json.loads(out or "{}")
     except ValueError:
@@ -967,7 +995,7 @@ async def handle_github_runner_remove(request: web.Request) -> web.Response:
     repo = str(body.get("repo") or "").strip()
     runner_id = str(body.get("id") or "").strip()
     if not _REPO_RE.match(repo):
-        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+        return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
     if not runner_id.isdigit():
         return web.json_response({"error": "runner id 要是数字"}, status=400)
 
@@ -976,10 +1004,10 @@ async def handle_github_runner_remove(request: web.Request) -> web.Response:
         return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
 
     rc, out, err = await gh_run([
-        "api", "-X", "DELETE", f"repos/{repo}/actions/runners/{runner_id}",
+        "api", "-X", "DELETE", f"{_gh_scope(repo)}/actions/runners/{runner_id}",
     ], attempts=1)
     if rc != 0:
-        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
+        return web.json_response({"error": _gh_error_text(err or out, repo)}, status=502)
     return web.json_response({"ok": True, "removed": int(runner_id)})
 
 
@@ -1218,7 +1246,7 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
         return {}, "端口要写成数字"
 
     if not _REPO_RE.match(repo):
-        return {}, "repo 要写成 owner/name"
+        return {}, "填 owner/name 走仓库级，只填组织名走组织级"
     if not host:
         return {}, "要填机器地址"
     if not user:
@@ -1449,7 +1477,7 @@ def _win_uninstall_script(p: dict[str, Any]) -> str:
 
 async def _gh_registration_token(repo: str) -> tuple[str, str]:
     rc, out, err = await gh_run([
-        "api", "-X", "POST", f"repos/{repo}/actions/runners/registration-token",
+        "api", "-X", "POST", f"{_gh_scope(repo)}/actions/runners/registration-token",
         "--jq", ".token",
     ], attempts=1)
     if rc != 0:
@@ -1459,7 +1487,7 @@ async def _gh_registration_token(repo: str) -> tuple[str, str]:
 
 async def _gh_runner_by_name(repo: str, name: str) -> Optional[dict[str, Any]]:
     rc, out, err = await gh_run([
-        "api", f"repos/{repo}/actions/runners", "--jq",
+        "api", f"{_gh_scope(repo)}/actions/runners", "--jq",
         '{runners: [.runners[] | {id, name, status, busy}]}',
     ])
     if rc != 0:
@@ -1480,7 +1508,7 @@ async def _gh_runner_names(repo: str) -> list[str]:
     用来避名：同名注册会被 config.sh 顶掉，那样会把另一台机器的 runner 带走。
     """
     rc, out, err = await gh_run([
-        "api", f"repos/{repo}/actions/runners", "--jq", "[.runners[].name]",
+        "api", f"{_gh_scope(repo)}/actions/runners", "--jq", "[.runners[].name]",
     ])
     if rc != 0:
         return []
@@ -1742,7 +1770,7 @@ async def _run_ssh_remove(job: dict[str, Any], p: dict[str, Any], runner_id: Opt
             return
 
         rc, out, err = await gh_run([
-            "api", "-X", "DELETE", f"repos/{p['repo']}/actions/runners/{rid}",
+            "api", "-X", "DELETE", f"{_gh_scope(p['repo'])}/actions/runners/{rid}",
         ], attempts=1)
         if rc != 0:
             job.update(status="failed", error=(err or out).strip()[:300])
@@ -1800,7 +1828,7 @@ async def handle_runner_ssh_remove(request: web.Request) -> web.Response:
     repo = str(body.get("repo") or "").strip()
     name = str(body.get("name") or "").strip()
     if not _REPO_RE.match(repo):
-        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+        return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
     if not name:
         return web.json_response({"error": "要说是哪一台"}, status=400)
 

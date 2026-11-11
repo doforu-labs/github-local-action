@@ -245,7 +245,7 @@ reconnect_max = 2
             # ── 6e. 借本地 gh 的凭据（没装/未登录时走降级分支） ──
             auth = await (await s.get(f"{BASE}/github/auth")).json()
             ck.check({"installed", "logged_in"} <= set(auth), "github auth 返回合法结构", str(list(auth))[:80])
-            bad_repo = await s.get(f"{BASE}/github/runs?repo=not-a-repo")
+            bad_repo = await s.get(f"{BASE}/github/runs?repo=not/a/repo")
             ck.check(bad_repo.status == 400, "github 运行接口校验 repo 格式", str(bad_repo.status))
             bad_run = await s.get(f"{BASE}/github/jobs?repo=a/b&run=abc")
             ck.check(bad_run.status == 400, "github job 接口校验 run id", str(bad_run.status))
@@ -257,8 +257,11 @@ reconnect_max = 2
                 ck.check(refused.status == 409, "gh 未登录时明确拒绝而不是假装空", str(refused.status))
 
             # ── 6f. 自建 runner 的接入页 ──
-            bad = await s.get(f"{BASE}/github/runners?repo=not-a-repo")
+            bad = await s.get(f"{BASE}/github/runners?repo=not/a/repo")
             ck.check(bad.status == 400, "runner 列表校验 repo 格式", str(bad.status))
+            # 只填组织名是合法输入（走组织级），不该被当成格式错误
+            orgish = await s.get(f"{BASE}/github/runners?repo=not-an-org-xyz")
+            ck.check(orgish.status != 400, "runner 列表：只填组织名不当格式错误", str(orgish.status))
             # 「只生成命令」那条路已经删掉了，接口不能还留着
             gone = await s.post(f"{BASE}/github/runner-token",
                                 json={"repo": "a/b", "platform": "linux"})
@@ -284,7 +287,7 @@ reconnect_max = 2
                                json={"repo": "a/b", "host": "h", "user": "u", "name": "n"})
             ck.check(bad.status == 400, "SSH 添加：密码为空时拒绝", str(bad.status))
             bad = await s.post(f"{BASE}/runners/ssh/add",
-                               json={"repo": "nope", "host": "h", "user": "u",
+                               json={"repo": "a/b/c", "host": "h", "user": "u",
                                      "password": "p", "name": "n"})
             ck.check(bad.status == 400, "SSH 添加：repo 格式错就拒", str(bad.status))
             bad = await s.post(f"{BASE}/runners/ssh/add",
