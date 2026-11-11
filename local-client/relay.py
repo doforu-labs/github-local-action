@@ -2725,6 +2725,216 @@ def _machine_rows() -> list[dict[str, Any]]:
     return rows
 
 
+# ── 机器现在什么状态：在不在线、是不是正在跑某个 action ──
+# 机器记录里本来就带着自己注册到哪个仓库（m["repo"]），所以不用猜仓库。
+# 页面 8 秒刷一次，GitHub 这边分层缓存：runner 名单 15 秒、在跑的 job 12 秒。
+_RUNNER_CACHE: dict[str, dict[str, Any]] = {}
+_RUNNER_TTL = 15.0
+_JOB_CACHE: dict[str, dict[str, Any]] = {}
+_JOB_TTL = 12.0
+_LIVE_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+_LIVE_TTL = 4.0
+
+
+async def _repo_runners(repo: str) -> tuple[list[dict[str, Any]], str]:
+    """某个仓库下所有 runner 的在线/忙闲。"""
+    now = time.time()
+    hit = _RUNNER_CACHE.get(repo)
+    if hit and now - float(hit["at"]) < float(hit.get("ttl") or _RUNNER_TTL):
+        return hit["runners"], hit["error"]
+    rc, out, err = await gh_run([
+        "api", f"{_gh_scope(repo)}/actions/runners", "--jq",
+        "{runners: [.runners[] | {id, name, status, busy, labels: [.labels[].name]}]}",
+    ])
+    rows: list[dict[str, Any]] = []
+    text = ""
+    if rc != 0:
+        text = _gh_error_text(err or out, repo)
+    else:
+        try:
+            data = json.loads(out or "{}")
+            rows = [_runner_row(r) for r in (data.get("runners") or [])]
+        except ValueError:
+            text = "gh 返回的不是 JSON"
+    # 名单是空的（这仓库没挂 runner）就少问几次：那种仓库问多少次都是空
+    ttl = _RUNNER_TTL if rows else max(_RUNNER_TTL, 120.0)
+    _RUNNER_CACHE[repo] = {"at": now, "runners": rows, "error": text, "ttl": ttl}
+    return rows, text
+
+
+async def _repo_running_jobs(repo: str) -> tuple[list[dict[str, Any]], str]:
+    """仓库里正在跑的 job，带 runner 名——回答「这台机器在跑哪个 action」。
+
+    没有「一条命令拿到全部在跑的 job」的接口，只能先拿进行中的 run 再逐个问
+    job 列表；所以最多看 5 个 run，凑够了就提前收工。
+    """
+    now = time.time()
+    hit = _JOB_CACHE.get(repo)
+    if hit and now - float(hit["at"]) < _JOB_TTL:
+        return hit["jobs"], hit["error"]
+    rc, out, err = await gh_run([
+        "api", f"{_gh_scope(repo)}/actions/runs?status=in_progress&per_page=20", "--jq",
+        "[.workflow_runs[] | {id, name, run_number, head_branch}]",
+    ])
+    if rc != 0:
+        text = _gh_error_text(err or out, repo)
+        _JOB_CACHE[repo] = {"at": now, "jobs": [], "error": text}
+        return [], text
+    try:
+        runs = json.loads(out or "[]")[:5]
+    except ValueError:
+        _JOB_CACHE[repo] = {"at": now, "jobs": [], "error": "gh 返回的不是 JSON"}
+        return [], "gh 返回的不是 JSON"
+    found: list[dict[str, Any]] = []
+    for run in runs:
+        rc, out, err = await gh_run([
+            "api", f"{_gh_scope(repo)}/actions/runs/{run['id']}/jobs", "--jq",
+            '[.jobs[] | select(.status == "in_progress") | {name, runner_name, started_at, step: (.steps[]? | select(.status == "in_progress") | .name)}]',
+        ], attempts=1)
+        if rc != 0:
+            continue
+        try:
+            jobs = json.loads(out or "[]")
+        except ValueError:
+            continue
+        for j in jobs:
+            if not j.get("runner_name"):
+                continue
+            found.append({
+                "job_name": j.get("name") or "",
+                "runner_name": j.get("runner_name") or "",
+                "step": j.get("step") or "",
+                "started_at": j.get("started_at") or "",
+                "run_id": run.get("id"),
+                "run_name": run.get("name") or "",
+                "run_number": run.get("run_number"),
+                "branch": run.get("head_branch") or "",
+                "repo": repo,
+            })
+        if len(found) >= 8:
+            break
+    _JOB_CACHE[repo] = {"at": now, "jobs": found, "error": ""}
+    return found, ""
+
+
+async def _machines_live_view(repos: list[str]) -> dict[str, Any]:
+    """每台机器：在线 / 空闲 / 正在跑什么。问不到就老实说问不到。
+
+    GitHub 的 runner 是挂在仓库下面的，而这套机器记录故意不绑仓库，
+    所以只能拿「本地库里有活动的那些仓库」去逐个问，再按名字对回来。
+    """
+    live = _machines_live()
+    rows = _machine_rows()
+    out: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+
+    auth = await github_auth()
+    if not auth.get("logged_in"):
+        reason = auth.get("error") or "gh 未登录"
+        for row in rows:
+            out[row["name"]] = {"state": "unknown", "runner": "", "labels": [],
+                                "job": None, "repo": row.get("repo") or "", "error": reason}
+        return {"machines": out, "repos": [], "errors": {}, "error": reason,
+                "checked_at": time.time()}
+
+    runner_of: dict[str, dict[str, Any]] = {}     # 小写 runner 名 → runner 记录
+    job_of: dict[str, dict[str, Any]] = {}        # 小写 runner 名 → 在跑的 job
+    for repo in repos:
+        runners, rerr = await _repo_runners(repo)
+        if rerr:
+            errors[repo] = rerr
+            continue
+        for r in runners:
+            key = str(r.get("name") or "").lower()
+            if not key:
+                continue
+            old = runner_of.get(key)
+            # 同一个名字可能挂在两个仓库下（重复注册）：优先留「正在忙」那条
+            if old is None or (r.get("busy") and not old.get("busy")) \
+                    or (r.get("status") == "online" and old.get("status") != "online"):
+                runner_of[key] = {**r, "repo": repo}
+        if any(r.get("busy") for r in runners):
+            jobs, jerr = await _repo_running_jobs(repo)
+            if jerr:
+                errors.setdefault(repo, jerr)
+            for j in jobs:
+                k = str(j.get("runner_name") or "").lower()
+                if k:
+                    job_of.setdefault(k, j)
+
+    for row in rows:
+        name = str(row["name"])
+        repo_hint = str(live.get(name, {}).get("repo") or "")
+        runner = runner_of.get(name.lower())
+        if runner is None and name:
+            # 按需（JIT）runner 叫 jit-<机器名>-<随机数>；那种也算在这台机器头上
+            prefix = "jit-" + name.lower() + "-"
+            runner = next((r for k, r in runner_of.items() if k.startswith(prefix)), None)
+        entry: dict[str, Any] = {"state": "unknown", "runner": "", "labels": [],
+                                 "job": None, "repo": repo_hint}
+        if runner is not None:
+            online = str(runner.get("status") or "") == "online"
+            busy = bool(runner.get("busy"))
+            entry.update({
+                "runner": runner.get("name") or "",
+                "repo": runner.get("repo") or repo_hint,
+                "labels": runner.get("labels") or [],
+                "state": (("busy" if busy else "idle") if online else "offline"),
+                "job": job_of.get(str(runner.get("name") or "").lower()) if busy else None,
+            })
+        elif repos and not errors:
+            # 仓库名单都问到了，里面却没这台：注册没了（被删，或者压根没注册上）
+            entry["state"] = "missing"
+        if errors:
+            entry["error"] = next(iter(errors.values()))
+        out[name] = entry
+
+    return {"machines": out, "repos": list(repos), "errors": errors,
+            "checked_at": time.time()}
+
+
+async def handle_machines_live(request: web.Request) -> web.Response:
+    """机器在线状态 + 正在跑哪个 action。看着便宜，背后是 GitHub 接口，压一层缓存。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    now = time.time()
+    cached = _LIVE_CACHE.get("data")
+    if cached is not None and now - float(_LIVE_CACHE.get("at") or 0) < _LIVE_TTL:
+        return web.json_response(cached)
+    try:
+        store = request.app["store"]
+        repos = await _offload(_live_candidate_repos, store)
+        data = await _machines_live_view(repos)
+    except Exception as exc:                       # noqa: BLE001
+        return web.json_response({"error": f"{type(exc).__name__}: {exc}"[:300]}, status=502)
+    _LIVE_CACHE["at"] = time.time()
+    _LIVE_CACHE["data"] = data
+    return web.json_response(data)
+
+
+def _live_candidate_repos(store: Store) -> list[str]:
+    """去哪儿找 runner：最近有活动的仓库，加上按需池子正在接的仓库。
+
+    runner 挂在仓库下，而机器记录不绑仓库，所以只能按活动量排个优先。
+    限定 3 个：每个仓库一次 GitHub 调用，问多了白花配额。
+    """
+    picked: list[str] = []
+    for r in JIT_POOL["repos"]:
+        if JIT_POOL["repos"].get(r) and r not in picked:
+            picked.append(r)
+    try:
+        for row in store.repos():
+            repo = str(row.get("repo") or "")
+            if repo and repo not in picked:
+                picked.append(repo)
+            if len(picked) >= 3:
+                break
+    except Exception:                              # noqa: BLE001
+        pass
+    return picked[:3]
+
+
 async def handle_machine_delete(request: web.Request) -> web.Response:
     """断开一台机器：只删本地凭据，远端主机和 GitHub 上的东西一概不碰。"""
     blocked = _local_only(request)
@@ -3798,6 +4008,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/runners", handle_github_runners)
     app.router.add_post("/github/runners/remove", handle_github_runner_remove)
     app.router.add_get("/runners", handle_machines)
+    app.router.add_get("/machines/live", handle_machines_live)
     app.router.add_post("/runners/delete", handle_machine_delete)
     app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
     app.router.add_post("/runners/ssh/remove", handle_runner_ssh_remove)

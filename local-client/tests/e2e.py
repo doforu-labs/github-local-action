@@ -452,6 +452,23 @@ reconnect_max = 2
                      "机器清单：每行字段齐全", str((md.get("machines") or [])[:1])[:120])
             ck.check("ttl" not in md, "机器清单：不再给凭据设过期时间", str(md)[:100])
 
+            # 机器实时状态：在线/空闲/正在跑哪个 action。e2e 里没有可用的 gh，
+            # 所以在这里只钉「结构对、问不到也得老实说 unknown」，真数据靠手工实测。
+            async with s.get(f"{BASE}/machines/live") as lv:
+                lvd = await lv.json()
+            ck.check(lv.status == 200, "机器状态：接口可用", str(lv.status))
+            ck.check(isinstance(lvd.get("machines"), dict), "机器状态：machines 是对象", str(lvd)[:120])
+            ck.check(set(lvd.get("machines") or {}) == {r["name"] for r in (md.get("machines") or [])},
+                     "机器状态：跟机器清单一一对应", str(list((lvd.get("machines") or {})))[:120])
+            ck.check(all(v.get("state") in ("busy", "idle", "offline", "missing", "unknown")
+                         for v in (lvd.get("machines") or {}).values()),
+                     "机器状态：state 只有这几种", str(lvd.get("machines"))[:160])
+            ck.check(isinstance(lvd.get("repos"), list) and "checked_at" in lvd,
+                     "机器状态：带上去哪里找过、什么时候问的", str(lvd.get("repos"))[:120])
+            ck.check(all((v.get("job") is None) or (v.get("state") == "busy")
+                         for v in (lvd.get("machines") or {}).values()),
+                     "机器状态：没在跑就不给 job", "")
+
             # 页面现在只让填四样：地址/端口/用户/密码。机器名和目录都不传也得能交上去
             # （名字连上后读主机名，目录从 ~/actions-runner 顺延），所以不能报 400。
             r0 = await s.post(f"{BASE}/runners/ssh/add",

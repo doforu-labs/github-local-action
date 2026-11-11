@@ -363,6 +363,13 @@
   .machine-summary { display: flex; align-items: center; gap: 12px; padding: 18px 16px; }
   .machine-card .runner-main { flex: 1; }
   .machine-actions { display: flex; gap: 8px; }
+  /* 机器状态：在线空闲 / 正在跑某个 action（能点，跳到那次运行） */
+  .machine-live { text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+  a.machine-live:hover { background: rgba(9, 105, 218, .06); }
+  .machine-live .go { opacity: .65; }
+  .Label .spin { width: 11px; height: 11px; border-width: 2px; }
+  @keyframes flashrun { from { background: rgba(9, 105, 218, .14); } to { background: transparent; } }
+  .run-wrap.flash-run .run { animation: flashrun 1.5s ease-out; }
   .machine-delete { color: var(--danger); }
   .machine-dialog { width: min(420px, calc(100% - 32px)); padding: 24px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--fg); }
   .machine-dialog::backdrop { background: #0006; }
@@ -1248,7 +1255,12 @@ const I18N_EN = {
   "在新标签页打开": "Open in a new tab",
   "正在生成…": "generating…",
   "正在读取…": "loading…",
-  "AGENT.md 没找到": "AGENT.md not found"
+  "AGENT.md 没找到": "AGENT.md not found",
+  "有任务在跑": "running a job",
+  "在线 · 空闲": "online · idle",
+  "离线": "offline",
+  "未注册": "not registered",
+  "状态未知": "unknown"
 };
 const HAS_CJK = (s) => /[\u4e00-\u9fff]/.test(String(s || ''));
 let LANG = localStorage.getItem('ghr.lang') === 'en' ? 'en' : 'zh';
@@ -2132,9 +2144,39 @@ $('view-actions').addEventListener('click', (e) => {
 /* ─────────── Runner ─────────── */
 let runnerTimer = null;
 
+// 从机器页跳到动作页某一次运行：先清掉仓库筛选（否则可能不在当前列表里），
+// 把那一行放进「展开着的运行」里，渲染完再滚过去高亮一下。
+function jumpToRun(runId) {
+  if (!runId) return;
+  actRepo = '';
+  const sel = $('actRepo');
+  if (sel) sel.value = '';
+  openRuns.add(String(runId));
+  autoLog.delete(String(runId));
+  if (location.hash === '#/actions') loadActions();
+  else location.hash = '#/actions';
+  let left = 10;
+  const tick = () => {
+    const row = document.querySelector('.run[data-run="' + runId + '"]');
+    if (row) {
+      const wrap = row.closest('.run-wrap') || row;
+      wrap.scrollIntoView({ block: 'center' });
+      wrap.classList.add('flash-run');
+      setTimeout(() => wrap.classList.remove('flash-run'), 1600);
+      return;
+    }
+    if (--left > 0) setTimeout(tick, 250);
+  };
+  setTimeout(tick, 120);
+}
+
 let machineInventory = [];
 let machineInventoryLoaded = false;
 let machineLoadError = '';
+// 机器现在什么状态（在线/空闲/正在跑什么），来自 /machines/live
+let machineLive = {};
+let machineLiveRepos = [];
+let machineLiveError = '';
 
 // 多条接入记录使用同一个 SSH 地址时，在列表中只显示一台。
 function groupMachines(machines) {
@@ -2176,22 +2218,66 @@ function machineRowHtml(group) {
   return '<div class="machine-card" data-machine="' + esc(m.name) + '"><div class="machine-summary"><div class="runner-main">' +
     '<div class="runner-name"><span class="runner-id">' + esc(m.name || m.host) +
     '</span><span class="tag">' + esc(meta) + '</span></div><div class="runner-labels"><span class="chip">' +
-    esc(m.user + '@' + m.host + ':' + m.port) + '</span><span class="hint">' + esc(fmtWhen(m.added_at || m.last_ok)) +
-    '</span></div></div><span class="Label Label--secondary">已接入</span>' +
-    '<div class="machine-actions"><button class="btn machine-delete" data-machine-delete>删除</button></div></div></div>';
+    esc(m.user + '@' + m.host + ':' + m.port) + '</span><span class="chip">' + t('已接入') +
+    '</span><span class="hint">' + esc(fmtWhen(m.added_at || m.last_ok)) +
+    '</span></div></div>' + machineLiveHtml(m) +
+    '<div class="machine-actions"><button class="btn machine-delete" data-machine-delete>' + t('删除') +
+    '</button></div></div></div>';
+}
+
+// 状态标签：忙的时候直接写正在跑哪个 workflow，而且能点（跳到动作页那次运行）。
+function machineLiveHtml(m) {
+  const lv = machineLive[m.name];
+  const state = (lv && lv.state) || 'unknown';
+  const job = lv && lv.job;
+  if (state === 'busy' && job && job.run_id) {
+    const title = (job.run_name || job.job_name || '') + (job.run_number ? ' #' + job.run_number : '');
+    const tip = [job.repo, job.job_name, job.step ? L('正在跑步骤：' + job.step, 'step: ' + job.step) : '',
+                 job.started_at ? L('开始 ' + fmtFull(job.started_at), 'started ' + fmtFull(job.started_at)) : '']
+      .filter(Boolean).join('\n') + '\n' + L('点一下跳到这次运行', 'click to open this run');
+    return '<a class="Label Label--accent machine-live" href="#/actions" data-openrun="' + esc(String(job.run_id)) +
+      '" title="' + esc(tip) + '">' + SPIN + '<span>' + esc(title.trim()) +
+      '</span><span class="go">→</span></a>';
+  }
+  if (state === 'busy') {
+    return '<span class="Label Label--accent machine-live">' + SPIN + t('有任务在跑') + '</span>';
+  }
+  if (state === 'idle') {
+    return '<span class="Label Label--success machine-live">' + t('在线 · 空闲') + '</span>';
+  }
+  if (state === 'offline') {
+    return '<span class="Label Label--danger machine-live" title="' +
+      esc(L('GitHub 上注册着，但 runner 进程没连上来', 'registered on GitHub, but the runner process is not connected')) +
+      '">' + t('离线') + '</span>';
+  }
+  if (state === 'missing') {
+    return '<span class="Label machine-live" title="' +
+      esc(L('在 ' + (machineLiveRepos.join('、') || '这些仓库') + ' 里都没找到它的 runner',
+          'no runner with this name in ' + (machineLiveRepos.join(', ') || 'the checked repos'))) +
+      '">' + t('未注册') + '</span>';
+  }
+  return '<span class="Label Label--secondary machine-live" title="' + esc(machineLiveError || '') + '">' +
+    t('状态未知') + '</span>';
 }
 
 async function loadMachines(quiet) {
-  try {
-    const r = await fetch('/runners');
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    machineInventory = d.machines || [];
-    machineInventoryLoaded = true;
-    machineLoadError = '';
-  } catch (e) {
-    machineLoadError = e.message;
-  }
+  const jobs = [
+    fetch('/runners').then(async (r) => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+      machineInventory = d.machines || [];
+      machineInventoryLoaded = true;
+      machineLoadError = '';
+    }).catch((e) => { machineLoadError = e.message; }),
+    fetch('/machines/live').then(async (r) => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+      machineLive = d.machines || {};
+      machineLiveRepos = d.repos || [];
+      machineLiveError = d.error || '';
+    }).catch((e) => { machineLiveError = e.message; machineLive = {}; })
+  ];
+  await Promise.all(jobs);
   renderMachineInventory();
 }
 
@@ -2216,6 +2302,21 @@ function startRunnerPoll() {
 let machineDeleteTarget = null;
 let machineEditBusy = false;
 $('machines').addEventListener('click', (event) => {
+  // 正在跑的机器：点标签或点整张卡都跳到动作页那次运行
+  const liveEl = event.target.closest('[data-openrun]');
+  if (liveEl) {
+    event.preventDefault();
+    jumpToRun(liveEl.dataset.openrun);
+    return;
+  }
+  const card = event.target.closest('.machine-card');
+  if (card && !event.target.closest('[data-machine-delete]')) {
+    const lv = machineLive[card.dataset.machine];
+    if (lv && lv.state === 'busy' && lv.job && lv.job.run_id) {
+      jumpToRun(lv.job.run_id);
+      return;
+    }
+  }
   const button = event.target.closest('[data-machine-delete]');
   if (!button) return;
   const name = button.closest('[data-machine]').dataset.machine;
