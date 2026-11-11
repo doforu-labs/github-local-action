@@ -203,6 +203,37 @@ class Store:
         row = self.conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
 
+    def action_count(self, since_ms: int | None = None) -> int:
+        """一共发生过几次运行（动作），只算「次」不算事件条数。
+
+        一次运行会推 requested / in_progress / completed 好几条 event，按
+        workflow_run.id 去重才是运行个数——跟动作页那个总数对得上。
+        """
+        sql = "SELECT COUNT(DISTINCT json_extract(payload, '$.workflow_run.id')) AS n " \
+              "FROM events WHERE event = 'workflow_run' " \
+              "AND json_extract(payload, '$.workflow_run.id') IS NOT NULL"
+        params: tuple[Any, ...] = ()
+        if since_ms is not None:
+            sql += " AND at >= ?"
+            params = (since_ms,)
+        try:
+            row = self.conn.execute(sql, params).fetchone()
+            return int(row["n"])
+        except sqlite3.OperationalError:
+            # 很老的 SQLite 没有 json_extract：退回在 Python 里数
+            q = "SELECT payload FROM events WHERE event = 'workflow_run'"
+            if since_ms is not None:
+                q += " AND at >= ?"
+            ids = set()
+            for row in self.conn.execute(q, params).fetchall():
+                try:
+                    rid = (json.loads(row["payload"] or "{}").get("workflow_run") or {}).get("id")
+                except ValueError:
+                    continue
+                if rid is not None:
+                    ids.add(rid)
+            return len(ids)
+
     def hourly(self, start_ms: int) -> dict[str, int]:
         rows = self.conn.execute(
             "SELECT strftime('%Y-%m-%d %H', at/1000, 'unixepoch', 'localtime') AS h, "
@@ -592,10 +623,14 @@ def build_stats(store: Store) -> dict[str, Any]:
         hourly.append({"label": t.strftime("%H:00"), "count": counts.get(t.strftime("%Y-%m-%d %H"), 0)})
 
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight_ms = int(midnight.timestamp() * 1000)
     repos = store.repos()
     return {
-        "today": store.count_since(int(midnight.timestamp() * 1000)),
+        "today": store.count_since(midnight_ms),
         "total": store.count_all(),
+        # 动作（运行）的个数，跟「动作」页的总数一个口径
+        "actions_today": store.action_count(midnight_ms),
+        "actions_total": store.action_count(),
         "hourly": hourly,
         "by_type": store.type_counts(),
         "account": store.account(),
