@@ -120,13 +120,23 @@ jobs:
 - **结果两条路都能看**：GitHub 自己存一份日志；机器本地也留一份，`~/actions-runner/_diag/Worker_*.log` 是每次 job 的完整执行记录，断网时照样能翻。
 - **不要再改 workflow 文件时要 `workflow` scope**。我们本机的 gh 令牌只有 `repo / read:org / gist / delete_repo`，写 `.github/workflows/*` 会被 API 以 404 拒绝（写普通文件正常）。绕法是走 SSH 推送——SSH 密钥不受 OAuth scope 限制。
 
-这台 LAN 里三台机器的实测配置和可行性：
+这台 LAN 里三台机器都已装上 runner，并在同一次 `Three Platforms` run 里各跑一个 job、全部通过（run 42967265176）：
 
-| 机器 | 系统 | 配置 | 能不能跑 |
-|---|---|---|---|
-| `:22` dev | Ubuntu 24.04 | 6 核 / 31G（已用 25G）/ 146G 空闲 / 有 docker | ✅ 推荐，Linux 构建和测试都行 |
-| `:2222` dev | macOS 15.8（**Intel**） | 3 核 / 6G / 只有 CommandLineTools | ⚠️ 能跑测试和 x64 构建，但 `macos-14` 是 arm64，签不了名 |
-| `:2223` Docker | Win11 LTSC | 3 核 / **3G** / 没 git 没 docker | ❌ Electron + NSIS 打包含在这 3G 里容易 OOM |
+| 机器 | 系统 | 实测配置 | 已验证能跑 | 跑不起来的 |
+|---|---|---|---|---|
+| `:22` dev | Ubuntu 24.04 | 6 核 / 31G / 145G 空闲 / gcc 13.3 / node 24 / git 2.43 / docker 29 | 一切，含编译 | — |
+| `:2222` dev | macOS 15.8（**Intel**） | 3 核 / 5G / 131G / clang + swiftc / node 24 / git 2.39 | 测试、x64 编译、checkout | `macos-14` 是 arm64，Intel 机器出不了 arm 包；没有 Xcode 只有 CLT，公证缺证书 |
+| `:2223` Docker | Win11 LTSC 26100 | 3 核 / **3G** / 48G 空闲 / node 24 / git 2.56（portable） | 测试、checkout、脚本 | **没有 cl / MSBuild / makensis / docker / pwsh**，Electron + NSIS 打包现在做不了 |
+
+### Windows 自建 runner 的三个坑（都是实测撞到的）
+
+1. **没有 `pwsh`**。`shell: pwsh` 直接报 `pwsh: command not found` —— PowerShell 7 是托管镜像预装的，自建机器上只有 Windows PowerShell 5.1，写成 `shell: powershell`。
+2. **执行策略是 Restricted**。runner 用 `powershell -command ". 'script.ps1'"` 跑脚本，策略为 Restricted 时直接 `running scripts is disabled`。改机器级策略：`Set-ExecutionPolicy -Scope LocalMachine RemoteSigned`（需管理员）。
+3. **脚本里的中文会变乱码**。PS 5.1 按系统代码页解析 `.ps1`，而 runner 写出来的是无 BOM 的 UTF-8，中文字符串会被打碎、整段脚本报语法错。要么装 PS 7，要么 Windows 那几步只用 ASCII。
+
+另外：Windows 的 runner 包里**没有 `svc.cmd`**（不像 Linux/macOS 有 `svc.sh`），所以没法装成服务。用 `run.cmd` 起后台进程时注意——Windows OpenSSH 的作业对象会随 SSH 会话结束一起杀掉子进程，得靠 `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` 这样从 WMI 拉起才能活过断连。
+
+还有 **Windows 机器默认没有 git**，`actions/checkout` 会直接失败；装一个 MinGit portable 解压到 `C:\tools\MinGit`，再把它的 `cmd` 目录塞进 PATH 就行。
 
 ## 成本
 
