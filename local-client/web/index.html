@@ -767,16 +767,12 @@
         <div id="runnerFlash" hidden></div>
         <dialog id="machineDialog" class="machine-dialog" aria-labelledby="machineDialogTitle">
           <form id="machineEditForm">
-            <h2 id="machineDialogTitle">设置名字</h2>
-            <div id="machineNameField">
-              <label for="machineEditName">机器名字</label>
-              <input class="input" id="machineEditName" maxlength="64" required autocomplete="off">
-            </div>
-            <p id="machineDeleteNote" hidden></p>
+            <h2 id="machineDialogTitle">删除机器</h2>
+            <p id="machineDeleteNote"></p>
             <p id="machineEditError" class="machine-dialog-error" role="alert" hidden></p>
             <div class="machine-dialog-actions">
               <button class="btn" type="button" id="machineEditCancel">取消</button>
-              <button class="btn btn-primary" type="submit" id="machineEditSave">保存</button>
+              <button class="btn machine-delete" type="submit" id="machineEditSave">删除</button>
             </div>
           </form>
         </dialog>
@@ -1574,12 +1570,11 @@ function machineRowHtml(group) {
   const m = group.machine;
   const meta = [m.os, m.arch].filter(Boolean).join(' · ');
   return '<div class="machine-card" data-machine="' + esc(m.name) + '"><div class="machine-summary"><div class="runner-main">' +
-    '<div class="runner-name"><span class="runner-id">' + esc(m.display_name || m.name || m.host) +
+    '<div class="runner-name"><span class="runner-id">' + esc(m.name || m.host) +
     '</span><span class="tag">' + esc(meta) + '</span></div><div class="runner-labels"><span class="chip">' +
     esc(m.user + '@' + m.host + ':' + m.port) + '</span><span class="hint">' + esc(fmtWhen(m.added_at || m.last_ok)) +
     '</span></div></div><span class="Label Label--secondary">已接入</span>' +
-    '<div class="machine-actions"><button class="btn" data-machine-edit>改名</button>' +
-    '<button class="btn machine-delete" data-machine-delete>删除</button></div></div></div>';
+    '<div class="machine-actions"><button class="btn machine-delete" data-machine-delete>删除</button></div></div></div>';
 }
 
 async function loadMachines(quiet) {
@@ -1614,48 +1609,41 @@ function startRunnerPoll() {
   }, 8000);
 }
 
-let machineEditTarget = null;
+let machineDeleteTarget = null;
 let machineEditBusy = false;
 $('machines').addEventListener('click', (event) => {
-  const button = event.target.closest('[data-machine-edit], [data-machine-delete]');
+  const button = event.target.closest('[data-machine-delete]');
   if (!button) return;
   const name = button.closest('[data-machine]').dataset.machine;
   const machine = machineInventory.find(m => m.name === name);
   if (!machine) return;
-  const deleting = button.hasAttribute('data-machine-delete');
-  machineEditTarget = { name, deleting };
-  $('machineDialogTitle').textContent = deleting ? '删除机器' : '设置名字';
-  $('machineNameField').hidden = deleting;
-  $('machineEditName').disabled = deleting;
-  $('machineEditName').value = machine.display_name || machine.name;
-  $('machineDeleteNote').hidden = !deleting;
-  $('machineDeleteNote').textContent = '删除「' + (machine.display_name || machine.name) + '」的接入记录和登录凭据？删除后不再向它分配任务，机器上的程序和文件不会删除。';
-  $('machineEditSave').textContent = deleting ? '删除' : '保存';
+  machineDeleteTarget = name;
+  $('machineDeleteNote').textContent = '删除「' + (machine.name || machine.host) +
+    '」的接入记录和登录凭据？删除后不再向它分配任务，机器上的程序和文件不会删除。';
   $('machineEditError').hidden = true;
   $('machineDialog').showModal();
-  if (deleting) $('machineEditCancel').focus();
-  else $('machineEditName').select();
+  $('machineEditCancel').focus();
 });
 $('machineEditCancel').addEventListener('click', () => $('machineDialog').close());
 $('machineDialog').addEventListener('cancel', event => { if (machineEditBusy) event.preventDefault(); });
 $('machineEditForm').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!machineEditTarget || machineEditBusy) return;
-  const { name, deleting } = machineEditTarget;
+  if (!machineDeleteTarget || machineEditBusy) return;
+  const name = machineDeleteTarget;
   machineEditBusy = true;
   $('machineEditSave').disabled = true;
   $('machineEditCancel').disabled = true;
   $('machineEditError').hidden = true;
   try {
-    const response = await fetch(deleting ? '/runners/delete' : '/runners/rename', {
+    const response = await fetch('/runners/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, display_name: $('machineEditName').value.trim() })
+      body: JSON.stringify({ name })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
     $('machineDialog').close();
     await loadMachines(false);
-    flashRunner('ok', deleting ? '机器已删除' : '名字已保存');
+    flashRunner('ok', '机器已删除');
   } catch (error) {
     $('machineEditError').textContent = error.message;
     $('machineEditError').hidden = false;

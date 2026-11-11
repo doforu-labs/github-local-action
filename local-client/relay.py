@@ -1112,8 +1112,6 @@ class MachineStore:
             );
             """
         )
-        if "display_name" not in {r[1] for r in self.conn.execute("PRAGMA table_info(machines)")}:
-            self.conn.execute("ALTER TABLE machines ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         self.conn.commit()
         self._fernet = self._load_key(key_path)
 
@@ -1158,7 +1156,6 @@ class MachineStore:
             "dir": row["dir"] or "", "repo": row["repo"] or "",
             "pure": bool(row["pure"]), "at": row["added_at"] or 0,
             "last_ok": row["last_ok"] or 0,
-            "display_name": row["display_name"] or "",
         }
 
     def __getitem__(self, name: str) -> dict[str, Any]:
@@ -1208,11 +1205,6 @@ class MachineStore:
         self.conn.execute("UPDATE machines SET last_ok=? WHERE name=?",
                           (int(time.time()), name))
         self.conn.commit()
-
-    def set_display_names(self, names: list[str], display_name: str) -> None:
-        with self.conn:
-            self.conn.executemany("UPDATE machines SET display_name=? WHERE name=?",
-                                  [(display_name, name) for name in names])
 
     def remove_many(self, names: list[str]) -> None:
         with self.conn:
@@ -2412,7 +2404,6 @@ async def handle_machines(request: web.Request) -> web.Response:
         at = float(m.get("at") or now)
         rows.append({
             "name": name,
-            "display_name": m.get("display_name") or name,
             "os": m.get("os") or "",
             "arch": m.get("arch") or "x64",
             "host": m.get("host") or "",
@@ -2431,8 +2422,8 @@ async def handle_machines(request: web.Request) -> web.Response:
     })
 
 
-async def handle_machine_edit(request: web.Request) -> web.Response:
-    """Edit local machine metadata only; never change the remote host or GitHub."""
+async def handle_machine_delete(request: web.Request) -> web.Response:
+    """断开一台机器：只删本地凭据，远端主机和 GitHub 上的东西一概不碰。"""
     blocked = _local_only(request)
     if blocked is not None:
         return blocked
@@ -2446,17 +2437,10 @@ async def handle_machine_edit(request: web.Request) -> web.Response:
     machine = SSH_MACHINES.get(name)
     if machine is None:
         return web.json_response({"error": "机器已不存在，请刷新列表"}, status=404)
-    # The UI groups saved connections by SSH endpoint, so edit/delete the whole group.
+    # 页面按 SSH 端点归组，所以删也删整组：同一台机器重复接入过几次就一次清干净
     names = [n for n, m in SSH_MACHINES.items()
              if str(m["host"]).lower() == str(machine["host"]).lower()
              and int(m.get("port") or 22) == int(machine.get("port") or 22)]
-    if request.path.endswith("/rename"):
-        label = body.get("display_name")
-        if not isinstance(label, str) or not label.strip() or len(label.strip()) > 64 or any(ord(c) < 32 or ord(c) == 127 for c in label):
-            return web.json_response({"error": "名字需为 1–64 个字符，不能含换行等控制字符"}, status=400)
-        label = label.strip()
-        SSH_MACHINES.set_display_names(names, label)
-        return web.json_response({"ok": True, "display_name": label})
     busy = any(r.get("machine") in names for r in JIT_POOL["running"].values())
     preparing = any(not task.done() for task in _JIT_TASKS) or any(
         job.get("status") == "running" for job in SSH_JOBS.values())
@@ -3306,8 +3290,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/runners", handle_github_runners)
     app.router.add_post("/github/runners/remove", handle_github_runner_remove)
     app.router.add_get("/runners", handle_machines)
-    app.router.add_post("/runners/rename", handle_machine_edit)
-    app.router.add_post("/runners/delete", handle_machine_edit)
+    app.router.add_post("/runners/delete", handle_machine_delete)
     app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
     app.router.add_post("/runners/ssh/remove", handle_runner_ssh_remove)
     app.router.add_get("/runners/ssh/job/{job}", handle_runner_ssh_job)
