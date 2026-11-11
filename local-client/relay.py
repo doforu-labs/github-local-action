@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import signal
 import sqlite3
 import time
@@ -70,6 +71,7 @@ class Config:
     heartbeat: int = 30       # 协议层 ping：防 NAT / 代理回收空闲连接
     app_ping: int = 120       # 应用层 ping：顺带确认对端活着
     reconnect_max: int = 60   # 重连退避上限（秒）
+    path: Optional[Path] = None   # 配置文件位置，设置页保存时写回这里
 
     @classmethod
     def load(cls, path: Optional[Path]) -> "Config":
@@ -81,7 +83,10 @@ class Config:
             log.info("配置来自 %s", path)
         else:
             log.warning("没有找到配置文件，使用默认值（不会连上任何地方）")
-        return cls(**raw)
+        raw.pop("path", None)
+        cfg = cls(**raw)
+        cfg.path = path
+        return cfg
 
 
 # ─────────────────────────────────────────────────────────────
@@ -330,6 +335,8 @@ class State:
     connects: int = 0
     last_event_at: float = 0.0
     last_error: str = ""
+    ws: Any = None        # 当前连接，设置页改地址/令牌时用它立刻断开重连
+    kick: bool = False    # 置位后下一轮不等退避，直接重连
 
 
 # ─────────────────────────────────────────────────────────────
@@ -368,6 +375,7 @@ async def ws_loop(cfg: Config, store: Store, bus: Bus, state: State, stop: async
                 ) as ws:
                     state.connected = True
                     state.connects += 1
+                    state.ws = ws
                     delay = 1
                     cursor = store.cursor()
                     await ws.send_json({"type": "hello", "cursor": cursor})
@@ -395,9 +403,13 @@ async def ws_loop(cfg: Config, store: Store, bus: Bus, state: State, stop: async
                 log.warning("连接结束：%s", state.last_error)
             finally:
                 state.connected = False
+                state.ws = None
 
             if stop.is_set():
                 break
+            if state.kick:  # 改了连接参数：不等退避
+                state.kick = False
+                delay = 1
             log.info("%.0f 秒后重连", delay)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=delay)
@@ -560,6 +572,188 @@ async def handle_stats(request: web.Request) -> web.Response:
     return web.json_response(build_stats(request.app["store"]))
 
 
+# ─────────────────────────────────────────────────────────────
+# 设置：读 / 改中继参数
+# ─────────────────────────────────────────────────────────────
+
+# 改完立即生效；其余要重启进程
+HOT_FIELDS = ("ws_url", "token", "heartbeat", "app_ping", "reconnect_max")
+COLD_FIELDS = ("http_host", "http_port", "db_path")
+_LIMITS = {"heartbeat": (5, 600), "app_ping": (30, 3600), "reconnect_max": (5, 600)}
+
+
+def mask_token(token: str) -> str:
+    """只露头尾几位。令牌明文不出本机，也就不出 /config 的响应。"""
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "•" * len(token)
+    return f"{token[:4]}••••{token[-4:]}"
+
+
+def config_public(cfg: Config) -> dict[str, Any]:
+    return {
+        "ws_url": cfg.ws_url,
+        "http_host": cfg.http_host,
+        "http_port": cfg.http_port,
+        "db_path": cfg.db_path,
+        "heartbeat": cfg.heartbeat,
+        "app_ping": cfg.app_ping,
+        "reconnect_max": cfg.reconnect_max,
+        "token_set": bool(cfg.token),
+        "token_hint": mask_token(cfg.token),
+        "config_path": str(cfg.path) if cfg.path else "",
+        "hot_fields": list(HOT_FIELDS),
+        "cold_fields": list(COLD_FIELDS),
+    }
+
+
+def validate_patch(patch: dict[str, Any]) -> dict[str, Any]:
+    """校验并清洗改动；不合法就抛 ValueError，调用方转成 400。"""
+    if not isinstance(patch, dict):
+        raise ValueError("请求体要是一个 JSON 对象")
+    unknown = set(patch) - set(HOT_FIELDS)
+    if unknown:
+        raise ValueError("这些字段不支持在线修改：" + "、".join(sorted(unknown)))
+
+    clean: dict[str, Any] = {}
+    if "ws_url" in patch:
+        url = str(patch["ws_url"]).strip()
+        if not url.startswith(("ws://", "wss://")) or len(url) < 10:
+            raise ValueError("中继地址要写成 wss://主机/路径")
+        clean["ws_url"] = url
+    if "token" in patch:
+        tok = str(patch["token"]).strip()
+        if not tok:
+            raise ValueError("令牌不能为空；不想改就别传这个字段")
+        if len(tok) > 512:
+            raise ValueError("令牌太长了")
+        clean["token"] = tok
+    for key, (lo, hi) in _LIMITS.items():
+        if key not in patch:
+            continue
+        try:
+            val = int(patch[key])
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} 要填整数") from None
+        if not lo <= val <= hi:
+            raise ValueError(f"{key} 要在 {lo}~{hi} 之间")
+        clean[key] = val
+    return clean
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+def save_config(cfg: Config) -> None:
+    """把 [relay] 里的值写回文件，其它段落和注释原样保留。
+
+    只动能识别的键，写完先落 .bak，再原子替换，写坏了还能手动恢复。
+    """
+    if not cfg.path:
+        raise RuntimeError("启动时没带配置文件，改不了")
+    path = cfg.path
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else ["[relay]"]
+
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == "[relay]"), None)
+    if start is None:
+        lines.append("[relay]")
+        start = len(lines) - 1
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].lstrip().startswith("["):
+            end = i
+            break
+
+    wanted = {
+        "ws_url": cfg.ws_url,
+        "token": cfg.token,
+        "http_host": cfg.http_host,
+        "http_port": cfg.http_port,
+        "db_path": cfg.db_path,
+        "heartbeat": cfg.heartbeat,
+        "app_ping": cfg.app_ping,
+        "reconnect_max": cfg.reconnect_max,
+    }
+    body = lines[start + 1:end]
+    seen: set[str] = set()
+    for idx, line in enumerate(body):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in wanted:
+            body[idx] = f"{key} = {_toml_value(wanted[key])}"
+            seen.add(key)
+    body.extend(f"{k} = {_toml_value(wanted[k])}" for k in wanted if k not in seen)
+    while body and not body[-1].strip():   # 把空行挤到段末，别让新键跑到空行后面
+        body.pop()
+    if end < len(lines):
+        body.append("")
+    lines[start + 1:end] = body
+
+    if path.exists():
+        path.with_suffix(path.suffix + ".bak").write_text(
+            path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+async def handle_config(request: web.Request) -> web.Response:
+    return web.json_response(config_public(request.app["cfg"]))
+
+
+async def handle_config_save(request: web.Request) -> web.Response:
+    cfg: Config = request.app["cfg"]
+    state: State = request.app["state"]
+
+    try:
+        raw = await request.json()
+    except Exception:  # noqa: BLE001
+        return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+    try:
+        patch = validate_patch(raw)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    if not patch:
+        return web.json_response({"error": "没有要改的内容"}, status=400)
+
+    changed = [k for k, v in patch.items() if getattr(cfg, k) != v]
+    if not changed:
+        return web.json_response({**config_public(cfg), "changed": [], "reconnect": False})
+
+    previous = {k: getattr(cfg, k) for k in changed}
+    for key in changed:
+        setattr(cfg, key, patch[key])
+    try:
+        save_config(cfg)
+    except OSError as exc:
+        for key, value in previous.items():  # 写不进去就回滚内存里的值
+            setattr(cfg, key, value)
+        return web.json_response({"error": f"写入配置失败：{exc}"}, status=500)
+
+    # 地址或令牌变了就得断掉现有连接，让 ws_loop 用新参数重连
+    reconnect = any(k in ("ws_url", "token") for k in changed)
+    if reconnect and state.ws is not None:
+        state.kick = True
+        try:
+            await state.ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+    log.info("配置已更新：%s", "、".join(changed))
+    return web.json_response(
+        {**config_public(cfg), "changed": changed, "reconnect": reconnect}
+    )
+
+
 async def handle_index(request: web.Request) -> web.Response:
     html = read_index()
     if html:
@@ -592,11 +786,14 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app["store"] = store
     app["bus"] = bus
     app["state"] = state
+    app["cfg"] = cfg
     app.router.add_get("/", handle_index)
     app.router.add_get("/stream", handle_stream)
     app.router.add_get("/events", handle_events)
     app.router.add_get("/stats", handle_stats)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/config", handle_config)
+    app.router.add_post("/config", handle_config_save)
     return app
 
 

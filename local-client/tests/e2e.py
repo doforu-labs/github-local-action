@@ -197,6 +197,31 @@ reconnect_max = 2
                 ck.check(repos[0]["events"] > 0 and repos[0]["owner"] == "demo", "仓库归属与计数正确", str(repos[0]))
                 ck.check(set(repos[0]["types"]) == {"push", "pull_request"}, "仓库按类型分组", str(repos[0]["types"]))
 
+            # ── 6c. 设置接口 ──
+            BASE = f"http://127.0.0.1:{RELAY_PORT}"
+            raw = await (await s.get(f"{BASE}/config")).text()
+            conf = json.loads(raw)
+            ck.check(conf.get("token_set") is True, "设置里报告已设置令牌", str(conf.get("token_set")))
+            ck.check(TOKEN not in raw, "设置接口不回传令牌明文", raw[:120])
+            ck.check("ws_url" in (conf.get("hot_fields") or []), "标记出可热改字段", str(conf.get("hot_fields")))
+
+            bad = await s.post(f"{BASE}/config", json={"ws_url": "http://example.com"})
+            ck.check(bad.status == 400, "非法地址被拒绝", str(bad.status))
+            cold = await s.post(f"{BASE}/config", json={"http_port": 1234})
+            ck.check(cold.status == 400, "需重启的字段不允许在线改", str(cold.status))
+
+            saved = await s.post(f"{BASE}/config", json={"heartbeat": 9})
+            body = await saved.json()
+            ck.check(saved.status == 200 and body.get("changed") == ["heartbeat"],
+                     "改心跳返回改动列表", str(body.get("changed")))
+            text = cfg.read_text(encoding="utf-8")
+            ck.check("heartbeat = 9" in text, "改动写回了配置文件", text.replace("\n", " ")[:80])
+            ck.check(cfg.with_suffix(".toml.bak").exists(), "写回前留了 .bak", str(cfg))
+            ck.check(TOKEN in text, "其余字段没被写丢", "")
+
+            noop = await s.post(f"{BASE}/config", json={"heartbeat": 9})
+            ck.check((await noop.json()).get("changed") == [], "重复保存时报告无改动", "")
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))

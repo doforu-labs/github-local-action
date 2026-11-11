@@ -7,7 +7,7 @@
 <title>gh-relay · 状态</title>
 <style>
   /* 取值来自 github.com 浅色主题实测：body #fff / 边框 #d1d9e0 / 圆角 6px
-     Box 头 #f6f8fa、Label 描边胶囊 20px 高、正文 14px/1.5 */
+     Box 头 #f6f8fa、Label 描边胶囊 20px 高、正文 14px/1.5、按钮 #f6f8fa / #1f883d */
   :root {
     --bg: #ffffff;
     --bg-muted: #f6f8fa;
@@ -49,19 +49,63 @@
   }
   ::-webkit-scrollbar-thumb:hover { background: #b7bfc7; }
 
-  .page { max-width: 1216px; margin: 0 auto; padding: 24px 24px 56px; }
+  .octicon { fill: currentColor; flex: none; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
 
-  /* ---------- 页头 ---------- */
+  /* ---------- 左侧栏 ---------- */
+  .app { display: flex; align-items: flex-start; min-height: 100vh; }
+
+  .rail {
+    width: 256px; flex: none;
+    position: sticky; top: 0;
+    height: 100vh;
+    display: flex; flex-direction: column;
+    padding: 16px 12px;
+  }
+  .rail-brand {
+    display: flex; flex-direction: column; gap: 1px;
+    padding: 2px 8px 12px;
+  }
+  .rail-brand b { font-size: 14px; font-weight: 600; }
+  .rail-brand span { font-size: 12px; color: var(--fg-muted); }
+
+  .rail-nav { display: flex; flex-direction: column; gap: 2px; }
+  .rail-head {
+    padding: 16px 8px 4px;
+    font-size: 12px; font-weight: 600; color: var(--fg-muted);
+  }
+  .rail-head:first-child { padding-top: 0; }
+  .rail-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: var(--radius);
+    color: var(--fg); font-size: 14px; line-height: 21px;
+    text-decoration: none;
+  }
+  .rail-item .octicon { color: var(--fg-muted); }
+  .rail-item:hover { background: var(--bg-muted); text-decoration: none; }
+  .rail-item.selected {
+    background: var(--bg-muted); font-weight: 600; color: var(--fg);
+  }
+  .rail-item.selected .octicon { color: var(--fg); }
+  .rail-foot {
+    margin-top: auto; padding-top: 12px;
+    border-top: 1px solid var(--border-muted);
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+
+  /* ---------- 主区 ---------- */
+  .main { flex: 1; min-width: 0; padding: 24px 24px 56px; }
+  .main-inner { max-width: 1080px; }
+
   .page-head {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 12px 16px; flex-wrap: wrap;
+    display: flex; align-items: baseline; gap: 8px 10px; flex-wrap: wrap;
     padding-bottom: 16px; margin-bottom: 24px;
     border-bottom: 1px solid var(--border);
   }
-  .title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-  h1 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.5; }
-  .title .sub { color: var(--fg-muted); font-size: 14px; }
-  .head-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .page-head h1 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.5; }
+  .page-head .sub { color: var(--fg-muted); font-size: 14px; }
+  .page-head .spacer { flex: 1; }
 
   /* ---------- Label（GitHub 描边胶囊） ---------- */
   .Label {
@@ -84,7 +128,6 @@
     color: inherit; opacity: .68;
   }
 
-  /* 连接状态：靠 :has() 把胶囊配色跟着圆点走，不用改 JS */
   .Label--state { padding-left: 6px; padding-right: 10px; color: var(--fg-muted); }
   #statePill:has(.dot.ok) { color: var(--success); border-color: var(--success); }
   #statePill:has(.dot.idle) { color: var(--attention); border-color: var(--attention); }
@@ -169,7 +212,7 @@
   .axis span { white-space: nowrap; }
 
   /* ---------- 列表 ---------- */
-  #events { max-height: 70vh; overflow-y: auto; }
+  #events { max-height: 66vh; overflow-y: auto; }
   .row {
     display: grid;
     grid-template-columns: 88px 148px minmax(0, 1fr) minmax(0, 108px);
@@ -178,7 +221,7 @@
     border-top: 1px solid var(--border-muted);
     font-size: 13px;
   }
-  #events .row:first-child { border-top: 0; }
+  .row:first-child { border-top: 0; }
   .row:hover { background: #f6f8fa80; }
   .row.fresh { animation: flash 1.5s ease-out; }
   @keyframes flash {
@@ -189,7 +232,6 @@
     color: var(--fg-muted); font: 400 12px/1.5 var(--mono);
     font-variant-numeric: tabular-nums;
   }
-  /* 窄屏：时间/类型/动作一行，仓库名单独占一整行，避免被截断 */
   @media (max-width: 720px) {
     .row {
       grid-template-columns: auto minmax(0, 1fr) auto;
@@ -211,7 +253,6 @@
   .repo-name em, .repo em {
     color: var(--fg-muted); font-style: normal; font-weight: 400;
   }
-  .octicon { fill: currentColor; flex: none; }
   .repo-name .octicon { color: var(--fg-muted); }
 
   .repo-row {
@@ -235,6 +276,63 @@
   .empty h3 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
   .empty p { margin: 0; color: var(--fg-muted); font-size: 14px; }
 
+  /* ---------- 表单 ---------- */
+  .form-row { padding: 16px; border-top: 1px solid var(--border-muted); }
+  .form-row:first-child { border-top: 0; }
+  .form-row .label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 14px; font-weight: 600; margin-bottom: 4px;
+  }
+  .form-row .hint {
+    font-size: 12px; color: var(--fg-muted); margin-bottom: 8px;
+  }
+  .input {
+    width: 100%; max-width: 460px;
+    background: #fff; color: var(--fg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 5px 12px;
+    font: 400 14px/20px var(--font);
+    box-shadow: inset 0 1px 0 rgba(31, 35, 40, .04);
+  }
+  .input:focus {
+    outline: 2px solid var(--accent); outline-offset: -1px;
+    border-color: var(--accent);
+  }
+  .input.mono { font-family: var(--mono); font-size: 13px; }
+  .input.num { max-width: 120px; }
+  .input[readonly] {
+    background: var(--bg-muted); color: var(--fg-muted);
+    box-shadow: none; cursor: default;
+  }
+  .form-actions {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 16px; border-top: 1px solid var(--border-muted);
+  }
+  .form-actions .spacer { flex: 1; }
+  .btn {
+    height: 32px; padding: 5px 16px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg-muted); color: #25292e;
+    font: 500 14px/20px var(--font); cursor: pointer;
+  }
+  .btn:hover { background: #eef1f4; }
+  .btn-primary {
+    background: #1f883d; color: #fff; border-color: rgba(31, 35, 40, .15);
+  }
+  .btn-primary:hover { background: #1a7f37; }
+  .btn:disabled { opacity: .6; cursor: default; }
+  .flash {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 12px 16px; margin-bottom: 16px;
+    border: 1px solid rgba(46, 160, 67, .4); border-radius: var(--radius);
+    background: #dafbe1; color: var(--fg); font-size: 14px;
+  }
+  .flash.error {
+    border-color: rgba(255, 129, 130, .4); background: #ffebe9;
+  }
+  .flash .octicon { margin-top: 2px; color: var(--success); }
+  .flash.error .octicon { color: var(--danger); }
+
   /* ---------- 页脚 ---------- */
   footer {
     display: flex; align-items: center; justify-content: space-between;
@@ -249,17 +347,63 @@
     background: var(--neutral); border-radius: var(--radius-sm);
     padding: 1px 5px;
   }
+
+  /* ---------- 窄屏：侧栏变成顶部横向导航 ---------- */
+  @media (max-width: 900px) {
+    .app { flex-direction: column; }
+    .rail {
+      width: auto; height: auto; position: static;
+      flex-direction: row; align-items: center; gap: 6px;
+      padding: 8px 12px; overflow-x: auto;
+      border-bottom: 1px solid var(--border);
+    }
+    .rail-brand { padding: 0 8px 0 0; flex-direction: row; align-items: baseline; gap: 6px; }
+    .rail-brand span { display: none; }
+    .rail-nav { flex-direction: row; gap: 4px; }
+    .rail-head { display: none; }
+    .rail-item { white-space: nowrap; }
+    .rail-foot { margin: 0 0 0 auto; padding-top: 0; border-top: 0; flex-wrap: nowrap; }
+    .main { padding: 16px 16px 40px; }
+  }
+  @media (max-width: 600px) {
+    .rail-foot .Label.account { display: none; }
+  }
 </style>
 </head>
 <body>
-<div class="page">
 
-  <header class="page-head">
-    <div class="title">
-      <h1>gh-relay</h1>
-      <span class="sub">本地接收端</span>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-graph" viewBox="0 0 16 16"><path d="M1.5 1.75V13.5h13.75a.75.75 0 0 1 0 1.5H.75a.75.75 0 0 1-.75-.75V1.75a.75.75 0 0 1 1.5 0Zm14.28 2.53-5.25 5.25a.75.75 0 0 1-1.06 0L7 7.06 4.28 9.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.25-3.25a.75.75 0 0 1 1.06 0L10 7.94l4.72-4.72a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042Z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 16 16"><path d="M5.75 2.5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5ZM2 14a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm1-6a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM2 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></symbol>
+  <symbol id="i-repo" viewBox="0 0 16 16"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 16 16"><path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.5-2.575Zm1.228.703L1.603 13.127a.251.251 0 0 0 .215.373h12.364a.25.25 0 0 0 .215-.373L8.314 1.75a.252.252 0 0 0-.436 0ZM8 5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 5Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></symbol>
+</svg>
+
+<div class="app">
+
+  <aside class="rail">
+    <div class="rail-brand">
+      <b>gh-relay</b><span>本地接收端</span>
     </div>
-    <div class="head-meta">
+    <nav class="rail-nav">
+      <div class="rail-head">接收端</div>
+      <a class="rail-item" href="#/overview" data-view="overview">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-graph"/></svg>概览
+      </a>
+      <a class="rail-item" href="#/events" data-view="events">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-list"/></svg>事件流
+      </a>
+      <a class="rail-item" href="#/repos" data-view="repos">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-repo"/></svg>仓库
+      </a>
+      <div class="rail-head">配置</div>
+      <a class="rail-item" href="#/settings" data-view="settings">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-gear"/></svg>设置
+      </a>
+    </nav>
+    <div class="rail-foot">
       <span class="Label Label--state" id="statePill">
         <span class="dot" id="dot"></span><span id="statusText">连接中…</span>
       </span>
@@ -267,69 +411,188 @@
         <img class="avatar" id="avatar" alt="" width="16" height="16" referrerpolicy="no-referrer">
         <span id="accountName"></span>
       </span>
-      <span class="Label Label--attention" id="gapPill" hidden></span>
     </div>
-  </header>
+  </aside>
 
-  <section class="Box">
-    <div class="Box-header">概览</div>
-    <div class="stats">
-      <div class="stat"><div class="k">今日事件</div><div class="v" id="today">–</div></div>
-      <div class="stat"><div class="k">总事件</div><div class="v" id="total">–</div></div>
-      <div class="stat"><div class="k">距上一条</div><div class="v" id="since">–</div></div>
-      <div class="stat"><div class="k">游标位置</div><div class="v" id="cursor">–</div></div>
-      <div class="stat"><div class="k">重连次数</div><div class="v" id="connects">–</div></div>
-      <div class="stat"><div class="k">SSE 客户端</div><div class="v" id="clients">–</div></div>
-    </div>
-  </section>
+  <main class="main">
+    <div class="main-inner">
 
-  <section class="Box">
-    <div class="Box-header">
-      最近 24 小时
-      <div class="spacer"></div>
-      <span class="hint" id="chartSub">每小时事件数</span>
-    </div>
-    <div class="chart" id="chart"></div>
-    <div class="axis" id="chartAxis"></div>
-  </section>
+      <header class="page-head">
+        <h1 id="viewTitle">概览</h1>
+        <span class="sub" id="viewSub">接收端运行状态</span>
+        <div class="spacer"></div>
+        <span class="Label Label--attention" id="gapPill" hidden></span>
+      </header>
 
-  <section class="Box">
-    <div class="Box-header">
-      仓库
-      <div class="spacer"></div>
-      <span class="Counter" id="repoSub">0</span>
-    </div>
-    <div id="repos">
-      <div class="empty">
-        <h3>还没有收到任何事件</h3>
-        <p>把 webhook 指向这个接收端后，仓库会自动出现在这里。</p>
-      </div>
-    </div>
-  </section>
+      <!-- 概览 -->
+      <section id="view-overview">
+        <div class="Box">
+          <div class="Box-header">概览</div>
+          <div class="stats">
+            <div class="stat"><div class="k">今日事件</div><div class="v" id="today">–</div></div>
+            <div class="stat"><div class="k">总事件</div><div class="v" id="total">–</div></div>
+            <div class="stat"><div class="k">距上一条</div><div class="v" id="since">–</div></div>
+            <div class="stat"><div class="k">游标位置</div><div class="v" id="cursor">–</div></div>
+            <div class="stat"><div class="k">重连次数</div><div class="v" id="connects">–</div></div>
+            <div class="stat"><div class="k">SSE 客户端</div><div class="v" id="clients">–</div></div>
+          </div>
+        </div>
 
-  <section class="Box">
-    <div class="Box-header">
-      事件流
-      <div class="spacer"></div>
-      <span class="hint" id="listSub">等待中…</span>
-    </div>
-    <div id="events">
-      <div class="empty">
-        <h3>还没有事件</h3>
-        <p>触发一次 push 或 issue，几秒内就会出现在这里。</p>
-      </div>
-    </div>
-  </section>
+        <div class="Box">
+          <div class="Box-header">
+            最近 24 小时
+            <div class="spacer"></div>
+            <span class="hint" id="chartSub">每小时事件数</span>
+          </div>
+          <div class="chart" id="chart"></div>
+          <div class="axis" id="chartAxis"></div>
+        </div>
 
-  <footer>
-    <div class="links">
-      <span>SSE <code>/stream</code></span>
-      <span>历史 <code>/events?after=N</code></span>
-      <span>健康 <code>/health</code></span>
-    </div>
-    <span id="upd"></span>
-  </footer>
+        <div class="Box">
+          <div class="Box-header">
+            最近事件
+            <div class="spacer"></div>
+            <a href="#/events" class="hint">全部事件</a>
+          </div>
+          <div id="eventsMini">
+            <div class="empty">
+              <h3>还没有事件</h3>
+              <p>触发一次 push 或 issue，几秒内就会出现在这里。</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
+      <!-- 事件流 -->
+      <section id="view-events" hidden>
+        <div class="Box">
+          <div class="Box-header">
+            事件流
+            <div class="spacer"></div>
+            <span class="hint" id="listSub">等待中…</span>
+          </div>
+          <div id="events">
+            <div class="empty">
+              <h3>还没有事件</h3>
+              <p>触发一次 push 或 issue，几秒内就会出现在这里。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 仓库 -->
+      <section id="view-repos" hidden>
+        <div class="Box">
+          <div class="Box-header">
+            仓库
+            <div class="spacer"></div>
+            <span class="Counter" id="repoSub">0</span>
+          </div>
+          <div id="repos">
+            <div class="empty">
+              <h3>还没有收到任何事件</h3>
+              <p>把 webhook 指向这个接收端后，仓库会自动出现在这里。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 设置 -->
+      <section id="view-settings" hidden>
+        <div id="cfgFlash" hidden></div>
+
+        <div class="Box">
+          <div class="Box-header">
+            连接
+            <div class="spacer"></div>
+            <span class="hint">改完立刻生效</span>
+          </div>
+
+          <div class="form-row">
+            <div class="label">中继地址</div>
+            <div class="hint">Worker 的 WebSocket 地址，保存后会自动断开重连。</div>
+            <input class="input mono" id="cfg-ws" type="text" spellcheck="false"
+                   placeholder="wss://gh-relay.<你的子域>.workers.dev/ws">
+          </div>
+
+          <div class="form-row">
+            <div class="label">访问令牌</div>
+            <div class="hint" id="tokenHint">留空表示不修改。</div>
+            <input class="input mono" id="cfg-token" type="password" autocomplete="new-password"
+                   spellcheck="false" placeholder="留空则不修改">
+          </div>
+
+          <div class="form-row">
+            <div class="label">协议层心跳 <span class="hint" style="margin:0">秒</span></div>
+            <div class="hint">WebSocket ping 间隔，防止 NAT 或代理回收空闲连接。</div>
+            <input class="input num" id="cfg-heartbeat" type="number" min="5" max="600" step="1">
+          </div>
+
+          <div class="form-row">
+            <div class="label">应用层 ping <span class="hint" style="margin:0">秒</span></div>
+            <div class="hint">由客户端定时发一条消息，顺带确认对端还活着。</div>
+            <input class="input num" id="cfg-appping" type="number" min="30" max="3600" step="1">
+          </div>
+
+          <div class="form-row">
+            <div class="label">重连退避上限 <span class="hint" style="margin:0">秒</span></div>
+            <div class="hint">连不上时按 1、2、4… 翻倍等待，最多等这么久。</div>
+            <input class="input num" id="cfg-reconnect" type="number" min="5" max="600" step="1">
+          </div>
+
+          <div class="form-actions">
+            <button class="btn btn-primary" id="cfgSave">保存</button>
+            <button class="btn" id="cfgReset">放弃更改</button>
+            <div class="spacer"></div>
+            <span class="hint" id="cfgWhere"></span>
+          </div>
+        </div>
+
+        <div class="Box">
+          <div class="Box-header">
+            本地服务
+            <div class="spacer"></div>
+            <span class="Label Label--secondary">改这些要重启进程</span>
+          </div>
+
+          <div class="form-row">
+            <div class="label">监听地址</div>
+            <div class="hint">局域网设备的访问地址；<code>0.0.0.0</code> 表示所有网卡。</div>
+            <input class="input mono" id="cfg-host" type="text" readonly>
+          </div>
+
+          <div class="form-row">
+            <div class="label">端口</div>
+            <div class="hint">默认 18091，避开本机其他服务。</div>
+            <input class="input mono" id="cfg-port" type="text" readonly>
+          </div>
+
+          <div class="form-row">
+            <div class="label">事件库</div>
+            <div class="hint">SQLite 文件，断线期间的事件会补进这里。</div>
+            <input class="input mono" id="cfg-db" type="text" readonly>
+          </div>
+
+          <div class="form-row">
+            <div class="label">配置文件</div>
+            <div class="hint">保存时写回这个文件，改动前会留一份 <code>.bak</code>。</div>
+            <input class="input mono" id="cfg-path" type="text" readonly>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <div class="links">
+          <span>SSE <code>/stream</code></span>
+          <span>历史 <code>/events?after=N</code></span>
+          <span>健康 <code>/health</code></span>
+          <span>配置 <code>/config</code></span>
+        </div>
+        <span id="upd"></span>
+      </footer>
+
+    </div>
+  </main>
 </div>
 
 <script>
@@ -351,10 +614,10 @@ const TONE = {
 };
 const toneOf = (t) => TONE[t] || 'secondary';
 const REPO_ICON =
-  '<svg class="octicon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
-  '<path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"/></svg>';
+  '<svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-repo"/></svg>';
 
 const MAX_ROWS = 200;
+const MAX_MINI = 5;
 let latestId = 0;
 let seen = new Set();
 
@@ -430,25 +693,33 @@ function rel(sec) {
   return Math.floor(sec / 86400) + 'd';
 }
 
+// 往一个容器顶部塞一行，超过上限就丢掉尾巴
+function emitRow(container, row, cap) {
+  if (!container) return;
+  const empty = container.querySelector('.empty');
+  if (empty) empty.remove();
+  container.prepend(row);
+  while (container.children.length > cap) container.lastElementChild.remove();
+}
+
 function renderEvent(ev, fresh) {
   if (seen.has(ev.id)) return false;
   seen.add(ev.id);
 
-  const box = $('events');
-  const empty = box.querySelector('.empty');
-  if (empty) empty.remove();
-
   const t = ev.event || 'unknown';
-  const row = document.createElement('div');
-  row.className = 'row' + (fresh ? ' fresh' : '');
-  row.innerHTML =
-    '<span class="time" title="' + esc(fmtFull(ev.at)) + '">' + fmtTime(ev.at) + '</span>' +
-    '<span class="type"><span class="Label Label--' + toneOf(t) + '">' + esc(t) + '</span></span>' +
-    '<span class="repo">' + repoHtml(ev.repo, false) + '</span>' +
-    '<span class="act">' + esc(ev.action || '') + '</span>';
+  const make = () => {
+    const row = document.createElement('div');
+    row.className = 'row' + (fresh ? ' fresh' : '');
+    row.innerHTML =
+      '<span class="time" title="' + esc(fmtFull(ev.at)) + '">' + fmtTime(ev.at) + '</span>' +
+      '<span class="type"><span class="Label Label--' + toneOf(t) + '">' + esc(t) + '</span></span>' +
+      '<span class="repo">' + repoHtml(ev.repo, false) + '</span>' +
+      '<span class="act">' + esc(ev.action || '') + '</span>';
+    return row;
+  };
 
-  box.prepend(row);
-  while (box.children.length > MAX_ROWS) box.lastElementChild.remove();
+  emitRow($('events'), make(), MAX_ROWS);
+  emitRow($('eventsMini'), make(), MAX_MINI);
 
   if (ev.id > latestId) latestId = ev.id;
   return true;
@@ -460,6 +731,7 @@ async function loadHistory() {
     const d = await r.json();
     const evs = (d.events || []).slice().sort((a, b) => a.id - b.id);
     $('events').innerHTML = '';
+    $('eventsMini').innerHTML = '';
     seen.clear();
     for (const ev of evs) renderEvent(ev, false);
     $('listSub').textContent = evs.length ? '最近 ' + evs.length + ' 条' : '还没有事件';
@@ -547,6 +819,131 @@ async function pollStats() {
   } catch (e) { /* 下一轮再试 */ }
 }
 
+/* ─────────── 视图切换 ─────────── */
+const VIEWS = {
+  overview: ['概览', '接收端运行状态'],
+  events: ['事件流', '实时推送的事件，最新的在最上面'],
+  repos: ['仓库', '收到过事件的仓库，按最近活跃排序'],
+  settings: ['设置', '中继连接与本地服务参数']
+};
+
+function currentView() {
+  const v = (location.hash || '').replace(/^#\/?/, '');
+  return VIEWS[v] ? v : 'overview';
+}
+
+function route() {
+  const view = currentView();
+  Object.keys(VIEWS).forEach((name) => {
+    $('view-' + name).hidden = name !== view;
+  });
+  document.querySelectorAll('.rail-item').forEach((a) => {
+    const on = a.dataset.view === view;
+    a.classList.toggle('selected', on);
+    if (on) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  $('viewTitle').textContent = VIEWS[view][0];
+  $('viewSub').textContent = VIEWS[view][1];
+  if (view === 'settings') loadConfig();
+}
+
+/* ─────────── 设置 ─────────── */
+let cfgLoaded = false;
+
+function flash(kind, text) {
+  const box = $('cfgFlash');
+  const icon = kind === 'error' ? '#i-alert' : '#i-check';
+  box.hidden = false;
+  box.className = 'flash' + (kind === 'error' ? ' error' : '');
+  box.innerHTML = '<svg class="octicon" width="16" height="16" aria-hidden="true">' +
+    '<use href="' + icon + '"/></svg><div>' + esc(text) + '</div>';
+  // 按钮在页面下半，提示条在上边，不滚一下用户看不到结果
+  box.scrollIntoView({ block: 'nearest' });
+}
+
+function fillConfig(c) {
+  $('cfg-ws').value = c.ws_url || '';
+  $('cfg-heartbeat').value = c.heartbeat;
+  $('cfg-appping').value = c.app_ping;
+  $('cfg-reconnect').value = c.reconnect_max;
+  $('cfg-token').value = '';
+  $('cfg-token').placeholder = c.token_set
+    ? '已设置（' + c.token_hint + '），留空则不修改'
+    : '还没设置令牌';
+  $('tokenHint').textContent = c.token_set
+    ? '当前令牌 ' + c.token_hint + '，明文不会显示。留空表示不修改。'
+    : '还没设置令牌，中继大概率连不上。填一个再保存。';
+  $('cfg-host').value = c.http_host;
+  $('cfg-port').value = c.http_port;
+  $('cfg-db').value = c.db_path;
+  $('cfg-path').value = c.config_path || '（启动时没指定配置文件，改不了）';
+  $('cfgWhere').textContent = c.config_path ? '写入 ' + c.config_path : '';
+  cfgLoaded = true;
+}
+
+async function loadConfig() {
+  if (cfgLoaded) return;
+  try {
+    const r = await fetch('/config');
+    const c = await r.json();
+    if (!r.ok) throw new Error(c.error || r.status);
+    fillConfig(c);
+  } catch (e) {
+    flash('error', '读取配置失败：' + e.message);
+  }
+}
+
+async function saveConfig() {
+  const btn = $('cfgSave');
+  const payload = {
+    ws_url: $('cfg-ws').value.trim(),
+    heartbeat: Number($('cfg-heartbeat').value),
+    app_ping: Number($('cfg-appping').value),
+    reconnect_max: Number($('cfg-reconnect').value)
+  };
+  const token = $('cfg-token').value.trim();
+  if (token) payload.token = token;   // 留空 = 不动令牌
+
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    const r = await fetch('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    fillConfig(d);
+
+    if (!d.changed.length) {
+      flash('ok', '没有需要保存的改动。');
+    } else {
+      const names = d.changed.map((k) => ({
+        ws_url: '中继地址', token: '访问令牌', heartbeat: '心跳',
+        app_ping: '应用层 ping', reconnect_max: '重连上限'
+      }[k] || k));
+      flash('ok', '已保存：' + names.join('、') + (d.reconnect ? '，正在用新参数重连。' : '。'));
+    }
+    setTimeout(pollHealth, 1200);
+  } catch (e) {
+    flash('error', '保存失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+}
+
+$('cfgSave').addEventListener('click', saveConfig);
+$('cfgReset').addEventListener('click', () => {
+  cfgLoaded = false;
+  $('cfgFlash').hidden = true;
+  loadConfig();
+});
+
+window.addEventListener('hashchange', route);
+route();
 loadHistory();
 connect();
 pollHealth();
