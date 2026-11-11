@@ -875,6 +875,164 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
 
 
 # ─────────────────────────────────────────────────────────────
+# 自建 runner：看在线状态、发注册令牌
+# ─────────────────────────────────────────────────────────────
+
+# 安装包版本。写死比每次请求都去问 GitHub 稳——
+# 真要跟新时改这一行，前端从接口拿，不会各写一份。
+RUNNER_VERSION = "2.338.2"
+_RUNNER_ARCHIVE = {
+    "linux": "actions-runner-linux-x64-{v}.tar.gz",
+    "macos": "actions-runner-osx-x64-{v}.tar.gz",
+    "windows": "actions-runner-win-x64-{v}.zip",
+}
+_RUNNER_OS_LABEL = {"linux": "Linux", "macos": "macOS", "windows": "Windows"}
+
+
+def _runner_row(raw: dict[str, Any]) -> dict[str, Any]:
+    """把 GitHub 的 runner 记录整理成前端好用的形状。"""
+    # --jq 已经把 labels 拆成了字符串数组；别的调用方可能传对象，两种都兼容
+    labels: list[str] = []
+    for item in raw.get("labels") or []:
+        if isinstance(item, dict):
+            labels.append(str(item.get("name") or ""))
+        else:
+            labels.append(str(item or ""))
+    labels = [x for x in labels if x]
+    lowered = [x.lower() for x in labels]
+    os_name = next((x for x in labels if x.lower() in ("linux", "macos", "windows")), "")
+    arch = next((x for x in labels if x.lower() in ("x64", "arm64", "arm")), "")
+    return {
+        "id": raw.get("id"),
+        "name": raw.get("name") or "",
+        "os": os_name,
+        "arch": arch,
+        "status": raw.get("status") or "",
+        "busy": bool(raw.get("busy")),
+        "labels": [x for x in labels if x.lower() != "self-hosted"],
+    }
+
+
+async def handle_github_runners(request: web.Request) -> web.Response:
+    """列出某个仓库下注册过的 runner 以及它们在不在线。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    repo = (request.query.get("repo") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+    auth = await github_auth()
+    if not auth["logged_in"]:
+        return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
+
+    rc, out, err = await gh_run([
+        "api", f"repos/{repo}/actions/runners", "--jq",
+        "{total: .total_count, runners: [.runners[] | {id, name, status, busy, "
+        "labels: [.labels[].name]}]}",
+    ])
+    if rc != 0:
+        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
+    try:
+        data = json.loads(out or "{}")
+    except ValueError:
+        return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
+
+    rows = [_runner_row(r) for r in (data.get("runners") or [])]
+    rows.sort(key=lambda r: (r["status"] != "online", r["name"]))   # 在线的排前面
+    return web.json_response({
+        "repo": repo,
+        "total": data.get("total", len(rows)),
+        "online": sum(1 for r in rows if r["status"] == "online"),
+        "busy": sum(1 for r in rows if r["busy"]),
+        "runners": rows,
+    })
+
+
+async def handle_github_runner_token(request: web.Request) -> web.Response:
+    """要一个注册令牌，连同装机器要用的参数一起返回。
+
+    令牌一小时有效，且是写 GitHub 的动作，所以 attempts=1 不重试——
+    重试会多造一个令牌，虽然不致命但没必要。
+    """
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    repo = str(body.get("repo") or "").strip()
+    plat = str(body.get("platform") or "linux").strip().lower()
+    name = str(body.get("name") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+    if plat not in _RUNNER_ARCHIVE:
+        return web.json_response({"error": "platform 只支持 linux / macos / windows"}, status=400)
+
+    auth = await github_auth()
+    if not auth["logged_in"]:
+        return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
+
+    rc, out, err = await gh_run([
+        "api", "-X", "POST", f"repos/{repo}/actions/runners/registration-token",
+        "--jq", "{token: .token, expires_at: .expires_at}",
+    ], attempts=1)
+    if rc != 0:
+        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
+    try:
+        data = json.loads(out or "{}")
+    except ValueError:
+        return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
+    if not data.get("token"):
+        return web.json_response({"error": "GitHub 没给令牌"}, status=502)
+
+    return web.json_response({
+        "repo": repo,
+        "platform": plat,
+        "name": name,
+        "version": RUNNER_VERSION,
+        "url": f"https://github.com/{repo}",
+        "archive": ("https://github.com/actions/runner/releases/download/v{v}/"
+                    + _RUNNER_ARCHIVE[plat]).format(v=RUNNER_VERSION),
+        "labels": f"self-hosted,{_RUNNER_OS_LABEL[plat]},X64",
+        "token": data["token"],
+        "expires_at": data.get("expires_at") or "",
+    })
+
+
+async def handle_github_runner_remove(request: web.Request) -> web.Response:
+    """从仓库里删掉一个 runner 注册（机器上那份文件不会自动清）。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    repo = str(body.get("repo") or "").strip()
+    runner_id = str(body.get("id") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+    if not runner_id.isdigit():
+        return web.json_response({"error": "runner id 要是数字"}, status=400)
+
+    auth = await github_auth()
+    if not auth["logged_in"]:
+        return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
+
+    rc, out, err = await gh_run([
+        "api", "-X", "DELETE", f"repos/{repo}/actions/runners/{runner_id}",
+    ], attempts=1)
+    if rc != 0:
+        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
+    return web.json_response({"ok": True, "removed": int(runner_id)})
+
+
+# ─────────────────────────────────────────────────────────────
 # 设置：读 / 改中继参数
 # ─────────────────────────────────────────────────────────────
 
@@ -1097,6 +1255,9 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/auth", handle_github_auth)
     app.router.add_get("/github/runs", handle_github_runs)
     app.router.add_get("/github/jobs", handle_github_jobs)
+    app.router.add_get("/github/runners", handle_github_runners)
+    app.router.add_post("/github/runner-token", handle_github_runner_token)
+    app.router.add_post("/github/runners/remove", handle_github_runner_remove)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)

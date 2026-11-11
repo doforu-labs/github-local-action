@@ -271,6 +271,52 @@
     display: flex; flex-wrap: wrap; gap: 4px;
   }
 
+  /* ---------- Runner ---------- */
+  .runner-query {
+    display: flex; gap: 8px; align-items: center;
+  }
+  .runner-query .input { flex: 1; min-width: 0; max-width: 320px; }
+
+  .runner-row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto auto auto;
+    gap: 4px 12px; align-items: center;
+    padding: 10px 16px; border-top: 1px solid var(--border-muted);
+  }
+  .runner-row:first-child { border-top: 0; }
+  .runner-row:hover { background: #f6f8fa80; }
+  .runner-row .st { display: flex; align-items: center; }
+  .runner-main { min-width: 0; }
+  .runner-name { font-weight: 600; font-size: 14px; }
+  .runner-name .tag {
+    font: 400 12px/1.4 var(--mono); color: var(--fg-muted); margin-left: 6px;
+  }
+  .runner-labels {
+    grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px;
+  }
+  .chip {
+    font: 400 11px/18px var(--mono); color: var(--fg-muted);
+    background: var(--bg-muted); border: 1px solid var(--border-muted);
+    border-radius: 999px; padding: 0 7px;
+  }
+  .runner-row .rm {
+    background: none; border: 0; padding: 2px 6px; border-radius: var(--radius);
+    color: var(--fg-muted); font: 400 12px/1.5 var(--font); cursor: pointer;
+  }
+  .runner-row .rm:hover { background: #ffebe9; color: var(--danger); }
+
+  .cmd {
+    margin: 10px 0 0; padding: 12px 14px;
+    background: var(--bg-muted); border: 1px solid var(--border-muted);
+    border-radius: var(--radius);
+    font: 400 12px/1.7 var(--mono); color: var(--fg);
+    white-space: pre-wrap; word-break: break-all;
+    max-height: 320px; overflow: auto;
+  }
+  .cmd-foot {
+    display: flex; align-items: center; gap: 10px; margin-top: 10px;
+  }
+
   /* ---------- 动作（工作流运行） ---------- */
   .select {
     height: 28px; padding: 0 28px 0 8px;
@@ -446,6 +492,8 @@
       width: auto; height: auto; position: static;
       flex-direction: row; align-items: center; gap: 6px;
       padding: 8px 12px; overflow-x: auto;
+      /* 导航项多于屏幕宽度时自己横向滚，不能把整个页面撑宽 */
+      min-width: 0; max-width: 100%;
       border-bottom: 1px solid var(--border);
     }
     .rail-brand { padding: 0 8px 0 0; flex-direction: row; align-items: baseline; gap: 6px; }
@@ -477,6 +525,7 @@
   <symbol id="i-branch" viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></symbol>
   <symbol id="i-external" viewBox="0 0 16 16"><path d="M4.53 4.75A.75.75 0 0 1 5.28 4h6.01a.75.75 0 0 1 .75.75v6.01a.75.75 0 0 1-1.5 0v-4.2l-5.26 5.261a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L9.48 5.5h-4.2a.75.75 0 0 1-.75-.75Z"/></symbol>
   <symbol id="i-dot" viewBox="0 0 16 16"><path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v3.5C0 7.216.784 8 1.75 8h12.5A1.75 1.75 0 0 0 16 6.25v-3.5A1.75 1.75 0 0 0 14.25 1Zm0 1.5h12.5a.25.25 0 0 1 .25.25v3.5a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25v-3.5a.25.25 0 0 1 .25-.25ZM.75 2.75a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Zm2.5 0a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Zm-1.5 5.5A1.75 1.75 0 0 0 0 10v3.25c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0 0 16 13.25V10a1.75 1.75 0 0 0-1.75-1.75Zm0 1.5h12.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25V10a.25.25 0 0 1 .25-.25ZM.75 10.75a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Zm2.5 0a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Z"/></symbol>
 </svg>
 
 <div class="app">
@@ -498,6 +547,9 @@
       </a>
       <a class="rail-item" href="#/repos" data-view="repos">
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-repo"/></svg>仓库
+      </a>
+      <a class="rail-item" href="#/runners" data-view="runners">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-server"/></svg>Runner
       </a>
       <div class="rail-head">配置</div>
       <a class="rail-item" href="#/settings" data-view="settings">
@@ -647,6 +699,80 @@
               <p>把 webhook 指向这个接收端后，仓库会自动出现在这里。</p>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- Runner -->
+      <section id="view-runners" hidden>
+        <div id="runnerFlash" hidden></div>
+
+        <div class="Box">
+          <div class="Box-header">
+            Runner
+            <div class="spacer"></div>
+            <span class="Label Label--secondary" id="runnerCount">—</span>
+          </div>
+
+          <div class="form-row runner-query">
+            <input class="input mono" id="runnerRepo" type="text" spellcheck="false"
+                   placeholder="owner/name" aria-label="仓库" list="runnerRepoList">
+            <datalist id="runnerRepoList"></datalist>
+            <button class="btn" id="runnerRefresh">刷新</button>
+          </div>
+
+          <div id="runners">
+            <div class="empty">
+              <h3>还没查过</h3>
+              <p>上面填仓库名，点刷新。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="Box" style="margin-top:16px">
+          <div class="Box-header">
+            添加一台机器
+            <div class="spacer"></div>
+            <span class="hint">注册令牌 1 小时有效</span>
+          </div>
+
+          <div class="form-row">
+            <div class="label">系统</div>
+            <div class="hint">跟仓库无关，图方便选的；标签会自动拼成
+              <code>self-hosted,系统,X64</code>。</div>
+            <select class="select" id="runnerOs" aria-label="系统">
+              <option value="linux">Linux x64</option>
+              <option value="macos">macOS x64</option>
+              <option value="windows">Windows x64</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <div class="label">机器名</div>
+            <div class="hint">在 runner 列表里显示的名字，建议带机器标识，比如 <code>linux-22</code>。</div>
+            <input class="input mono" id="runnerName" type="text" spellcheck="false" placeholder="linux-22">
+          </div>
+
+          <div class="form-actions">
+            <button class="btn btn-primary" id="runnerMake">生成注册令牌</button>
+            <div class="spacer"></div>
+            <span class="hint" id="runnerMakeHint"></span>
+          </div>
+
+          <div class="form-row" id="runnerCmdBox" hidden>
+            <div class="label">在被控机器上执行</div>
+            <div class="hint" id="runnerCmdHint"></div>
+            <pre class="cmd" id="runnerCmd"></pre>
+            <div class="cmd-foot">
+              <button class="btn" id="runnerCopy">复制命令</button>
+              <span class="hint">令牌只当文本拷走，这个页面不存。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hint" style="margin-top:12px;line-height:1.7">
+          runner 是主动往外连的，放在 NAT 后面不用端口映射，也不用公网 IP。
+          这一页的接口只接受本机请求，局域网设备访问会拿到 403——
+          他们拿不到你的 GitHub 凭据。
         </div>
       </section>
 
@@ -1260,12 +1386,211 @@ $('view-actions').addEventListener('click', (e) => {
   if (detail) detail.hidden = !detail.hidden;
 });
 
+/* ─────────── Runner ─────────── */
+let runnerTimer = null;
+
+function runnerRowHtml(r) {
+  const online = r.status === 'online';
+  const icon = online
+    ? '<span class="st st-ok" title="在线"><svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-check-circle"/></svg></span>'
+    : '<span class="st st-idle" title="离线"><svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-x-circle"/></svg></span>';
+  const status = online
+    ? '<span class="Label Label--success">在线</span>'
+    : '<span class="Label Label--secondary">离线</span>';
+  const busy = r.busy
+    ? '<span class="Label Label--attention">跑着活</span>'
+    : '<span class="Label Label--secondary">空闲</span>';
+  const meta = [r.os, r.arch].filter(Boolean).join(' · ');
+  // 系统和架构已经在名字后面写了一遘，标签里就不再重复，只显示自定义标签
+  const skip = new Set([(r.os || '').toLowerCase(), (r.arch || '').toLowerCase()]);
+  const chips = (r.labels || [])
+    .filter((l) => !skip.has(String(l).toLowerCase()))
+    .map((l) => '<span class="chip">' + esc(l) + '</span>').join('');
+  return '<div class="runner-row">' +
+      icon +
+      '<div class="runner-main">' +
+        '<div class="runner-name">' + esc(r.name || '（无名）') +
+          (meta ? '<span class="tag">' + esc(meta) + '</span>' : '') +
+        '</div>' +
+        '<div class="runner-labels">' + chips + '</div>' +
+      '</div>' +
+      status + busy +
+      '<button class="rm" data-rm="' + esc(String(r.id)) + '" title="从仓库里删掉这个注册">移除</button>' +
+    '</div>';
+}
+
+function renderRunners(d) {
+  const box = $('runners');
+  const cnt = $('runnerCount');
+  if (!d) { cnt.textContent = '—'; return; }
+  cnt.textContent = d.online + ' / ' + d.total + ' 在线';
+  if (!d.runners.length) {
+    box.innerHTML = '<div class="empty"><h3>这个仓库还没有 runner</h3>' +
+      '<p>用下面的「添加一台机器」生成令牌，在目标机器上粘一下就行。</p></div>';
+    return;
+  }
+  box.innerHTML = d.runners.map(runnerRowHtml).join('');
+}
+
+async function loadRunners(quiet) {
+  const repo = ($('runnerRepo').value || '').trim();
+  if (!repo) {
+    renderRunners(null);
+    $('runners').innerHTML = '<div class="empty"><h3>先填一个仓库</h3>' +
+      '<p>runner 是挂在仓库上的，得知道看哪个。</p></div>';
+    return;
+  }
+  localStorage.setItem('ghr.repo', repo);
+  if (!quiet) $('runners').innerHTML = '<div class="empty"><h3>读取中…</h3><p></p></div>';
+  try {
+    const r = await fetch('/github/runners?repo=' + encodeURIComponent(repo));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    renderRunners(d);
+  } catch (e) {
+    $('runnerCount').textContent = '—';
+    $('runners').innerHTML = '<div class="empty"><h3>读取失败</h3><p>' +
+      esc(e.message) + '</p></div>';
+  }
+}
+
+function runnerCommands(d) {
+  const name = d.name || 'my-runner';
+  if (d.platform === 'windows') {
+    return [
+      'mkdir C:\\actions-runner',
+      'cd C:\\actions-runner',
+      'Invoke-WebRequest -Uri ' + d.archive + ' -OutFile runner.zip',
+      'Expand-Archive runner.zip -DestinationPath . ; Remove-Item runner.zip',
+      '.\\config.cmd --url ' + d.url + ' --token ' + d.token +
+        ' --name ' + name + ' --labels "' + d.labels + '" --work _work --unattended',
+      '.\\run.cmd'
+    ].join('\n');
+  }
+  return [
+    'mkdir -p ~/actions-runner && cd ~/actions-runner',
+    'curl -fL -o runner.tar.gz ' + d.archive,
+    'tar xzf runner.tar.gz',
+    './config.sh --url ' + d.url + ' --token ' + d.token +
+      ' --name ' + name + ' --labels ' + d.labels + ' --work _work --unattended',
+    'sudo ./svc.sh install $USER && sudo ./svc.sh start'
+  ].join('\n');
+}
+
+async function makeRunnerToken() {
+  const repo = ($('runnerRepo').value || '').trim();
+  const name = ($('runnerName').value || '').trim();
+  const platform = $('runnerOs').value;
+  const hint = $('runnerMakeHint');
+  if (!repo) { hint.textContent = '先在上面填仓库'; $('runnerRepo').focus(); return; }
+  hint.textContent = '正在要令牌…';
+  $('runnerMake').disabled = true;
+  try {
+    const r = await fetch('/github/runner-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo, platform: platform, name: name })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    const exp = d.expires_at ? new Date(d.expires_at) : null;
+    hint.textContent = exp ? ('令牌到 ' + fmtTime(exp.getTime()) + ' 失效') : '令牌已生成';
+    $('runnerCmdHint').textContent =
+      '仓库 ' + d.repo + ' · runner v' + d.version + ' · 标签 ' + d.labels +
+      (exp ? ' · 令牌 ' + fmtTime(exp.getTime()) + ' 前有效' : '');
+    $('runnerCmd').textContent = runnerCommands(d);
+    $('runnerCmdBox').hidden = false;
+    localStorage.setItem('ghr.repo', repo);
+  } catch (e) {
+    hint.textContent = '';
+    $('runnerCmd').textContent = '';
+    $('runnerCmdBox').hidden = true;
+    flashRunner('error', e.message);
+  } finally {
+    $('runnerMake').disabled = false;
+  }
+}
+
+function flashRunner(kind, text) {
+  const box = $('runnerFlash');
+  if (!box) return;
+  const bad = kind === 'error';
+  box.className = 'flash' + (bad ? ' error' : '');
+  box.innerHTML = '<svg class="octicon" width="16" height="16" aria-hidden="true">' +
+    '<use href="' + (bad ? '#i-alert' : '#i-check') + '"/></svg><div>' + esc(text) + '</div>';
+  box.hidden = false;
+  setTimeout(() => { box.hidden = true; }, 6000);
+}
+
+async function ensureRunnerRepo() {
+  const el = $('runnerRepo');
+  if (el.value.trim()) return el.value.trim();
+  const saved = localStorage.getItem('ghr.repo');
+  if (saved) { el.value = saved; return saved; }
+  try {
+    const d = await (await fetch('/stats')).json();
+    const first = (d.repos || [])[0];
+    if (first && first.repo) { el.value = first.repo; return first.repo; }
+  } catch (e) { /* 没事件就拉不到，不算错 */ }
+  return '';
+}
+
+function startRunnerPoll() {
+  if (runnerTimer) return;
+  runnerTimer = setInterval(() => {
+    if (currentView() === 'runners') loadRunners(true);
+  }, 8000);
+}
+
+$('runnerRefresh').addEventListener('click', () => loadRunners(false));
+$('runnerRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRunners(false); });
+$('runnerMake').addEventListener('click', makeRunnerToken);
+$('runnerCopy').addEventListener('click', async () => {
+  const text = $('runnerCmd').textContent || '';
+  try {
+    await navigator.clipboard.writeText(text);
+    $('runnerCopy').textContent = '已复制';
+  } catch (e) {
+    const r = document.createRange();
+    r.selectNodeContents($('runnerCmd'));
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(r);
+    $('runnerCopy').textContent = '已选中，按 Cmd+C';
+  }
+  setTimeout(() => { $('runnerCopy').textContent = '复制命令'; }, 2500);
+});
+$('view-runners').addEventListener('click', async (e) => {
+  const rm = e.target.closest('[data-rm]');
+  if (!rm) return;
+  const repo = ($('runnerRepo').value || '').trim();
+  const id = rm.dataset.rm;
+  if (!repo || !id) return;
+  if (!confirm('从 ' + repo + ' 里删掉这个 runner 注册？\n\n已经装好的机器上那份文件不会自动清；' +
+               '如果那台机器还在跑，它会以离线状态重连失败。')) return;
+  rm.disabled = true;
+  try {
+    const r = await fetch('/github/runners/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo, id: id })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    flashRunner('ok', '已从仓库里移除');
+    loadRunners(true);
+  } catch (err) {
+    rm.disabled = false;
+    flashRunner('error', err.message);
+  }
+});
+
 /* ─────────── 视图切换 ─────────── */
 const VIEWS = {
   overview: ['概览', '接收端运行状态'],
   events: ['事件流', '实时推送的事件，最新的在最上面'],
   actions: ['动作', '工作流运行记录，来自 workflow_run 事件'],
   repos: ['仓库', '收到过事件的仓库，按最近活跃排序'],
+  runners: ['Runner', '自建 runner 的在线状态与接入命令'],
   settings: ['设置', '中继连接与本地服务参数']
 };
 
@@ -1289,6 +1614,10 @@ function route() {
   $('viewSub').textContent = VIEWS[view][1];
   if (view === 'settings') loadConfig();
   if (view === 'actions') loadActions();
+  if (view === 'runners') {
+    startRunnerPoll();
+    ensureRunnerRepo().then(() => loadRunners(true));
+  }
 }
 
 /* ─────────── 设置 ─────────── */

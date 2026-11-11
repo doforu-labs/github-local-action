@@ -128,6 +128,16 @@ jobs:
 | `:2222` dev | macOS 15.8（**Intel**） | 3 核 / 5G / 131G / clang + swiftc / node 24 / git 2.39 | 测试、x64 编译、checkout | `macos-14` 是 arm64，Intel 机器出不了 arm 包；没有 Xcode 只有 CLT，公证缺证书 |
 | `:2223` Docker | Win11 LTSC 26100 | 3 核 / **3G** / 48G 空闲 / node 24 / git 2.56（portable） | 测试、checkout、脚本 | **没有 cl / MSBuild / makensis / docker / pwsh**，Electron + NSIS 打包现在做不了 |
 
+### 装好之后：左侧「Runner」页
+
+不用记上面那串命令，中继页面的 **Runner** 页就能日常操作：
+
+- 填仓库名拉出该仓库下的所有 runner：在线/离线、在不在跑活、系统与架构、自定义标签，在线的排前面，每 8 秒自己刷一次
+- 「生成注册令牌」选系统（Linux / macOS / Windows）和机器名，把带令牌的完整命令拼好，点一下复制，粘到目标机器上执行就行
+- 死掉的注册可以「移除」（机器上那份文件不会自动清）
+
+注册令牌 1 小时有效，只当文本返回、页面不落盘；这一页的接口和 `/github/*` 一样只接受本机请求。
+
 ### Windows 自建 runner 的三个坑（都是实测撞到的）
 
 1. **没有 `pwsh`**。`shell: pwsh` 直接报 `pwsh: command not found` —— PowerShell 7 是托管镜像预装的，自建机器上只有 Windows PowerShell 5.1，写成 `shell: powershell`。
@@ -153,5 +163,5 @@ jobs:
 
 ## 验收
 
-`local-client/tests/e2e.py` 起一个假 Hub，验证 43 项：连接 → 续传 → 去重 → 断线重连后不重复 → 状态页 → 动作页 → 优雅退出。不需要 Cloudflare 账号就能跑。
+`local-client/tests/e2e.py` 起一个假 Hub，验证 50 项：连接 → 续传 → 去重 → 断线重连后不重复 → 状态页 → 动作页 → runner 页 → 优雅退出。不需要 Cloudflare 账号就能跑。
 `remote-worker/tests/smoke.py` 对着 `wrangler dev` 验 10 项：验签、幂等、token、补发、心跳。

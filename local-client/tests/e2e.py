@@ -256,6 +256,30 @@ reconnect_max = 2
                 refused = await s.get(f"{BASE}/github/runs?repo=a/b")
                 ck.check(refused.status == 409, "gh 未登录时明确拒绝而不是假装空", str(refused.status))
 
+            # ── 6f. 自建 runner 的接入页 ──
+            bad = await s.get(f"{BASE}/github/runners?repo=not-a-repo")
+            ck.check(bad.status == 400, "runner 列表校验 repo 格式", str(bad.status))
+            bad = await s.post(f"{BASE}/github/runner-token",
+                               json={"repo": "nope", "platform": "linux"})
+            ck.check(bad.status == 400, "runner 令牌校验 repo 格式", str(bad.status))
+            bad = await s.post(f"{BASE}/github/runner-token",
+                               json={"repo": "a/b", "platform": "bsd"})
+            ck.check(bad.status == 400, "runner 令牌拒绝未知平台", str(bad.status))
+            bad = await s.post(f"{BASE}/github/runners/remove",
+                               json={"repo": "a/b", "id": "abc"})
+            ck.check(bad.status == 400, "runner 移除校验 id", str(bad.status))
+            if auth.get("logged_in"):
+                got = await s.get(f"{BASE}/github/runners?repo=example-org/demo-test")
+                # 网络被重置时给 502 可以接受，500 不行——那说明解析崩了
+                ck.check(got.status in (200, 502), "runner 列表不会 500", str(got.status))
+                if got.status == 200:
+                    body = await got.json()
+                    ck.check({"total", "online", "runners"} <= set(body),
+                             "runner 列表结构完整", str(list(body))[:80])
+                    rows = body.get("runners") or []
+                    ck.check(all({"name", "status", "busy", "labels"} <= set(r) for r in rows),
+                             "runner 行字段齐全", str(rows[:1])[:120])
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))
