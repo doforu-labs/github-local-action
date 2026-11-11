@@ -109,6 +109,47 @@ POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig
 
 所以「能不能并行」这个问题，答案就一句话：**起几个进程就有几条并行线，不起就只有排队。**
 
+### 4.5 五台机器同时跑（Linux + 3 台 macOS + Windows）
+
+前面都是同一台机器开多个进程。这次是**真的跨机器**：
+
+| 机器 | 入口 | 系统 |
+|---|---|---|
+| lab-linux-1 | `:22` | Ubuntu 24.04 / x86_64 / 6 核 |
+| lab-mac-1（三台不同的机器，同名） | `:2222` `:3222` `:4222` | macOS 15.8 / Intel / 3 核 |
+| lab-win-1 | `:2223` | Windows 11 26100 / 3 核 3G |
+
+同一个 workflow 里写 5 个 job，各自挂不同的 label：
+
+```yaml
+jobs:
+  linux-1:  runs-on: [self-hosted, jit-linux]
+  mac-1:    runs-on: [self-hosted, jit-mac]
+  mac-2:    runs-on: [self-hosted, jit-mac]
+  mac-3:    runs-on: [self-hosted, jit-mac]
+  win-1:    runs-on: [self-hosted, jit-win]
+```
+
+调度器看到哪个 job 在 `queued`，就按它的 label 找一台空闲机器、发一张票、起进程。
+
+```
+  8.8s 触发
+ 12.2s 发票 jit-mac-2222  -> mac-2
+ 14.9s 发票 jit-mac-3222  -> mac-3
+ 17.9s 发票 jit-mac-4222  -> mac-1
+ 20.9s 发票 jit-win-2223  -> win-1
+ 37.1s 发票 jit-linux-22  -> linux-1
+ 42.2s 五个全部 in_progress   ← 五台同时在跑
+ 86.5s mac-2、mac-3 完成
+ 91.4s linux-1 完成
+ 96.3s mac-1、win-1 完成
+ 96.3s 全部完成
+```
+
+**5 个 job、5 台机器、5 种系统组合，96 秒跑完。** 对比一下：同一台机器串行跑 2 个 job 要 132.9 秒。
+
+一个现象值得记：三个 mac job 都挂 `jit-mac` label，最后落到哪台是 **GitHub 自己分配的**，不保证 `mac-1` 一定去 2222 那台——这一轮实际是 `mac-2`→2222、`mac-3`→3222、`mac-1`→4222。要固定归属就用独一无二的 label。
+
 ## 5. 调度器怎么设计
 
 接在现有的事件流上，不需要新的入口：
@@ -135,6 +176,8 @@ webhook: workflow_job (action=queued)
 
 ## 6. 已知限制与坑
 
+### 6.1 接口层
+
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `409 Already exists` | 票名重复 | 名字带序号 |
@@ -142,6 +185,19 @@ webhook: workflow_job (action=queued)
 | 通过 contents API 写 `.github/workflows/` 返回 404 | 令牌缺 `workflow` 权限 | 改用 SSH 推送（SSH key 不受 OAuth scope 限制） |
 | `workflow_dispatch` 到 job 出现在 `queued` 有 20–40 秒延迟 | GitHub 侧建 run/job 慢 | 调度器要能容忍，别以为没触发成功就重复派 |
 | 一台机器跑多个 JIT 进程 | 共享 CPU/内存/磁盘 | 设并发上限，别只按「有几个仓库」开 |
+| 旧 run 的 job 一直 `queued`，新 run 的 job 抢不到 | **队列是全局 FIFO，跨 run 共享**。之前取消的 run 若留下排队 job，新起的 runner 会先去接它 | 跑之前先把历史队列清空（cancel 掉没跑完的 run） |
+| 同一个 label 有多个 runner，job 落到哪台不确定 | GitHub 自己挑 | 要固定就用唯一 label |
+
+### 6.2 各平台起 JIT 进程的坑（都是实测踩到的）
+
+| 平台 | 现象 | 原因 | 办法 |
+|---|---|---|---|
+| macOS | `zsh: command not found: setsid` | `setsid` 是 Linux 的 util-linux，macOS 没有 | 用 `nohup ... &` 就够 |
+| macOS/Linux | 进程秒退、无日志 | 上次被 kill 留下 `.runner` / `.credentials` | 启动前 `rm -f .runner .credentials*` |
+| Windows | SSH 断开后进程被回收 | `Start-Process` 起的子进程跟着会话走 | 用 `Invoke-CimMethod Win32_Process Create` 脱会话 |
+| Windows | `run.cmd` 起不来（进程秒退、无日志） | `run.cmd` 那层包装在非交互环境不工作 | 直接调 `bin\Runner.Listener.exe run --jitconfig` |
+| Windows | `Access to the path '.runner' is denied` | 复制过来的 `.runner` 是**隐藏 + 只读**，`Remove-Item` 不加 `-Force` 会静默失败 | `Get-Item -Force` 读属性、置 `IsReadOnly=$false` 再 `Remove-Item -Force` |
+| Windows | workflow 里 `shell: pwsh` 的步骤失败 | 该机器 pwsh 环境不完整 | 改用 `shell: cmd` + `ping -n 46 127.0.0.1 > nul` 当 sleep |
 
 ## 7. 什么时候该用这个模式
 
@@ -156,8 +212,9 @@ webhook: workflow_job (action=queued)
 - [x] 验证 JIT 票能生成（仓库级，`repo` 权限够）
 - [x] 验证进程上线、接活、跑完自毁
 - [x] 验证同一台机器可以先后服务不同仓库
-- [x] 验证并行/排队的实际行为（本文数据）
+- [x] 验证并行/排队的实际行为（§4.1–4.4）
+- [x] 验证跨 5 台机器（Linux / 3×macOS / Windows）同时并发（§4.5）
 - [x] `relay.py` 支持组织级路径（填 `owner/repo` 走仓库级，只填组织名走组织级），行为对现有用法不变
-- [ ] 调度器尚未接进 relay（目前实验脚本在 `/tmp/jitlab.py`）
+- [ ] 调度器尚未接进 relay（实验脚本见 `docs/examples/jit-scheduler.py`）
 - [ ] 并发上限、机器选择策略还没定
 - [ ] 常驻 + 弹性混合模式未做
