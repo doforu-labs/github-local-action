@@ -48,49 +48,49 @@ def main() -> int:
     ck(oct(key.stat().st_mode)[-3:] == "600", "密钥文件权限是 600",
        oct(key.stat().st_mode)[-3:])
 
-    store["mac-105"] = {
-        "host": "10.0.0.5", "port": 22, "user": "dev",
-        "password": "hunter2", "os": "macos", "arch": "arm64",
+    store["mac-9"] = {
+        "host": "10.0.0.9", "port": 22, "user": "tester",
+        "password": "P@ssw0rd-not-real", "os": "macos", "arch": "arm64",
         "dir": "", "repo": "", "pure": True, "at": 1794405842,
     }
-    ck("mac-105" in store, "写入后能查到")
+    ck("mac-9" in store, "写入后能查到")
     ck(len(store) == 1, "长度对得上", str(len(store)))
 
-    back = store["mac-105"]
-    ck(back["host"] == "10.0.0.5", "主机读回来了", str(back.get("host")))
-    ck(back["user"] == "dev", "用户名读回来了", str(back.get("user")))
+    back = store["mac-9"]
+    ck(back["host"] == "10.0.0.9", "主机读回来了", str(back.get("host")))
+    ck(back["user"] == "tester", "用户名读回来了", str(back.get("user")))
     ck(back["arch"] == "arm64", "架构读回来了", str(back.get("arch")))
     ck(back["pure"] is True, "纯按需标记读回来了", str(back.get("pure")))
-    ck(back["password"] == "hunter2", "密码解密后跟原文一致", repr(back.get("password")))
+    ck(back["password"] == "P@ssw0rd-not-real", "密码解密后跟原文一致", repr(back.get("password")))
 
     # 最关键的一条：库里不能出现明文密码
     raw = db.read_bytes()
-    ck(b"hunter2" not in raw, "数据库文件里没有明文密码")
+    ck(b"P@ssw0rd-not-real" not in raw, "数据库文件里没有明文密码")
     conn = sqlite3.connect(str(db))
-    secret = conn.execute("SELECT secret FROM machines WHERE name='mac-105'").fetchone()[0]
+    secret = conn.execute("SELECT secret FROM machines WHERE name='mac-9'").fetchone()[0]
     conn.close()
-    ck(secret and secret != "hunter2", "secret 列存的是密文", (secret or "")[:20])
+    ck(secret and secret != "P@ssw0rd-not-real", "secret 列存的是密文", (secret or "")[:20])
     ck(secret.startswith("gAAAAA"), "secret 是 Fernet 格式", (secret or "")[:20])
 
     # 换个实例 = 进程重启：数据还在、密码还能解
     again = relay.MachineStore(str(db), str(key))
     ck(len(again) == 1, "重启后机器还在", str(len(again)))
-    ck(again["mac-105"]["password"] == "hunter2", "重启后密码还能解出来",
-       repr(again["mac-105"].get("password")))
-    ck(again.keys() == ["mac-105"], "keys() 给出机器名", str(again.keys()))
-    ck([n for n, _ in again.items()] == ["mac-105"], "items() 能遍历")
+    ck(again["mac-9"]["password"] == "P@ssw0rd-not-real", "重启后密码还能解出来",
+       repr(again["mac-9"].get("password")))
+    ck(again.keys() == ["mac-9"], "keys() 给出机器名", str(again.keys()))
+    ck([n for n, _ in again.items()] == ["mac-9"], "items() 能遍历")
 
     # 同名再写一次 = 更新，不是插两条
-    store["mac-105"] = {**back, "port": 2222}
+    store["mac-9"] = {**back, "port": 2222}
     ck(len(store) == 1, "同名覆盖不会变两条", str(len(store)))
-    ck(store["mac-105"]["port"] == 2222, "覆盖后的端口生效", str(store["mac-105"]["port"]))
+    ck(store["mac-9"]["port"] == 2222, "覆盖后的端口生效", str(store["mac-9"]["port"]))
 
     # 取不到时是 None，不是抛异常（上层到处用 .get）
     ck(store.get("没有这台") is None, "get 取不到给 None")
     ck(store.pop("没有这台", None) is None, "pop 不存在的给默认值")
 
-    got = store.pop("mac-105")
-    ck(got is not None and got["host"] == "10.0.0.5", "pop 返回被删的那条")
+    got = store.pop("mac-9")
+    ck(got is not None and got["host"] == "10.0.0.9", "pop 返回被删的那条")
     ck(len(store) == 0, "pop 之后没了", str(len(store)))
 
     # 密钥丢了：不能让服务崩，但也不能假装能连——密码解出来是空串
