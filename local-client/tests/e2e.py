@@ -350,10 +350,10 @@ reconnect_max = 2
                      str(md)[:100])
             ck.check(md.get("count") == len(md.get("machines") or []),
                      "机器清单：count 跟数组对得上", str(md.get("count")))
-            ck.check(md.get("ttl") == 1800, "机器清单：带凭据有效时长", str(md.get("ttl")))
-            ck.check(all(set("name os arch host port pure".split()) <= set(row)
+            ck.check(all(set("name os arch host port pure added_at".split()) <= set(row)
                          for row in (md.get("machines") or [])),
                      "机器清单：每行字段齐全", str((md.get("machines") or [])[:1])[:120])
+            ck.check("ttl" not in md, "机器清单：不再给凭据设过期时间", str(md)[:100])
 
             # 页面现在只让填四样：地址/端口/用户/密码。机器名和目录都不传也得能交上去
             # （名字连上后读主机名，目录从 ~/actions-runner 顺延），所以不能报 400。

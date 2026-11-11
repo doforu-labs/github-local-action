@@ -1056,13 +1056,18 @@ try:  # 没装也能跑，只是这一块返回 501
 except Exception:  # pragma: no cover
     paramiko = None  # type: ignore
 
+try:  # 密码加密用。没装也不崩，只是密码不落盘、用的时候让人重填
+    from cryptography.fernet import Fernet
+except Exception:  # pragma: no cover
+    Fernet = None  # type: ignore
+
 SSH_TIMEOUT = 15          # 连接/认证超时（秒）
 SSH_JOB_LINES = 1200      # 单个任务最多留多少行日志
 SSH_JOBS: dict[str, dict[str, Any]] = {}
-# 机器名 -> 连接参数（含密码）。只在内存、**只在 30 分钟内有效**，
-# 过期就丢，用来支撑「连机器一起卸」的按钮。
-SSH_MACHINES: dict[str, dict[str, Any]] = {}
-SSH_MACHINE_TTL = 30 * 60
+# 机器名 -> 连接参数（含密码）。落 sqlite，重启和过夜都还在。
+# 密码加密后存：密钥单独一个 0600 文件放在库旁边，光把 events.db 拷走解不开。
+SSH_MACHINES: Any = {}      # 启动时换成 MachineStore，接口跟 dict 一样
+SSH_MACHINE_TTL = 30 * 60   # 只用来算「多久没连过了」，不再删数据
 
 # 机器名和目录都不让人填：名字取机器自己的主机名（连上看一眼就知道），
 # 目录从 ~/actions-runner 开始，那儿已经有一个就顺延到 -2、-3。
@@ -1071,13 +1076,154 @@ DEFAULT_RUNNER_DIR = "~/actions-runner"
 _AUTO_DIR_TRIES = 8
 
 
-def _machines_live() -> dict[str, dict[str, Any]]:
-    """还在有效期内的机器凭据。过期的顺手清掉。"""
-    now = time.time()
-    for name in [n for n, m in SSH_MACHINES.items()
-                 if now - float(m.get("at") or 0) > SSH_MACHINE_TTL]:
-        SSH_MACHINES.pop(name, None)
+def _machines_live() -> Any:
+    """手上所有机器的凭据。现在已经落盘，重启也还在，所以不再按时间清掉。"""
     return SSH_MACHINES
+
+
+class MachineStore:
+    """机器凭据落盘。接口照 dict 抄，上层代码一行不用改。
+
+    之前是纯内存 dict，进程一重启就全没了；但机器明天还得用，每次重填密码
+    不是个事，所以落到 events.db 里。密码用 Fernet 加密后存，密钥单独放一个
+    0600 文件——两样东西分开，光拷走 events.db 解不出密码。
+    """
+
+    def __init__(self, path: str, key_path: str):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS machines (
+              name     TEXT PRIMARY KEY,
+              host     TEXT NOT NULL,
+              port     INTEGER,
+              user     TEXT,
+              secret   TEXT,
+              os       TEXT,
+              arch     TEXT,
+              dir      TEXT,
+              repo     TEXT,
+              pure     INTEGER DEFAULT 0,
+              added_at INTEGER,
+              last_ok  INTEGER
+            );
+            """
+        )
+        self.conn.commit()
+        self._fernet = self._load_key(key_path)
+
+    @staticmethod
+    def _load_key(path: str):
+        if Fernet is None:
+            return None
+        p = Path(path)
+        if p.exists():
+            raw = p.read_bytes().strip()
+        else:
+            raw = Fernet.generate_key()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(raw)
+            try:
+                p.chmod(0o600)
+            except OSError:
+                pass
+        try:
+            return Fernet(raw)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _enc(self, text: str) -> str:
+        if not text or self._fernet is None:
+            return ""
+        return self._fernet.encrypt(text.encode()).decode()
+
+    def _dec(self, blob: str) -> str:
+        if not blob or self._fernet is None:
+            return ""
+        try:
+            return self._fernet.decrypt(blob.encode()).decode()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "host": row["host"], "port": int(row["port"] or 22),
+            "user": row["user"] or "", "password": self._dec(row["secret"] or ""),
+            "os": row["os"] or "", "arch": row["arch"] or "x64",
+            "dir": row["dir"] or "", "repo": row["repo"] or "",
+            "pure": bool(row["pure"]), "at": row["added_at"] or 0,
+            "last_ok": row["last_ok"] or 0,
+        }
+
+    def __getitem__(self, name: str) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM machines WHERE name=?", (name,)).fetchone()
+        if row is None:
+            raise KeyError(name)
+        return self._row(row)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            return default
+
+    def __contains__(self, name: object) -> bool:
+        row = self.conn.execute("SELECT 1 FROM machines WHERE name=?", (str(name),)).fetchone()
+        return row is not None
+
+    def __setitem__(self, name: str, m: dict[str, Any]) -> None:
+        self.conn.execute(
+            "INSERT INTO machines (name, host, port, user, secret, os, arch, dir, repo,"
+            " pure, added_at, last_ok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(name) DO UPDATE SET host=excluded.host, port=excluded.port,"
+            " user=excluded.user, secret=excluded.secret, os=excluded.os,"
+            " arch=excluded.arch, dir=excluded.dir, repo=excluded.repo,"
+            " pure=excluded.pure, added_at=excluded.added_at,"
+            " last_ok=MAX(machines.last_ok, excluded.last_ok)",
+            (name, str(m.get("host") or ""), int(m.get("port") or 22),
+             str(m.get("user") or ""), self._enc(str(m.get("password") or "")),
+             str(m.get("os") or ""), str(m.get("arch") or "x64"),
+             str(m.get("dir") or ""), str(m.get("repo") or ""),
+             1 if m.get("pure") else 0,
+             int(m.get("at") or time.time()), int(m.get("last_ok") or 0)),
+        )
+        self.conn.commit()
+
+    def pop(self, name: str, default: Any = None) -> Any:
+        cur = self.get(name)
+        if cur is None:
+            return default
+        self.conn.execute("DELETE FROM machines WHERE name=?", (name,))
+        self.conn.commit()
+        return cur
+
+    def touch(self, name: str) -> None:
+        """记下最近一次连上是几点——哪台连不上了，一眼能看出来。"""
+        self.conn.execute("UPDATE machines SET last_ok=? WHERE name=?",
+                          (int(time.time()), name))
+        self.conn.commit()
+
+    def keys(self) -> list[str]:
+        return [r["name"] for r in
+                self.conn.execute("SELECT name FROM machines ORDER BY name")]
+
+    def values(self) -> list[dict[str, Any]]:
+        return [self._row(r) for r in
+                self.conn.execute("SELECT * FROM machines ORDER BY name")]
+
+    def items(self) -> list[tuple[str, dict[str, Any]]]:
+        return [(r["name"], self._row(r)) for r in
+                self.conn.execute("SELECT * FROM machines ORDER BY name")]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM machines").fetchone()
+        return int(row["c"])
 
 
 class SshBox:
@@ -2263,11 +2409,12 @@ async def handle_machines(request: web.Request) -> web.Response:
             "pure": bool(m.get("pure")),
             "dir": m.get("dir") or "",
             "jit_dir": _jit_home_dir(m),
-            "seconds_left": max(0, int(SSH_MACHINE_TTL - (now - at))),
+            "added_at": int(at),
+            "last_ok": int(m.get("last_ok") or 0),
         })
     rows.sort(key=lambda x: str(x["name"]).lower())
     return web.json_response({
-        "machines": rows, "count": len(rows), "ttl": SSH_MACHINE_TTL,
+        "machines": rows, "count": len(rows),
     })
 
 
@@ -3126,7 +3273,12 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
 
 
 async def main_async(cfg: Config) -> None:
+    global SSH_MACHINES
     store = Store(cfg.db_path)
+    # 机器凭据跟事件放同一个库；密钥单独一个文件，别让人把库拷走就能读密码
+    db = Path(cfg.db_path)
+    SSH_MACHINES = MachineStore(str(db), str(db.with_name(db.name + ".machines.key")))
+    log.info("机器清单 %s 台（来自 %s）", len(SSH_MACHINES), cfg.db_path)
     bus = Bus()
     state = State()
     stop = asyncio.Event()

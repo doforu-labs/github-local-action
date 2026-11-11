@@ -8,6 +8,8 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+# 机器凭据的加密密钥：跟数据库分开存，它俩都不能进仓库
+*.machines.key
 
 # 本地配置（含 token，不能进仓库）
 config.toml

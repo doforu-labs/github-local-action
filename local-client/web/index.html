@@ -807,7 +807,7 @@
 
           <div class="form-row">
             <span class="hint">这儿列的是「能连的机器」，不分仓库。
-              机器不往 GitHub 注册任何东西也能接活；密码只在内存里留 30 分钟，过期重连一次就行。</span>
+              机器不往 GitHub 注册任何东西也能接活；凭据加密后存本地数据库，重启、过夜都还在。</span>
           </div>
         </div>
 
@@ -868,7 +868,7 @@
           <div class="form-actions">
             <button class="btn btn-primary" id="sshAdd">连上去</button>
             <div class="spacer"></div>
-            <span class="hint" id="sshHint">密码只在内存里留 30 分钟，不落盘、不写日志；进程重启也会丢</span>
+            <span class="hint" id="sshHint">密码加密后存本地数据库（密钥单独一个文件），重启、过夜都还在</span>
           </div>
 
           <div class="form-row" id="sshLogBox" hidden>
@@ -897,7 +897,7 @@
           <div class="form-row">
             <div class="label">现在能调的机器</div>
             <div id="jitMachines" class="jit-machines">
-              <span class="hint">还没连过机器——密码只在内存里留 30 分钟，重启就没了。</span>
+              <span class="hint">还没连过机器——上面「添加一台机器」连一台，凭据会落到本地数据库里。</span>
             </div>
           </div>
 
@@ -1697,11 +1697,14 @@ function renderRunners(d) {
 }
 
 /* 机器清单：不按仓库分，就是“我手上能连的那些” */
-function fmtLeft(sec) {
-  if (!sec || sec <= 0) return '凭据过期了';
-  const m = Math.floor(sec / 60);
-  if (m >= 60) return '凭据还有 ' + Math.floor(m / 60) + ' 小时';
-  return '凭据还有 ' + Math.max(1, m) + ' 分钟';
+function fmtWhen(ts) {
+  if (!ts) return '刚接入';
+  const d = new Date(ts * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const hm = hh + ':' + mm;
+  if (d.toDateString() === new Date().toDateString()) return '今天 ' + hm + ' 接入';
+  return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm + ' 接入';
 }
 
 function machineRowHtml(m) {
@@ -1711,9 +1714,7 @@ function machineRowHtml(m) {
   else if (m.repo) tags.push('常驻 ' + m.repo);
   const chips = tags.map((t) => '<span class="chip">' + esc(t) + '</span>').join('') +
     '<span class="chip">' + esc(m.user + '@' + m.host + ':' + m.port) + '</span>';
-  const left = (m.seconds_left > 0)
-    ? '<span class="Label Label--secondary">' + esc(fmtLeft(m.seconds_left)) + '</span>'
-    : '<span class="Label Label--attention">凭据过期了</span>';
+  const left = '<span class="Label Label--secondary">' + esc(fmtWhen(m.added_at || m.last_ok)) + '</span>';
   return '<div class="runner-row">' +
       '<span class="st st-ok" title="能连"><svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-check-circle"/></svg></span>' +
       '<div class="runner-main">' +
@@ -1852,7 +1853,7 @@ function watchSshJob(id, onDone) {
       return;
     }    sshPollTimer = null;
     $('sshAdd').disabled = false;
-    $('sshHint').textContent = '密码只在内存里过一遍：不落盘、不写日志，重启就没了';
+    $('sshHint').textContent = '密码加密后存本地数据库，重启、过夜都还在';
     if (d.status === 'done') {
       $('sshJobState').textContent = '完成';
       flashRunner('ok', d.title + ' —— 完成');
