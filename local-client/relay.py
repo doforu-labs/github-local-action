@@ -573,6 +573,97 @@ async def handle_stats(request: web.Request) -> web.Response:
 
 
 # ─────────────────────────────────────────────────────────────
+# GitHub Actions：从 workflow_run 事件拼运行列表
+# ─────────────────────────────────────────────────────────────
+
+# 一次运行会推 requested / in_progress / completed 多条，按 run id 去重只留最新
+def _iso_ms(text: Any) -> int:
+    if not text:
+        return 0
+    try:
+        from datetime import datetime
+
+        return int(datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, TypeError):
+        return 0
+
+
+def build_actions(store: Store, repo: str = "", limit: int = 60) -> dict[str, Any]:
+    """把库里的 workflow_run 事件还原成「一次运行一行」。
+
+    载荷里带 name / head_branch / status / conclusion / run_number / html_url /
+    head_commit，足够拼出 GitHub 那种列表；jobs 和步骤不在载荷里。
+    """
+    sql = "SELECT id, repo, action, at, payload FROM events WHERE event = 'workflow_run'"
+    params: list[Any] = []
+    if repo:
+        sql += " AND repo = ?"
+        params.append(repo)
+    sql += " ORDER BY id DESC LIMIT 4000"
+    rows = store.conn.execute(sql, params).fetchall()
+
+    runs: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except ValueError:
+            continue
+        wr = payload.get("workflow_run") or {}
+        run_id = wr.get("id")
+        if run_id is None or run_id in runs:
+            continue  # 已经拿到更新的状态了
+
+        started = _iso_ms(wr.get("run_started_at") or wr.get("created_at"))
+        updated = _iso_ms(wr.get("updated_at"))
+        commit = wr.get("head_commit") or {}
+        actor = wr.get("actor") or {}
+        prs = wr.get("pull_requests") or []
+        runs[run_id] = {
+            "id": run_id,
+            "repo": row["repo"] or "",
+            "name": wr.get("name") or "",
+            "branch": wr.get("head_branch") or "",
+            "trigger": wr.get("event") or "",
+            "path": wr.get("path") or "",
+            "status": wr.get("status") or "",
+            "conclusion": wr.get("conclusion") or "",
+            "run_number": wr.get("run_number"),
+            "run_attempt": wr.get("run_attempt") or 1,
+            "title": (wr.get("display_title") or commit.get("message") or "").split("\n")[0],
+            "sha": (wr.get("head_sha") or "")[:7],
+            "author": ((commit.get("author") or {}).get("name") or ""),
+            "actor": actor.get("login") or "",
+            "actor_avatar": actor.get("avatar_url") or "",
+            "pr": (prs[0] or {}).get("number") if prs else None,
+            "url": wr.get("html_url") or "",
+            "started_at": started,
+            "updated_at": updated,
+            "duration_s": max(0, int((updated - started) / 1000)) if started and updated else None,
+            "seen_at": row["at"],
+        }
+
+    ordered = sorted(runs.values(), key=lambda r: r["started_at"] or r["seen_at"] or 0, reverse=True)
+
+    # 侧边的仓库下拉：只列有运行记录的仓库
+    repos = [
+        {"repo": r["repo"], "runs": sum(1 for x in ordered if x["repo"] == r["repo"])}
+        for r in {x["repo"]: x for x in ordered}.values()
+    ]
+    repos.sort(key=lambda r: r["runs"], reverse=True)
+
+    return {"runs": ordered[:limit], "total": len(ordered), "repos": repos}
+
+
+async def handle_actions(request: web.Request) -> web.Response:
+    repo = request.query.get("repo", "")
+    try:
+        limit = min(200, max(1, int(request.query.get("limit", "60"))))
+    except ValueError:
+        limit = 60
+    return web.json_response(build_actions(request.app["store"], repo, limit))
+
+
+# ─────────────────────────────────────────────────────────────
 # 设置：读 / 改中继参数
 # ─────────────────────────────────────────────────────────────
 
@@ -791,6 +882,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/stream", handle_stream)
     app.router.add_get("/events", handle_events)
     app.router.add_get("/stats", handle_stats)
+    app.router.add_get("/actions", handle_actions)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)

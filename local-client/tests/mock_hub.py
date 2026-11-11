@@ -60,6 +60,55 @@ class Hub:
         self.events.append(ev)
         return ev
 
+    def make_workflow_event(self, run_id: int, status: str, conclusion: str | None) -> dict[str, Any]:
+        """一次工作流运行的状态推送（真实 webhook 会推好几条，按 run id 去重）。"""
+        from datetime import datetime, timezone
+
+        now = int(time.time() * 1000)
+        started = now - 60000
+        iso = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        n = self.next_id
+        wr = {
+            "id": run_id,
+            "name": "CI",
+            "head_branch": "main",
+            "head_sha": "abc1234def5678",
+            "path": ".github/workflows/ci.yml",
+            "display_title": "feat: mock 了一条工作流",
+            "run_number": 7,
+            "run_attempt": 1,
+            "event": "push",
+            "status": status,
+            "conclusion": conclusion,
+            "html_url": f"https://github.com/demo/repo/actions/runs/{run_id}",
+            "created_at": iso(started),
+            "updated_at": iso(now),
+            "run_started_at": iso(started),
+            "actor": {"login": "demo", "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4"},
+            "head_commit": {
+                "id": "abc1234def5678",
+                "message": "feat: mock 了一条工作流",
+                "author": {"name": "Demo"},
+            },
+            "pull_requests": [],
+        }
+        ev = {
+            "type": "event",
+            "id": n,
+            "event": "workflow_run",
+            "repo": "demo/repo",
+            "action": status,
+            "at": now,
+            "payload": {
+                "workflow_run": wr,
+                "repository": {"full_name": "demo/repo", "owner": {"login": "demo"}},
+                "sender": {"login": "demo"},
+            },
+        }
+        self.next_id += 1
+        self.events.append(ev)
+        return ev
+
     async def broadcast(self, ev: dict[str, Any]) -> None:
         for ws in list(self.sockets):
             try:
@@ -112,6 +161,15 @@ async def control_add(request: web.Request) -> web.Response:
     return web.json_response({"added": made, "total": hub.next_id - 1})
 
 
+async def control_workflow(request: web.Request) -> web.Response:
+    """推一对 workflow_run 事件：先 in_progress，再 completed/success。"""
+    run_id = int(request.query.get("run_id", "9001"))
+    for status, conclusion in (("in_progress", None), ("completed", "success")):
+        await hub.broadcast(hub.make_workflow_event(run_id, status, conclusion))
+        await asyncio.sleep(0.05)
+    return web.json_response({"run_id": run_id, "pushed": 2})
+
+
 async def control_drop(request: web.Request) -> web.Response:
     n = len(hub.sockets)
     for ws in list(hub.sockets):
@@ -149,6 +207,7 @@ async def main() -> None:
     app["token"] = args.token
     app.router.add_get("/ws", ws_handler)
     app.router.add_post("/control/add", control_add)
+    app.router.add_post("/control/workflow", control_workflow)
     app.router.add_post("/control/drop", control_drop)
     app.router.add_get("/control/state", control_state)
 

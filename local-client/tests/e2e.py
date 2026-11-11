@@ -222,6 +222,26 @@ reconnect_max = 2
             noop = await s.post(f"{BASE}/config", json={"heartbeat": 9})
             ck.check((await noop.json()).get("changed") == [], "重复保存时报告无改动", "")
 
+            # ── 6d. 动作页（从 workflow_run 事件拼运行列表） ──
+            empty = await (await s.get(f"{BASE}/actions")).json()
+            ck.check(empty.get("total") == 0, "没有 workflow_run 时动作页是空的", str(empty.get("total")))
+
+            await s.post(f"http://127.0.0.1:{MOCK_PORT}/control/workflow?run_id=9001")
+            await asyncio.sleep(0.9)
+            acts = await (await s.get(f"{BASE}/actions")).json()
+            ck.check(acts.get("total") == 1, "两次状态推送去重成一次运行", str(acts.get("total")))
+            if acts.get("runs"):
+                run = acts["runs"][0]
+                ck.check(run.get("status") == "completed" and run.get("conclusion") == "success",
+                         "动作取到最新状态", f'{run.get("status")}/{run.get("conclusion")}')
+                ck.check(run.get("branch") == "main" and run.get("sha") == "abc1234",
+                         "动作带出分支和短 sha", f'{run.get("branch")} {run.get("sha")}')
+                ck.check(bool(run.get("url")), "动作带出 GitHub 链接", str(run.get("url")))
+            ck.check([r["repo"] for r in acts.get("repos", [])] == ["demo/repo"],
+                     "动作按仓库归组", str(acts.get("repos")))
+            filtered = await (await s.get(f"{BASE}/actions?repo=demo/repo")).json()
+            ck.check(filtered.get("total") == 1, "动作支持按仓库过滤", str(filtered.get("total")))
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))

@@ -56,9 +56,18 @@ python3 relay.py
 curl -N http://<你的内网IP>:18091/stream      # SSE 事件流
 curl http://<你的内网IP>:18091/health         # 连接状态
 curl http://<你的内网IP>:18091/config         # 当前配置（令牌只回掩码）
+curl http://<你的内网IP>:18091/actions        # 工作流运行列表（?repo= 过滤）
 ```
 
 中继地址、令牌和几个心跳参数可以在面板的「设置」页直接改，保存后会写回 `config.toml`（改前留 `.bak`），连接参数改完立即重连；监听地址、端口、库路径要重启进程才生效，页面上标了「改这些要重启进程」。
+
+### 动作页能看到什么
+
+侧栏「动作」把 `workflow_run` 事件按 run id 去重、拼成运行列表：工作流名、分支、状态图标、触发方式、用时、提交和发起人，点开一行能看细节并跳到 GitHub。
+
+前提是 GitHub 的 webhook 里勾了 **Workflow runs** 事件，否则一条都不会来。
+
+做得到和做不到的界线很明确：webhook 载荷只有**运行级**信息。单个运行里的 job、每个步骤、日志都不在载荷里，要调 GitHub REST API（`/repos/{owner}/{repo}/actions/runs/{id}/jobs`、`/logs`）才拿得到——公开仓库可匿名读（60 次/小时），私有仓库要 PAT。
 
 ## 成本
 
