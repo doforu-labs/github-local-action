@@ -1101,6 +1101,22 @@ class SshBox:
                 pass
             self.client = None
 
+    def put(self, remote_path: str, data: bytes) -> None:
+        """SFTP 上传一个文件。
+
+        写 jit.cfg 要用它：那张票是几 KB 的 base64，塞命令行会被长度和引号
+        两件事一起坑（Windows 的 PowerShell 尤其明显），走 SFTP 就没有这问题。
+        Windows 的 OpenSSH 只认正斜杠，这里统一换掉。
+        """
+        if self.client is None:
+            raise RuntimeError("SSH 还没连上")
+        sftp = self.client.open_sftp()
+        try:
+            with sftp.file(remote_path.replace("\\", "/"), "wb") as fh:
+                fh.write(data)
+        finally:
+            sftp.close()
+
     def run(self, cmd: str, stdin_text: Optional[str] = None, timeout: float = 1800,
             quiet: bool = False) -> tuple[int, str]:
         """跑一条命令，边跑边把输出按行喂给 log。返回 (退出码, 全部输出)。
@@ -2381,7 +2397,7 @@ async def _jit_ticket(repo: str, name: str, labels: list[str]) -> tuple[str, str
 
 
 async def _jit_launch(machine: dict[str, Any], cfg: str) -> tuple[bool, str]:
-    """把票送过去、把进程拉起来。票走 stdin 写文件，不进命令行也不进日志。"""
+    """把票送过去、把进程拉起来。票只落到机器上的文件里，不进命令行也不进日志。"""
     box = SshBox(machine["host"], int(machine["port"]), machine["user"],
                  machine["password"], log.info)
     try:
@@ -2392,6 +2408,13 @@ async def _jit_launch(machine: dict[str, Any], cfg: str) -> tuple[bool, str]:
     directory = _jit_home_dir(machine)
     try:
         if _jit_os(machine) == "windows":
+            # 票先落到 jit.cfg。之前这里只有 Get-Content，从没 Write 过——
+            # PowerShell 读不到文件只报非终止错误、退出码还是 0，于是“接活成功”
+            # 了但机器上压根没起 runner。改成 SFTP 直接传，长度和引号都不操心。
+            try:
+                await asyncio.to_thread(box.put, f"{directory}\\jit.cfg", cfg.encode("utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                return False, f"票没传上去：{exc}"
             ps = (
                 f"$c=(Get-Content -Raw '{directory}\\jit.cfg').Trim(); "
                 "foreach($n in @('.runner','.credentials','.credentials_rsaparams')){ "
@@ -2406,7 +2429,13 @@ async def _jit_launch(machine: dict[str, Any], cfg: str) -> tuple[bool, str]:
             )
             rc, out = await asyncio.to_thread(
                 box.run, f'powershell -NoProfile -Command "{ps}"', None, 60)
-            return rc == 0, "" if rc == 0 else (out or "").strip()[:200]
+            text = (out or "").strip()
+            # PowerShell 报非终止错误时退出码仍然是 0（读不到 jit.cfg 那次就是
+            # 这样，日志里一堆 CategoryInfo 但 rc=0），所以还得看它到底吐没吐 pid。
+            has_pid = any(tok.isdigit() for tok in text.replace("\r", " ").split())
+            if rc != 0 or not has_pid:
+                return False, (text[:200] or "PowerShell 没给出进程号")
+            return True, ""
 
         # 票写进文件：base64 走 stdin 落地，省得处理引号和换行
         b64 = base64.b64encode(cfg.encode("utf-8")).decode("ascii")
