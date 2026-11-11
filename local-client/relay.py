@@ -1430,8 +1430,14 @@ def _win_uninstall_script(p: dict[str, Any]) -> str:
     return "; ".join([
         "$ErrorActionPreference='Continue'",
         f'$dir="{d}"',
-        "Get-Process -Name 'Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | "
-        "Stop-Process -Force",
+        # 只杀**这个目录下**的 runner。Windows 上一台机器可以有好几个目录各跑一个，
+        # 以前按进程名一刀切，卸一台会把别的目录里的 runner 一起杀掉（实测踩过：
+        # 卸 actions-runner-2 把 actions-runner 那份也杀没了，那台直接变 offline，
+        # 而 Windows 没有 svc.cmd，没人会把它拉起来）。
+        '$procs = Get-CimInstance Win32_Process '
+        '| Where-Object { ($_.Name -eq \'Runner.Listener.exe\' -or $_.Name -eq \'Runner.Worker.exe\') '
+        '-and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($dir, \'OrdinalIgnoreCase\') }',
+        '$procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
         "Start-Sleep -Seconds 2",
         # 只删确实长得像 runner 的目录，别的一律不碰
         "if (-not (Test-Path $dir)) { Write-Output 'dir already gone' } "

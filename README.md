@@ -157,6 +157,7 @@ jobs:
 - **不替用户删东西**：目录里有非 runner 内容就拒，只有「上次没配完的 runner 目录」才会被重置。
 - **下载有进度心跳**：217MB 的包在弱网下能下十几分钟，`curl` 在后台跑、每 10 秒报一次已下载大小，否则看起来像卡死。
 - **同机装第二个 runner 不用管目录**：`config.sh` 不允许一个目录配两次，所以第一个占了 `~/actions-runner` 之后，第二个自动落到 `~/actions-runner-2`，名字也会从 `主机名` 变成 `主机名-2`。实测同一台 Linux 上跑通了：自动定名 `lab-linux-1`、自动落到 `~/actions-runner-2`，10 秒上线，卸载后目录和注册都清干净。
+- **Windows 卸载只杀自己目录里的进程**：一台机器可以有好几个目录各跑一个 runner，而 Windows 没有 `svc.cmd`、服务管理器也不管它们。早先按进程名一刀切 `Stop-Process`，卸 `actions-runner-2` 会把 `actions-runner` 那份也杀掉、且没人重启，那台直接变 offline（实测踩到）。现在用 `Get-CimInstance Win32_Process` 按 `ExecutablePath` 前缀过滤。
 - **Windows 走 `-EncodedCommand`**：PowerShell 脚本转 UTF-16LE + base64 传过去，避开 cmd.exe 那层吃引号；参数本身用单引号包，`'` 靠写两遍转义。
 - **macOS 的 `svc.sh` 不能加 sudo**：它装的是用户自己的 LaunchAgent，脚本开头就看 EUID，root 一律 `Must not run with sudo` 退出。所以 macOS 那一支的 `svc.sh install/start` 和删目录都是裸跑。（这是真机上撞到的，Linux 那支必须 sudo，两边不一样。）
 - **Windows 上 `√` 会变 `�`**：`config.cmd` 输出 UTF-8，PowerShell 默认按控制台代码页解。脚本开头加 `[Console]::OutputEncoding` 与 `$OutputEncoding` 两句 UTF8 就好了（实测对子进程也生效）。
