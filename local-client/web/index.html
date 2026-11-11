@@ -1018,7 +1018,6 @@ const I18N_EN = {
   "GitHub 上没有任何运行": "No runs on GitHub",
   "在 GitHub 的 webhook 设置里勾上「Workflow runs」事件，下次跑 CI 就会出现在这里。": "Tick the \"Workflow runs\" event in the repo's webhook settings and the next CI run shows up here.",
   "查看历史运行记录，以及任务和步骤的执行结果。": "Past runs, with job and step results.",
-  "在 GitHub 上打开": "Open on GitHub",
   "工作流文件": "Workflow file",
   "运行号": "Run number",
   "触发事件": "Trigger",
@@ -1619,9 +1618,6 @@ function runRowHtml(r) {
     kv('提交', esc(r.sha || '—') + (r.author ? ' · ' + esc(r.author) : '')) +
     kv('开始', r.started_at ? esc(fmtFull(r.started_at)) : '—') +
     kv('用时', fmtDur(r.duration_s)) +
-    (r.url ? '<a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noreferrer">' +
-      '在 GitHub 上打开<svg class="octicon" width="16" height="16" aria-hidden="true">' +
-      '<use href="#i-external"/></svg></a>' : '') +
     jobsBox(r);
 
   return '<div class="run-wrap">' +
