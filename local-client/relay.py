@@ -101,6 +101,54 @@ class Config:
 # ─────────────────────────────────────────────────────────────
 
 
+class Memo:
+    """短命结果缓存 + 单飞：并发打同一个接口只算一次。
+
+    为什么需要：这些查询是 CPU 活（解几千条事件的 JSON），开线程并不能
+    并行——GIL 一次只给一个线程。实测在飞 ≥16 个 /stats 时，线程们互相争
+    GIL，事件循环照样拿不到，/health 尖峰从 5ms 又回到 500ms。
+    既然同样一个结果被重复算了很多次，那就只算一次。
+
+    失效不靠时间：键里带 store.version（每条新事件 +1），所以新事件一入
+    库下一次就是新的。TTL 只是兜底防内存长胖。
+    """
+
+    def __init__(self, ttl: float = 300.0, max_entries: int = 64):
+        self.ttl = ttl
+        self.max_entries = max_entries
+        self._data: dict[tuple[Any, ...], tuple[float, Any]] = {}
+        self._lock = threading.Lock()
+        self.hits = 0
+        self.misses = 0
+
+    def get_or_compute(self, key: tuple[Any, ...], fn: Callable[[], Any]) -> Any:
+        now = time.monotonic()
+        hit = self._data.get(key)
+        if hit and hit[0] > now:
+            self.hits += 1
+            return hit[1]
+        with self._lock:  # 同一时刻只让一个线程真的去算
+            hit = self._data.get(key)
+            if hit and hit[0] > now:
+                self.hits += 1
+                return hit[1]
+            self.misses += 1
+            value = fn()
+            if len(self._data) >= self.max_entries:
+                # 清掉过期的；还满就清空（这个缓存不是关键路径）
+                keep = {k: v for k, v in self._data.items() if v[0] > now}
+                self._data = keep if len(keep) < self.max_entries else {}
+            self._data[key] = (now + self.ttl, value)
+            return value
+
+
+MEMO = Memo()
+# 事件回放的缓存单独一份：一条带 200 个事件的结果可能几百 KB，
+# 条数得掐得比聚合结果更紧，不然库放不下。
+MEMO_EVENTS = Memo(ttl=30.0, max_entries=8)
+EVENTS_MEMO_MAX_LIMIT = 1000
+
+
 class Store:
     """SQLite 落地。id 用远端的自增 id 当主键，天然幂等。"""
 
@@ -108,6 +156,8 @@ class Store:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self._local = threading.local()
+        # 每插一条事件就 +1，用作聚合缓存的版本号
+        self.version = 0
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -217,6 +267,7 @@ class Store:
             return False
         if cur.rowcount:
             self.conn.commit()
+            self.version += 1
             if int(ev["id"]) > self._cursor:
                 self._cursor = int(ev["id"])
             return True
@@ -631,7 +682,9 @@ async def handle_events(request: web.Request) -> web.Response:
         limit = min(1000, max(1, int(request.query.get("limit", "200"))))
     except ValueError:
         limit = 200
-    events = await _offload(store.replay, after, limit)
+    events = await _offload(
+        MEMO_EVENTS.get_or_compute if limit <= EVENTS_MEMO_MAX_LIMIT else (lambda _k, fn: fn()),
+        ("events", store.version, after, limit), lambda: store.replay(after, limit))
     return web.json_response({"events": events, "after": after})
 
 
@@ -687,7 +740,10 @@ def build_stats(store: Store) -> dict[str, Any]:
 
 
 async def handle_stats(request: web.Request) -> web.Response:
-    return web.json_response(await _offload(build_stats, request.app["store"]))
+    store: Store = request.app["store"]
+    data = await _offload(
+        MEMO.get_or_compute, ("stats", store.version), lambda: build_stats(store))
+    return web.json_response(data)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -778,7 +834,10 @@ async def handle_actions(request: web.Request) -> web.Response:
         limit = min(200, max(1, int(request.query.get("limit", "60"))))
     except ValueError:
         limit = 60
-    data = await _offload(build_actions, request.app["store"], repo, limit)
+    store: Store = request.app["store"]
+    data = await _offload(
+        MEMO.get_or_compute, ("actions", store.version, repo, limit),
+        lambda: build_actions(store, repo, limit))
     return web.json_response(data)
 
 

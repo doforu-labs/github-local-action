@@ -155,8 +155,9 @@ def tool_health(args: dict[str, Any]) -> Any:
 
 
 def tool_stats(args: dict[str, Any]) -> Any:
-    data = http_json("/stats")
-    # 24 小时分桶对 agent 没什么用，摘掉省 token，需要时自己带 raw=true
+    data = dict(http_json("/stats"))
+    # 24 小时分桶对 agent 没什么用，摘掉省 token，需要时自己带 raw=true。
+    # 注意要 copy 再 pop：服务端的 /stats 是缓存对象，改了会串给下一个请求。
     if not _as_bool(args.get("raw")):
         data.pop("hourly", None)
     return data
