@@ -1765,6 +1765,69 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
     }, ""
 
 
+def _posix_env_lines() -> list[str]:
+    """把机器上已有的工具链写进 runner 目录的 .env。
+
+    为什么必须有这一步：runner 服务是 launchd / systemd 拉起来的，它继承到的 PATH
+    只有系统默认那几条（/usr/bin:/bin:/usr/sbin:/sbin），登录 shell 里
+    ~/.local/node24/bin、~/.nvm/... 这些一概不会出现在 job 里。
+    实测：三台 mac 都装了 node 在 /Users/dev/.local/node24/bin，job 里
+    `node -v` 却是 command not found，就是这条链断了。
+
+    官方机制（actions/runner src/Runner.Listener/Program.cs → LoadAndSetEnv）：
+    启动时把 <runner 根目录>/.env 逐行 KEY=VALUE 塞进进程环境，job 全部继承。
+    所以路径拼对了，重启服务即生效，不必给每台机器装一遍 node。
+
+    取的是「登录 shell 的 PATH」+「机器上真实存在的常见工具目录」：
+    前者覆盖 nvm / pyenv 这类写在 rc 文件里的配置，后者兜住 rc 没写但装了的。
+    """
+    return [
+        'echo "  把已有的工具链写进 .env（否则 job 里只有系统默认 PATH）"',
+        'LOGINPATH=$(bash -lc \'printf %s "$PATH"\' 2>/dev/null || true)',
+        '[ -n "$LOGINPATH" ] || LOGINPATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
+        'EXTRA=""',
+        'for c in "$HOME"/.local/node*/bin "$HOME"/.nvm/versions/node/*/bin "$HOME"/.volta/bin '
+        '"$HOME"/.cargo/bin "$HOME"/.pyenv/shims "$HOME"/.asdf/shims "$HOME"/.local/bin '
+        '"$HOME"/.deno/bin /opt/homebrew/bin /opt/homebrew/sbin /usr/local/bin /snap/bin; do',
+        '  if [ -d "$c" ]; then EXTRA="$EXTRA:$c"; fi',
+        'done',
+        '# 去重，保持先出现的优先（登录 PATH 排在前面）',
+        'ENVPATH=""',
+        'for s in $(printf %s "$LOGINPATH$EXTRA" | tr ":" " "); do',
+        '  case ":$ENVPATH:" in',
+        '    *":$s:"*) ;;',
+        '    *) ENVPATH="${ENVPATH:+$ENVPATH:}$s";;',
+        '  esac',
+        'done',
+        'touch "$DIR/.env"',
+        'grep -v "^PATH=" "$DIR/.env" > "$DIR/.env.tmp" || true',
+        'printf "PATH=%s\\n" "$ENVPATH" >> "$DIR/.env.tmp"',
+        'mv "$DIR/.env.tmp" "$DIR/.env"',
+        'echo "  PATH 已写入 $DIR/.env"',
+    ]
+
+
+def _win_env_parts() -> list[str]:
+    """Windows 同理，但 PATH 用分号，而且要合并机器级和用户级两份。
+
+    Windows 服务账户（LocalSystem / NetworkService）拿不到用户的 PATH，
+    所以 rustup / node 这类装在 %USERPROFILE% 下的工具在 job 里会找不到
+    （actions/runner#2540 就是这个问题）。合并去重后写进 .env，一次解决。
+    """
+    return [
+        "$mp=[Environment]::GetEnvironmentVariable('Path','Machine')",
+        "$up=[Environment]::GetEnvironmentVariable('Path','User')",
+        '$seen=@{}; $keep=@()',
+        "foreach ($x in ((@($mp,$up) -join ';') -split ';')) { "
+        "if ($x -and -not $seen.ContainsKey($x.ToLower())) { $seen[$x.ToLower()]=1; $keep+=$x } }",
+        "$envPath=Join-Path $dir '.env'",
+        "$old=@(); if (Test-Path $envPath) { "
+        "$old=@(Get-Content $envPath | Where-Object { $_ -notmatch '^PATH=' }) }",
+        "(@($old)+@('PATH=' + ($keep -join ';'))) | Set-Content -Path $envPath -Encoding ASCII",
+        "Write-Output ('[4/4] PATH -> .env: ' + ($keep -join ';'))",
+    ]
+
+
 def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: str,
                           wipe: bool = False) -> str:
     """拼一个 bash 脚本。sudo 密码从 stdin 第一行读（read SUDOPW），
@@ -1810,6 +1873,7 @@ def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: s
         f'./config.sh --url {shlex.quote("https://github.com/" + p["repo"])} '
         f'--token {shlex.quote(token)} --name {shlex.quote(p["name"])} '
         f'--labels {shlex.quote(labels)} --work _work --unattended',
+        *_posix_env_lines(),
         'echo "[4/4] 装成服务并启动"',
     ]
     if p["os"] == "macos":
@@ -1893,6 +1957,7 @@ def _win_install_script(p: dict[str, Any], token: str, archive: str, labels: str
         f'.\\config.cmd --url {_psq("https://github.com/" + p["repo"])} '
         f'--token {_psq(token)} --name {_psq(p["name"])} '
         f'--labels {_psq(labels)} --work _work --unattended',
+        *_win_env_parts(),
         'Write-Output \'[4/4] starting (runner has no svc.cmd on Windows)\'',
         '$p = Invoke-CimMethod -ClassName Win32_Process -MethodName Create '
         '-Arguments @{ CommandLine = \"`\"$dir\\run.cmd`\"\" }',
