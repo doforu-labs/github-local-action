@@ -162,6 +162,36 @@ jobs:
 
 这次验的是链路（推送能不能自动触发、job 是不是真落在自己机器上、结果能不能看到），**不是真构建**：macOS 那台只有 CLT 没有 Xcode，Windows 那台 3G 内存，Electron + NSIS 打包这两台现在都出不了包。
 
+### 运行中的日志能实时看到吗（实测）
+
+四条通道逐个试过，只有最后一条能拿到实时**文本**：
+
+| 通道 | 运行中能不能拿 | 实测 |
+|---|---|---|
+| `/actions/runs/{id}/logs`、`/actions/jobs/{id}/logs` | **不能**，404 | 40 秒的运行期间一直 404，job 结束后约 6 秒才变 200；`gh run view --log` 直接报 `is still in progress; logs will be available when it is complete` |
+| `runs/{id}/jobs` 里的步骤状态 | 能，但只有状态没有文字 | 4 秒轮询能看到「1/2 已完成，正在跑 = 每两秒一行」 |
+| 机器上 `_diag/Worker_*.log` | runner 自己的事件有，**step 的 stdout 没有** | 拿探针打了 20 行标记，grep 命中 0 行 |
+| 步骤自己 `tee` 到机器本地 | **能，延迟不到 2 秒** | 每 6 秒采样一次，每次都多出 3 行，与输出同步 |
+
+结论：想在中继页上看「正在滚的日志」，只有一条路——让 workflow 自己落一份到机器上，中继去 tail 那台机器。GitHub 侧的文本日志天生是跑完才有；网页端点开能看到实时文字，那是浏览器登录态走的内部接口，REST 不开放。
+
+步骤里这么写：
+
+```yaml
+- name: 一边输出一边落盘
+  run: |
+    for i in $(seq 1 30); do
+      echo "[$i/30] $(date '+%H:%M:%S') 正在跑"
+      sleep 2
+    done 2>&1 | stdbuf -oL tee -a /tmp/gha-live.log
+```
+
+三个注意点：
+
+- **必须 `stdbuf -oL`**。直接管道给 `tee`，stdout 会被块缓冲，几十秒才吐一次，看起来像没在跑。
+- 文件留在机器上**不自动清**，多台机器要各自 tail；写 `/tmp` 重启就没了，要长期留就写到 `~/actions-runner/_logs/`。
+- 步骤失败时 `tee` 照样写完了，但 `pipefail` 没开的话 `tee` 的退出码会盖掉失败——要保留失败语义就在 run 开头加 `set -o pipefail`。
+
 ### Windows 自建 runner 的三个坑（都是实测撞到的）
 
 1. **没有 `pwsh`**。`shell: pwsh` 直接报 `pwsh: command not found` —— PowerShell 7 是托管镜像预装的，自建机器上只有 Windows PowerShell 5.1，写成 `shell: powershell`。
