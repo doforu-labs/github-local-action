@@ -163,6 +163,80 @@ class Store:
         ).fetchall()
         return [{"type": r["k"], "count": int(r["n"])} for r in rows]
 
+    # ── 账号与仓库：直接从 payload 里取，不额外存字段 ──
+
+    def repos(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT repo,
+                   COUNT(*) AS events,
+                   MAX(at) AS last_at,
+                   CASE WHEN json_valid(payload)
+                        THEN json_extract(payload, '$.repository.owner.login') END AS owner
+              FROM events
+             WHERE repo IS NOT NULL AND repo <> ''
+             GROUP BY repo
+             ORDER BY last_at DESC
+            """
+        ).fetchall()
+        type_rows = self.conn.execute(
+            """
+            SELECT repo, event, COUNT(*) AS n
+              FROM events WHERE repo IS NOT NULL AND repo <> ''
+             GROUP BY repo, event
+            """
+        ).fetchall()
+        by_repo: dict[str, dict[str, int]] = {}
+        for t in type_rows:
+            by_repo.setdefault(t["repo"], {})[t["event"]] = int(t["n"])
+
+        return [
+            {
+                "repo": r["repo"],
+                "owner": r["owner"],
+                "events": int(r["events"]),
+                "last_at": int(r["last_at"] or 0),
+                "types": by_repo.get(r["repo"], {}),
+            }
+            for r in rows
+        ]
+
+    def account(self) -> dict[str, Any] | None:
+        """事件最多的那个仓库归属账号；头像用最近一条事件的 sender"""
+        row = self.conn.execute(
+            """
+            SELECT CASE WHEN json_valid(payload)
+                        THEN json_extract(payload, '$.repository.owner.login') END AS login,
+                   COUNT(*) AS n,
+                   MAX(at) AS last_at
+              FROM events
+             WHERE repo IS NOT NULL AND repo <> ''
+             GROUP BY login
+            HAVING login IS NOT NULL
+             ORDER BY n DESC, last_at DESC
+             LIMIT 1
+            """
+        ).fetchone()
+        if not row or not row["login"]:
+            return None
+
+        av = self.conn.execute(
+            """
+            SELECT CASE WHEN json_valid(payload)
+                        THEN json_extract(payload, '$.sender.avatar_url') END AS avatar
+              FROM events
+             WHERE repo IS NOT NULL AND repo <> ''
+             ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+
+        return {
+            "login": row["login"],
+            "avatar": av["avatar"] if av else None,
+            "events": int(row["n"]),
+            "last_at": int(row["last_at"] or 0),
+        }
+
     def replay(self, after: int, limit: int = 500) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT id, event, repo, action, at, payload FROM events "
@@ -456,11 +530,15 @@ def build_stats(store: Store) -> dict[str, Any]:
         hourly.append({"label": t.strftime("%H:00"), "count": counts.get(t.strftime("%Y-%m-%d %H"), 0)})
 
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    repos = store.repos()
     return {
         "today": store.count_since(int(midnight.timestamp() * 1000)),
         "total": store.count_all(),
         "hourly": hourly,
         "by_type": store.type_counts(),
+        "account": store.account(),
+        "repos": repos,
+        "repo_count": len(repos),
     }
 
 

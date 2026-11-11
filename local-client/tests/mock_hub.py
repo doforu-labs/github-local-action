@@ -34,14 +34,27 @@ class Hub:
         self.sockets: Set[web.WebSocketResponse] = set()
 
     def make_event(self) -> dict[str, Any]:
+        n = self.next_id
         ev = {
             "type": "event",
-            "id": self.next_id,
-            "event": "push" if self.next_id % 3 else "pull_request",
+            "id": n,
+            "event": "push" if n % 3 else "pull_request",
             "repo": "demo/repo",
-            "action": None if self.next_id % 3 else "opened",
+            "action": None if n % 3 else "opened",
             "at": int(time.time() * 1000),
-            "payload": {"seq": self.next_id, "ref": "refs/heads/main"},
+            "payload": {
+                "seq": n,
+                "ref": "refs/heads/main",
+                # 跟真 webhook 一致的结构：账号和仓库都从这里取
+                "repository": {
+                    "full_name": "demo/repo",
+                    "owner": {"login": "demo"},
+                },
+                "sender": {
+                    "login": "demo",
+                    "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+                },
+            },
         }
         self.next_id += 1
         self.events.append(ev)

@@ -38,6 +38,11 @@
     background: var(--panel-2); border: 1px solid var(--line);
     font-size: 12.5px; color: var(--dim);
   }
+  .pill.account { padding-left: 6px; color: var(--text); font-weight: 500; }
+  .avatar {
+    width: 20px; height: 20px; border-radius: 50%; display: block;
+    background: var(--line); object-fit: cover;
+  }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
   .dot.ok { background: var(--green); box-shadow: 0 0 0 0 rgba(46,204,113,.6); animation: pulse 2s infinite; }
   .dot.bad { background: var(--red); }
@@ -89,6 +94,20 @@
   .row .time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 12px; }
   .row .repo { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .act { color: var(--dim); font-size: 12px; white-space: nowrap; }
+  .repo-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 7px 12px;
+    align-items: baseline;
+    padding: 11px 16px;
+  }
+  .repo-row .repo-name { grid-column: 1; grid-row: 1; }
+  .repo-row .time { grid-column: 2; grid-row: 1; }
+  .repo-row .badges { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
+  .repo-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repo-name em { color: var(--dim); font-style: normal; font-weight: 400; }
+  .badges { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+  .badge.sm { padding: 1px 6px; font-size: 10.5px; }
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 5px;
     font-size: 11.5px; font-weight: 500; letter-spacing: .02em;
@@ -103,6 +122,10 @@
 <header>
   <h1>gh-relay <span>· 本地接收端</span></h1>
   <div class="pill"><span class="dot" id="dot"></span><span id="statusText">连接中…</span></div>
+  <div class="pill account" id="accountPill" hidden>
+    <img class="avatar" id="avatar" alt="" width="20" height="20" referrerpolicy="no-referrer">
+    <span id="accountName"></span>
+  </div>
   <div class="pill" id="gapPill" hidden></div>
 </header>
 
@@ -118,6 +141,11 @@
 <div class="panel">
   <div class="head"><span class="t">最近 24 小时</span><span class="s" id="chartSub">每小时事件数</span></div>
   <div class="chart" id="chart"></div>
+</div>
+
+<div class="panel">
+  <div class="head"><span class="t">仓库</span><span class="s" id="repoSub">—</span></div>
+  <div id="repos"><div class="empty">还没有收到任何仓库的事件</div></div>
 </div>
 
 <div class="panel">
@@ -148,6 +176,48 @@ const $ = (id) => document.getElementById(id);
 function fmtTime(ms) {
   const d = new Date(ms);
   return d.toLocaleTimeString('zh-CN', { hour12: false });
+}
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderAccount(acc) {
+  const pill = $('accountPill');
+  if (!acc || !acc.login) { pill.hidden = true; return; }
+  pill.hidden = false;
+  $('accountName').textContent = acc.login;
+  const img = $('avatar');
+  img.onerror = () => { img.style.display = 'none'; };
+  if (acc.avatar) { img.src = acc.avatar; img.style.display = 'block'; }
+  else { img.style.display = 'none'; }
+}
+
+function renderRepos(repos) {
+  const box = $('repos');
+  if (!repos.length) {
+    box.innerHTML = '<div class="empty">还没有收到任何仓库的事件</div>';
+    $('repoSub').textContent = '—';
+    return;
+  }
+  $('repoSub').textContent = repos.length + ' 个仓库';
+  box.innerHTML = repos.map((r) => {
+    const parts = String(r.repo).split('/');
+    const owner = parts.length > 1 ? parts[0] : '';
+    const name = parts.length > 1 ? parts.slice(1).join('/') : r.repo;
+    const badges = Object.entries(r.types || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([t, n]) => {
+        const c = COLORS[t] || '#8d99ae';
+        return '<span class="badge sm" style="background:' + c + '22;color:' + c + '">' +
+          esc(t) + ' ×' + n + '</span>';
+      }).join('');
+    return '<div class="row repo-row">' +
+      '<span class="repo-name">' + (owner ? '<em>' + esc(owner) + '/</em>' : '') + esc(name) + '</span>' +
+      '<span class="badges">' + badges + '</span>' +
+      '<span class="time">' + fmtTime(r.last_at) + '</span>' +
+      '</div>';
+  }).join('');
 }
 function rel(sec) {
   if (sec == null) return '—';
@@ -200,9 +270,16 @@ function connect() {
   const es = new EventSource('/stream');
   es.addEventListener('gh', (e) => {
     try { renderEvent(JSON.parse(e.data), true); } catch (_) {}
+    scheduleStats();
   });
   es.onopen = () => $('listSub').textContent = '实时接收中';
   es.onerror = () => $('listSub').textContent = 'SSE 断开，浏览器会自动重连…';
+}
+
+let statsTimer = 0;
+function scheduleStats() {
+  if (statsTimer) return;
+  statsTimer = setTimeout(() => { statsTimer = 0; pollStats(); }, 800);
 }
 
 async function pollHealth() {
@@ -243,6 +320,8 @@ async function pollStats() {
     const d = await (await fetch('/stats')).json();
     $('today').textContent = d.today ?? 0;
     $('total').textContent = d.total ?? 0;
+    renderAccount(d.account);
+    renderRepos(d.repos || []);
 
     const hours = d.hourly || [];
     const max = Math.max(1, ...hours.map((h) => h.count));

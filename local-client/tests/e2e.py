@@ -187,6 +187,16 @@ reconnect_max = 2
             ck.check(len(st.get("hourly", [])) == 24, "统计返回 24 个整点桶", str(len(st.get("hourly", []))))
             ck.check(st.get("total", 0) > 0, "统计有总事件数", str(st.get("total")))
 
+            # ── 6b. 账号与仓库列表 ──
+            acc = st.get("account") or {}
+            ck.check(acc.get("login") == "demo", "从 payload 识别出账号", str(acc))
+            ck.check(bool(acc.get("avatar")), "账号头像地址有值", str(acc.get("avatar")))
+            repos = st.get("repos") or []
+            ck.check(len(repos) == 1 and repos[0]["repo"] == "demo/repo", "仓库列表正确", str(repos))
+            if repos:
+                ck.check(repos[0]["events"] > 0 and repos[0]["owner"] == "demo", "仓库归属与计数正确", str(repos[0]))
+                ck.check(set(repos[0]["types"]) == {"push", "pull_request"}, "仓库按类型分组", str(repos[0]["types"]))
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))
