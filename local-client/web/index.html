@@ -279,7 +279,7 @@
 
   .runner-row {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto auto auto;
+    grid-template-columns: 16px minmax(0, 1fr) auto auto auto auto;
     gap: 4px 12px; align-items: center;
     padding: 10px 16px; border-top: 1px solid var(--border-muted);
   }
@@ -316,6 +316,34 @@
   .cmd-foot {
     display: flex; align-items: center; gap: 10px; margin-top: 10px;
   }
+
+  /* SSH 添加：四个格子在窄屏会自动折成两行 */
+  .ssh-grid {
+    display: grid; gap: 8px; margin-top: 8px;
+    grid-template-columns: minmax(0, 2fr) 80px minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .ssh-grid .input { width: 100%; }
+  @media (max-width: 760px) {
+    .ssh-grid { grid-template-columns: minmax(0, 1fr) 80px; }
+  }
+
+  .cmd-log {
+    max-height: 280px; white-space: pre; word-break: normal;
+    font-size: 12px; line-height: 1.6;
+  }
+  .cmd-log .lg-ok { color: var(--success); }
+  .cmd-log .lg-bad { color: var(--danger); }
+
+  .more {
+    margin-top: 14px; border-top: 1px solid var(--border-muted);
+    padding: 12px 16px 0;
+  }
+  .more > summary {
+    cursor: pointer; color: var(--fg-muted); font-size: 13px;
+    list-style: none; padding: 4px 0;
+  }
+  .more > summary::-webkit-details-marker { display: none; }
+  .more > summary:hover { color: var(--accent); }
 
   /* ---------- 动作（工作流运行） ---------- */
   .select {
@@ -732,18 +760,23 @@
           <div class="Box-header">
             添加一台机器
             <div class="spacer"></div>
-            <span class="hint">注册令牌 1 小时有效</span>
+            <span class="hint">走 SSH 直接装，不用你拷贝命令</span>
           </div>
 
           <div class="form-row">
-            <div class="label">系统</div>
-            <div class="hint">跟仓库无关，图方便选的；标签会自动拼成
-              <code>self-hosted,系统,X64</code>。</div>
-            <select class="select" id="runnerOs" aria-label="系统">
-              <option value="linux">Linux x64</option>
-              <option value="macos">macOS x64</option>
-              <option value="windows">Windows x64</option>
-            </select>
+            <div class="label">SSH 登录</div>
+            <div class="hint">连上之后会自己认系统（Linux / macOS / Windows）；
+              标签按实际系统拼成 <code>self-hosted,系统,X64</code>。</div>
+            <div class="ssh-grid">
+              <input class="input mono" id="sshHost" type="text" spellcheck="false"
+                     placeholder="10.0.0.5" aria-label="地址">
+              <input class="input mono" id="sshPort" type="text" inputmode="numeric"
+                     value="22" aria-label="端口">
+              <input class="input mono" id="sshUser" type="text" spellcheck="false"
+                     placeholder="dev" aria-label="用户名">
+              <input class="input mono" id="sshPass" type="password"
+                     placeholder="密码" aria-label="密码" autocomplete="new-password">
+            </div>
           </div>
 
           <div class="form-row">
@@ -752,21 +785,55 @@
             <input class="input mono" id="runnerName" type="text" spellcheck="false" placeholder="linux-22">
           </div>
 
-          <div class="form-actions">
-            <button class="btn btn-primary" id="runnerMake">生成注册令牌</button>
-            <div class="spacer"></div>
-            <span class="hint" id="runnerMakeHint"></span>
+          <div class="form-row">
+            <div class="label">装到哪个目录</div>
+            <div class="hint">一台机器的一个目录只能配一个 runner；同一台机器装第二个要换目录。
+              目录里已经有配好的 runner 时不会覆盖。</div>
+            <input class="input mono" id="sshDir" type="text" spellcheck="false"
+                   value="~/actions-runner" aria-label="目录">
           </div>
 
-          <div class="form-row" id="runnerCmdBox" hidden>
-            <div class="label">在被控机器上执行</div>
-            <div class="hint" id="runnerCmdHint"></div>
-            <pre class="cmd" id="runnerCmd"></pre>
-            <div class="cmd-foot">
-              <button class="btn" id="runnerCopy">复制命令</button>
-              <span class="hint">令牌只当文本拷走，这个页面不存。</span>
-            </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" id="sshAdd">连上去装</button>
+            <div class="spacer"></div>
+            <span class="hint" id="sshHint">密码只在内存里留 30 分钟，不落盘、不写日志；进程重启也会丢</span>
           </div>
+
+          <div class="form-row" id="sshLogBox" hidden>
+            <div class="label" id="sshJobTitle">安装日志</div>
+            <div class="hint" id="sshJobState"></div>
+            <pre class="cmd cmd-log" id="sshLog"></pre>
+          </div>
+
+          <details class="more">
+            <summary>不想把密码给这个页面？只生成命令，自己到机器上敲</summary>
+
+            <div class="form-row">
+              <div class="label">系统</div>
+              <div class="hint">这条路的标签得你自己选对。</div>
+              <select class="select" id="runnerOs" aria-label="系统">
+                <option value="linux">Linux x64</option>
+                <option value="macos">macOS x64</option>
+                <option value="windows">Windows x64</option>
+              </select>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn" id="runnerMake">生成注册令牌</button>
+              <div class="spacer"></div>
+              <span class="hint" id="runnerMakeHint"></span>
+            </div>
+
+            <div class="form-row" id="runnerCmdBox" hidden>
+              <div class="label">在被控机器上执行</div>
+              <div class="hint" id="runnerCmdHint"></div>
+              <pre class="cmd" id="runnerCmd"></pre>
+              <div class="cmd-foot">
+                <button class="btn" id="runnerCopy">复制命令</button>
+                <span class="hint">令牌只当文本拷走，这个页面不存。</span>
+              </div>
+            </div>
+          </details>
         </div>
 
         <div class="hint" style="margin-top:12px;line-height:1.7">
@@ -928,8 +995,8 @@ function fmtFull(ms) {
   return new Date(ms).toLocaleString('zh-CN', { hour12: false });
 }
 function esc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return String(s == null ? '' : s).replace(/[&<>"'`]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[c]));
 }
 // owner/name，owner 用弱化色
 function repoHtml(repo, withIcon) {
@@ -1401,11 +1468,15 @@ function runnerRowHtml(r) {
     ? '<span class="Label Label--attention">跑着活</span>'
     : '<span class="Label Label--secondary">空闲</span>';
   const meta = [r.os, r.arch].filter(Boolean).join(' · ');
-  // 系统和架构已经在名字后面写了一遘，标签里就不再重复，只显示自定义标签
+  // 系统和架构已经在名字后面写了一遍，标签里就不再重复，只显示自定义标签
   const skip = new Set([(r.os || '').toLowerCase(), (r.arch || '').toLowerCase()]);
   const chips = (r.labels || [])
     .filter((l) => !skip.has(String(l).toLowerCase()))
     .map((l) => '<span class="chip">' + esc(l) + '</span>').join('');
+  // 只有「这台机器的密码还在内存里」时才能连过去卸，否则只能删注册
+  const full = sshReadyNames.has(r.name)
+    ? '<button class="rm" data-uninstall="' + esc(r.name) + '" title="连机器上的服务一起停掉、删目录">卸载</button>'
+    : '';
   return '<div class="runner-row">' +
       icon +
       '<div class="runner-main">' +
@@ -1414,19 +1485,22 @@ function runnerRowHtml(r) {
         '</div>' +
         '<div class="runner-labels">' + chips + '</div>' +
       '</div>' +
-      status + busy +
-      '<button class="rm" data-rm="' + esc(String(r.id)) + '" title="从仓库里删掉这个注册">移除</button>' +
+      status + busy + full +
+      '<button class="rm" data-rm="' + esc(String(r.id)) + '" title="只删 GitHub 上的注册，机器上那份不管">移除注册</button>' +
     '</div>';
 }
+
+let sshReadyNames = new Set();   // 密码还在内存里的机器名，能“连机器一起卸”
 
 function renderRunners(d) {
   const box = $('runners');
   const cnt = $('runnerCount');
   if (!d) { cnt.textContent = '—'; return; }
   cnt.textContent = d.online + ' / ' + d.total + ' 在线';
+  sshReadyNames = new Set(d.ssh_ready || []);
   if (!d.runners.length) {
     box.innerHTML = '<div class="empty"><h3>这个仓库还没有 runner</h3>' +
-      '<p>用下面的「添加一台机器」生成令牌，在目标机器上粘一下就行。</p></div>';
+      '<p>用下面的「添加一台机器」连过去装一台。</p></div>';
     return;
   }
   box.innerHTML = d.runners.map(runnerRowHtml).join('');
@@ -1542,9 +1616,133 @@ function startRunnerPoll() {
   }, 8000);
 }
 
+/* ─────────── 通过 SSH 装 / 卸 ─────────── */
+let sshPollTimer = null;
+
+function sshShowLog(title) {
+  $('sshLogBox').hidden = false;
+  $('sshJobTitle').textContent = title;
+  $('sshJobState').textContent = '刚开始，等第一行…';
+  $('sshLog').textContent = '';
+}
+
+function watchSshJob(id, onDone) {
+  if (sshPollTimer) { clearTimeout(sshPollTimer); sshPollTimer = null; }
+  let misses = 0;
+  const tick = async () => {
+    let d;
+    try {
+      const r = await fetch('/runners/ssh/job/' + encodeURIComponent(id));
+      d = await r.json();
+      if (!r.ok) {
+        // 404 意思是「这个任务不在了」（服务重启过），再刷也没用，直接停
+        if (r.status === 404) {
+          sshPollTimer = null;
+          $('sshAdd').disabled = false;
+          $('sshJobState').textContent = '任务丢了（中继重启过？），日志看不到了';
+          return;
+        }
+        throw new Error(d.error || ('HTTP ' + r.status));
+      }
+      misses = 0;
+    } catch (e) {
+      misses += 1;
+      if (misses >= 3) {
+        sshPollTimer = null;
+        $('sshAdd').disabled = false;
+        $('sshJobState').textContent = '日志读不到了：' + e.message;
+        return;
+      }
+      $('sshJobState').textContent = '日志读不到了（' + misses + '/3）：' + e.message;
+      sshPollTimer = setTimeout(tick, 2500);
+      return;
+    }
+    const pre = $('sshLog');
+    pre.textContent = (d.lines || []).join('\n');
+    pre.scrollTop = pre.scrollHeight;
+    if (d.status === 'running') {
+      $('sshJobState').textContent = '跑着，日志实时往下走…';
+      sshPollTimer = setTimeout(tick, 800);
+      return;
+    }    sshPollTimer = null;
+    $('sshAdd').disabled = false;
+    $('sshHint').textContent = '密码只在内存里过一遍：不落盘、不写日志，重启就没了';
+    if (d.status === 'done') {
+      $('sshJobState').textContent = '完成';
+      flashRunner('ok', d.title + ' —— 完成');
+    } else {
+      $('sshJobState').textContent = '失败：' + (d.error || '没拿到原因');
+      flashRunner('error', '失败：' + (d.error || '没拿到原因'));
+    }
+    if (onDone) onDone(d.status === 'done', d);
+  };
+  tick();
+}
+
+async function sshAddMachine() {
+  const repo = ($('runnerRepo').value || '').trim();
+  const host = ($('sshHost').value || '').trim();
+  const port = ($('sshPort').value || '22').trim();
+  const user = ($('sshUser').value || '').trim();
+  const password = $('sshPass').value || '';
+  const name = ($('runnerName').value || '').trim();
+  if (!repo) { flashRunner('error', '先在上面填仓库'); $('runnerRepo').focus(); return; }
+  if (!host || !user || !password || !name) {
+    flashRunner('error', '地址、用户、密码、机器名都要填齐');
+    return;
+  }
+  $('sshAdd').disabled = true;
+  $('sshHint').textContent = '正在连 ' + host + '…';
+  sshShowLog('装 ' + name + ' @ ' + host + ':' + port);
+  try {
+    const r = await fetch('/runners/ssh/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo: repo, host: host, port: port, user: user, password: password, name: name,
+        dir: ($('sshDir').value || '').trim()
+      })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    // 密码只交出去这一次，留在输入框里没意义
+    $('sshPass').value = '';
+    $('sshHint').textContent = '装起来了，日志在下面走';
+    watchSshJob(d.job, () => { loadRunners(true); });
+  } catch (e) {
+    $('sshAdd').disabled = false;
+    $('sshHint').textContent = '';
+    $('sshJobState').textContent = '没开始：' + e.message;
+    flashRunner('error', e.message);
+  }
+}
+
+async function sshRemoveMachine(name, id) {
+  const repo = ($('runnerRepo').value || '').trim();
+  if (!repo) { flashRunner('error', '先填仓库'); return; }
+  sshShowLog('卸 ' + name);
+  try {
+    const r = await fetch('/runners/ssh/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo, name: name, id: id })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    watchSshJob(d.job, () => { loadRunners(true); });
+  } catch (e) {
+    $('sshJobState').textContent = '没开始：' + e.message;
+    flashRunner('error', e.message);
+  }
+}
+
 $('runnerRefresh').addEventListener('click', () => loadRunners(false));
 $('runnerRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRunners(false); });
 $('runnerMake').addEventListener('click', makeRunnerToken);
+$('sshAdd').addEventListener('click', sshAddMachine);
+$('sshPass').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !$('sshAdd').disabled) sshAddMachine();   // 别和点按钮叠成两次
+});
 $('runnerCopy').addEventListener('click', async () => {
   const text = $('runnerCmd').textContent || '';
   try {
@@ -1560,13 +1758,25 @@ $('runnerCopy').addEventListener('click', async () => {
   setTimeout(() => { $('runnerCopy').textContent = '复制命令'; }, 2500);
 });
 $('view-runners').addEventListener('click', async (e) => {
+  const un = e.target.closest('[data-uninstall]');
+  if (un) {
+    const name = un.dataset.uninstall;
+    if (!confirm('把 ' + name + ' 从机器上卸掉？\n\n' +
+                 '会：停服务 → 卸服务 → 删掉 runner 目录 → 删 GitHub 上的注册。\n' +
+                 '机器本身不动，其它东西不碰。')) return;
+    un.disabled = true;
+    await sshRemoveMachine(name, '');
+    return;
+  }
+
   const rm = e.target.closest('[data-rm]');
   if (!rm) return;
   const repo = ($('runnerRepo').value || '').trim();
   const id = rm.dataset.rm;
   if (!repo || !id) return;
-  if (!confirm('从 ' + repo + ' 里删掉这个 runner 注册？\n\n已经装好的机器上那份文件不会自动清；' +
-               '如果那台机器还在跑，它会以离线状态重连失败。')) return;
+  if (!confirm('只从 ' + repo + ' 里删掉这个注册？\n\n' +
+               '机器上那套文件和服务不会动，下次不用了得自己去清。\n' +
+               '想连机器一起清就用旁边的「卸载」。')) return;
   rm.disabled = true;
   try {
     const r = await fetch('/github/runners/remove', {
@@ -1576,7 +1786,7 @@ $('view-runners').addEventListener('click', async (e) => {
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    flashRunner('ok', '已从仓库里移除');
+    flashRunner('ok', '已从仓库里移除注册');
     loadRunners(true);
   } catch (err) {
     rm.disabled = false;

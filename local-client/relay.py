@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
 import re
+import shlex
 import signal
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Set
@@ -945,6 +948,8 @@ async def handle_github_runners(request: web.Request) -> web.Response:
         "online": sum(1 for r in rows if r["status"] == "online"),
         "busy": sum(1 for r in rows if r["busy"]),
         "runners": rows,
+        # 这些名字的密码还在内存里（30 分钟内），能一键「连机器一起卸」
+        "ssh_ready": sorted(_machines_live().keys()),
     })
 
 
@@ -1030,6 +1035,725 @@ async def handle_github_runner_remove(request: web.Request) -> web.Response:
     if rc != 0:
         return web.json_response({"error": (err or out).strip()[:300]}, status=502)
     return web.json_response({"ok": True, "removed": int(runner_id)})
+
+
+# ─────────────────────────────────────────────────────────────
+# 通过 SSH 装 / 卸 runner
+#
+# 页面上的「添加一台机器」不是生成一段命令让你自己敲，而是直接连过去装好。
+# 密码只在这一行活着：连着内存里的任务走完就丢，不落盘、不写日志、
+# 不进 SQLite，重启进程就什么也不剩。
+# ─────────────────────────────────────────────────────────────
+
+try:  # 没装也能跑，只是这一块返回 501
+    import paramiko
+except Exception:  # pragma: no cover
+    paramiko = None  # type: ignore
+
+SSH_TIMEOUT = 15          # 连接/认证超时（秒）
+SSH_JOB_LINES = 1200      # 单个任务最多留多少行日志
+SSH_JOBS: dict[str, dict[str, Any]] = {}
+# 机器名 -> 连接参数（含密码）。只在内存、**只在 30 分钟内有效**，
+# 过期就丢，用来支撑「连机器一起卸」的按钮。
+SSH_MACHINES: dict[str, dict[str, Any]] = {}
+SSH_MACHINE_TTL = 30 * 60
+
+
+def _machines_live() -> dict[str, dict[str, Any]]:
+    """还在有效期内的机器凭据。过期的顺手清掉。"""
+    now = time.time()
+    for name in [n for n, m in SSH_MACHINES.items()
+                 if now - float(m.get("at") or 0) > SSH_MACHINE_TTL]:
+        SSH_MACHINES.pop(name, None)
+    return SSH_MACHINES
+
+
+class SshBox:
+    """一台机器的 SSH 会话。paramiko 是阻塞的，所有调用都丢线程里跑。"""
+
+    def __init__(self, host: str, port: int, user: str, password: str, log_fn) -> None:
+        self.host, self.port, self.user = host, port, user
+        self.password = password
+        self.log = log_fn
+        self.client = None
+
+    def connect(self) -> None:
+        """连上去。连不上重试两次——内网机器偶尔会因为 sshd 的
+        MaxStartups 把并发会话卡掉一下，一次失败不代表机器有问题。"""
+        if paramiko is None:
+            raise RuntimeError("本机没装 paramiko")
+        last: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                c = paramiko.SSHClient()
+                # 内网机器，首次连接没法人工确认指纹；用完即弃的会话，接受新主机键。
+                c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                c.connect(
+                    self.host, port=self.port, username=self.user, password=self.password,
+                    timeout=SSH_TIMEOUT, banner_timeout=SSH_TIMEOUT, auth_timeout=SSH_TIMEOUT,
+                    look_for_keys=False, allow_agent=False,
+                )
+                self.client = c
+                return
+            except Exception as exc:            # noqa: BLE001
+                last = exc
+                if attempt < 2:
+                    self.log(f"连不上（{type(exc).__name__}），{attempt + 1} 秒后重试")
+                    time.sleep(attempt + 1)
+        raise last if last else RuntimeError("连不上")
+
+    def close(self) -> None:
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
+
+    def run(self, cmd: str, stdin_text: Optional[str] = None, timeout: float = 1800) -> tuple[int, str]:
+        """跑一条命令，边跑边把输出按行喂给 log。返回 (退出码, 全部输出)。"""
+        if self.client is None:
+            raise RuntimeError("SSH 还没连上")
+        chan = self.client.get_transport().open_session()
+        chan.set_combine_stderr(True)
+        chan.exec_command(cmd)
+        if stdin_text is not None:
+            chan.send(stdin_text.encode("utf-8") + b"\n")
+            chan.shutdown_write()
+
+        chunks: list[str] = []
+        buf = b""
+        deadline = time.time() + timeout
+        while True:
+            if chan.recv_ready():
+                data = chan.recv(65536)
+                if data:
+                    buf += data
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        text = line.decode("utf-8", "replace").replace("\r", "")
+                        chunks.append(text)
+                        if text.strip():
+                            self.log(text)
+                continue
+            if chan.exit_status_ready():
+                while chan.recv_ready():          # 把退出前剩下的读干
+                    buf += chan.recv(65536)
+                break
+            if time.time() > deadline:
+                chan.close()
+                raise TimeoutError(f"命令超过 {timeout:.0f}s 没跑完")
+            time.sleep(0.05)
+
+        if buf.strip():
+            text = buf.decode("utf-8", "replace").replace("\r", "")
+            chunks.append(text)
+            self.log(text)
+        return chan.recv_exit_status(), "\n".join(chunks)
+
+
+def _ssh_new_job(kind: str, title: str) -> dict[str, Any]:
+    jid = uuid.uuid4().hex[:10]
+    job = {
+        "id": jid, "kind": kind, "title": title, "status": "running",
+        "lines": [], "error": "", "result": None, "started_at": time.time(),
+    }
+    SSH_JOBS[jid] = job
+    # 只留最近 20 个**已结束**的任务。正在跑的绝不能淘汰——
+    # 淘汰后前端轮询会拿到 404，就再也看不到自己的日志了。
+    if len(SSH_JOBS) > 20:
+        finished = [j for j in SSH_JOBS.values() if j["status"] != "running"]
+        for old in sorted(finished, key=lambda j: j["started_at"])[: max(0, len(SSH_JOBS) - 20)]:
+            SSH_JOBS.pop(old["id"], None)
+    return job
+
+
+_PS_NOISE = ("#< CLIXML", "<Objs ", "Preparing modules for first use")
+
+
+def _ssh_log(job: dict[str, Any], text: str) -> None:
+    """一行一行记。Windows 的 PowerShell 会往 stderr 里塞 CLIXML 进度噪音，
+    对排障没用、还糊屏，这类行直接丢掉。"""
+    stamp = time.strftime("%H:%M:%S")
+    for line in str(text).splitlines() or [""]:
+        if any(token in line for token in _PS_NOISE):
+            continue
+        job["lines"].append(f"{stamp} {line}")
+    if len(job["lines"]) > SSH_JOB_LINES:
+        del job["lines"][: len(job["lines"]) - SSH_JOB_LINES]
+
+
+def _dir_reject_reason(path: str) -> str:
+    """目录能不能当 runner 目录用。空字符串表示可以用。
+
+    这是「删除」路径的第一道闸：卸载时会 rm -rf $DIR，写错一个字就是灾难。
+    所以宁严勿松：不许 ..、不许隐藏目录（.ssh / .cache / .config 全部挡掉）、
+    至少要有一层名字（~/x 可以，~ 不行），字符只允许字母数字和 ._-/。
+    """
+    if not path or len(path) > 200:
+        return "目录写得太长或者为空"
+    norm = path.replace("\\", "/")
+    parts = [x for x in norm.split("/") if x]
+    if not parts:
+        return "目录不能是根"
+    if ".." in parts:
+        return "目录里不许出现 .."
+    if len(parts) < 2:
+        return "目录要写成 ~/actions-runner 这样，至少带一层名字"
+    for seg in parts:
+        if seg.startswith("."):
+            return "不许把 runner 装到隐藏目录里（.ssh、.cache 这类）"
+        if not re.match(r"^[\w.+~-]+$", seg):
+            return "目录名里有不支持的字符"
+    if not (path.startswith("~") or path.startswith("/")):
+        return "目录要写成 ~/xxx 或 /path/xxx"
+    return ""
+
+
+def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """校验连接参数。返回 (参数, 错误)。"""
+    repo = str(body.get("repo") or "").strip()
+    host = str(body.get("host") or "").strip()
+    user = str(body.get("user") or "").strip()
+    password = str(body.get("password") or "")
+    name = str(body.get("name") or "").strip()
+    plat = str(body.get("os") or "linux").strip().lower()
+    directory = str(body.get("dir") or "").strip() or "~/actions-runner"
+    try:
+        port = int(body.get("port") or 22)
+    except (TypeError, ValueError):
+        return {}, "端口要写成数字"
+
+    if not _REPO_RE.match(repo):
+        return {}, "repo 要写成 owner/name"
+    if not host:
+        return {}, "要填机器地址"
+    if not user:
+        return {}, "要填 SSH 用户名"
+    if not password:
+        return {}, "这里要走密码登录，密码不能空（密钥登录暂时不支持）"
+    if not name:
+        return {}, "要填机器名"
+    if not re.match(r"^[A-Za-z0-9._-]{1,64}$", name):
+        return {}, "机器名只能用字母、数字、点、横线、下划线"
+    if plat not in _RUNNER_ARCHIVE:
+        return {}, "系统只支持 linux / macos / windows"
+    if not (1 <= port <= 65535):
+        return {}, "端口超出范围"
+    bad = _dir_reject_reason(directory)
+    if bad:
+        return {}, bad
+    return {
+        "repo": repo, "host": host, "port": port, "user": user,
+        "password": password, "name": name, "os": plat, "dir": directory,
+    }, ""
+
+
+def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: str,
+                          wipe: bool = False) -> str:
+    """拼一个 bash 脚本。sudo 密码从 stdin 第一行读（read SUDOPW），
+    不写在命令里——写进去的话 `ps` 一眼就能看到。
+
+    安装包先落进 ~/.cache/gh-relay：同一台机器装第二个 runner 不用再下 200MB，
+    弱网下这条能省十几分钟。
+    """
+    d = p["dir"].replace("~", "$HOME")
+    name = archive.rsplit("/", 1)[-1]           # actions-runner-linux-x64-2.338.2.tar.gz
+    lines = [
+        "set -e",
+        'read -r SUDOPW',
+        f'DIR="{d}"',
+        # 再查一道：探测和下载之间那段空档里可能被人插了一脚
+        'if [ -f "$DIR/.runner" ]; then echo "这目录已经是一个配好的 runner，不盖它"; exit 3; fi',
+        'CACHE="$HOME/.cache/gh-relay"',
+        'mkdir -p "$CACHE"',
+        f'TAR="$CACHE/{name}"',
+        'if tar -tzf "$TAR" >/dev/null 2>&1; then',
+        '  echo "[1/4] 用本地缓存的安装包（$(du -h "$TAR" | cut -f1)），不再下载"',
+        'else',
+        '  echo "[1/4] 下载 runner 约 200MB；慢的话每 10 秒报一次进度"',
+        '  rm -f "$TAR.part"',
+        f'  curl -fsSL -o "$TAR.part" {shlex.quote(archive)} &',
+        '  CPID=$!',
+        '  while kill -0 "$CPID" 2>/dev/null; do',
+        '    sleep 10',
+        '    kill -0 "$CPID" 2>/dev/null && echo "      已下载 $(du -h "$TAR.part" 2>/dev/null | cut -f1)"',
+        '  done',
+        '  if ! wait "$CPID"; then echo "下载失败：这台机器连 github.com 有问题"; exit 4; fi',
+        '  mv "$TAR.part" "$TAR"',
+        'fi',
+    ]
+    if wipe:
+        lines.append('echo "清掉上次没配完的残留"')
+        lines.append('if [ -f "$DIR/config.sh" ]; then rm -rf "$DIR"; else echo "残留目录里没有 config.sh，不敢删"; exit 5; fi')
+    lines += [
+        'mkdir -p "$DIR" && cd "$DIR"',
+        'echo "[2/4] 解包"',
+        'tar xzf "$TAR" -C "$DIR"',
+        'echo "[3/4] 注册"',
+        f'./config.sh --url {shlex.quote("https://github.com/" + p["repo"])} '
+        f'--token {shlex.quote(token)} --name {shlex.quote(p["name"])} '
+        f'--labels {shlex.quote(labels)} --work _work --unattended --replace',
+        'echo "[4/4] 装成服务并启动"',
+    ]
+    if p["os"] == "macos":
+        lines += [
+            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh install',
+            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh start',
+            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh status || true',
+        ]
+    else:
+        lines += [
+            f'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh install {shlex.quote(p["user"])}',
+            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh start',
+            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh status || true',
+        ]
+    lines.append('echo "[ok] runner 已装到 $(hostname)：$(uname -srm)"')
+    return "\n".join(lines)
+
+
+
+def _posix_uninstall_script(p: dict[str, Any]) -> str:
+    d = p["dir"].replace("~", "$HOME")
+    return "\n".join([
+        "set +e",
+        'read -r SUDOPW',
+        f'DIR="{d}"',
+        'if [ -d "$DIR" ]; then cd "$DIR"; fi',
+        'if [ -x ./svc.sh ]; then',
+        '  printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh stop',
+        '  printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh uninstall',
+        'fi',
+        # 只删确实长得像 runner 的目录
+        'if [ -f "$DIR/config.sh" ] || [ -f "$DIR/.runner" ] || [ -f "$DIR/runsvc.sh" ]; then',
+        '  echo "删掉 $DIR"',
+        '  printf "%s\\n" "$SUDOPW" | sudo -S rm -rf "$DIR"',
+        'else',
+        '  echo "$DIR 里看不到 runner 的痕迹，不动它"; exit 5',
+        'fi',
+        'echo "清理完成"',
+    ])
+
+
+def _psq(value: Any) -> str:
+    """PowerShell 单引号字符串。单引号在 PS 里靠写两遍转义。"""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _win_install_script(p: dict[str, Any], token: str, archive: str, labels: str,
+                        wipe: bool = False) -> str:
+    d = p["dir"].replace("~", "$env:USERPROFILE").replace("/", "\\")
+    zipname = archive.rsplit("/", 1)[-1]
+    # 走 Windows PowerShell 5.1：只用 ASCII，脚本里一点中文都不能有（会按代码页拆坏）
+    parts = [
+        "$ErrorActionPreference='Stop'",
+        f'$dir=\"{d}\"',
+        'if (Test-Path \"$dir\\.runner\") { Write-Output \'dir already configured\'; exit 3 }',
+        '$cache=\"$env:USERPROFILE\\.cache\\gh-relay\"',
+        'New-Item -ItemType Directory -Force $cache | Out-Null',
+        f'$zip=\"$cache\\{zipname}\"',
+    ]
+    if wipe:
+        parts.append('if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }')
+    parts += [
+        'if (Test-Path $zip) { Write-Output \'[1/4] using cached archive\' } '
+        f"else {{ Write-Output \'[1/4] downloading ~200MB\'; "
+        f"Invoke-WebRequest -Uri \'{archive}\' -OutFile (\"$zip.part\"); "
+        'Move-Item \"$zip.part\" $zip -Force }',
+        'New-Item -ItemType Directory -Force $dir | Out-Null',
+        'Write-Output \'[2/4] extracting\'',
+        'Expand-Archive $zip -DestinationPath $dir -Force',
+        'Set-Location $dir',
+        'Write-Output \'[3/4] configuring\'',
+        f'.\\config.cmd --url {_psq("https://github.com/" + p["repo"])} '
+        f'--token {_psq(token)} --name {_psq(p["name"])} '
+        f'--labels {_psq(labels)} --work _work --unattended --replace',
+        'Write-Output \'[4/4] starting (runner has no svc.cmd on Windows)\'',
+        '$p = Invoke-CimMethod -ClassName Win32_Process -MethodName Create '
+        '-Arguments @{ CommandLine = \"`\"$dir\\run.cmd`\"\" }',
+        'Write-Output \"[4/4] pid=$($p.ProcessId)\"',
+        '(Get-Process -Name \'Runner.Listener\' -ErrorAction SilentlyContinue | '
+        'Select-Object -First 1 | ForEach-Object { Write-Output \"listener pid=$($_.Id)\" })',
+    ]
+    return "; ".join(parts)
+
+
+
+def _ps(script: str) -> str:
+    """把 PowerShell 脚本包成一条命令行。
+
+    不走 -Command "..."：cmd.exe 那层会吃掉一层引号、$ 和反斜杠，
+    脚本一长就拼坏。转 base64 用 -EncodedCommand，远程解出来就是原文。
+    """
+    b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {b64}"
+
+
+def _dir_state(box: SshBox, p: dict[str, Any]) -> str:
+    """装之前先看目录里是什么：CONFIGURED / STALE / DIRTY / FRESH。
+
+    已经配好的 runner 绝对不能盖（config.sh 会拒，盖了也会把别人弄坏）；
+    目录里有别的东西也不能替用户删。
+    """
+    d = p["dir"]
+    if p["os"] == "windows":
+        wd = d.replace("~", "$env:USERPROFILE")
+        ps = (
+            '$d="' + wd + '"; '
+            r'if (Test-Path "$d\.runner") { "CONFIGURED" } '
+            r'elseif (Test-Path "$d\config.cmd") { "STALE" } '
+            'elseif ((Test-Path "$d") -and (Get-ChildItem "$d" -Force | Select-Object -First 1)) { "DIRTY" } '
+            'else { "FRESH" }'
+        )
+        cmd = _ps(ps)
+    else:
+        hd = d.replace("~", "$HOME")
+        cmd = ('DIR="' + hd + '"; '
+               'if [ -f "$DIR/.runner" ]; then echo CONFIGURED; '
+               'elif [ -f "$DIR/config.sh" ]; then echo STALE; '
+               'elif [ -d "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then echo DIRTY; '
+               'else echo FRESH; fi')
+    _, out = box.run(cmd, timeout=60)
+    # 只看最后几行、且要求整行等于标记：MOTD 里随便出现一个 FRESH
+    # 就会让判断走错路，而这条判断后面跟着的是 rm -rf。
+    tokens = ("CONFIGURED", "STALE", "DIRTY", "FRESH")
+    for line in reversed((out or "").splitlines()):
+        text = line.strip()
+        if text in tokens:
+            return text
+    return "UNKNOWN"
+
+
+def _win_uninstall_script(p: dict[str, Any]) -> str:
+    d = p["dir"].replace("~", "$env:USERPROFILE").replace("/", "\\")
+    return "; ".join([
+        "$ErrorActionPreference='Continue'",
+        f'$dir="{d}"',
+        "Get-Process -Name 'Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue | "
+        "Stop-Process -Force",
+        "Start-Sleep -Seconds 2",
+        # 只删确实长得像 runner 的目录，别的一律不碰
+        "if (-not (Test-Path $dir)) { Write-Output 'dir already gone' } "
+        "elseif ((Test-Path \"$dir\\config.cmd\") -or (Test-Path \"$dir\\.runner\")) "
+        "{ Remove-Item -Recurse -Force $dir; Write-Output 'removed' } "
+        "else { Write-Output 'not a runner dir, left untouched'; exit 5 }",
+    ])
+
+
+async def _gh_registration_token(repo: str) -> tuple[str, str]:
+    rc, out, err = await gh_run([
+        "api", "-X", "POST", f"repos/{repo}/actions/runners/registration-token",
+        "--jq", ".token",
+    ], attempts=1)
+    if rc != 0:
+        return "", (err or out).strip()[:300]
+    return (out or "").strip().strip('"'), ""
+
+
+async def _gh_runner_by_name(repo: str, name: str) -> Optional[dict[str, Any]]:
+    rc, out, err = await gh_run([
+        "api", f"repos/{repo}/actions/runners", "--jq",
+        '{runners: [.runners[] | {id, name, status, busy}]}',
+    ])
+    if rc != 0:
+        return None
+    try:
+        data = json.loads(out or "{}")
+    except ValueError:
+        return None
+    for r in data.get("runners") or []:
+        if r.get("name") == name:
+            return r
+    return None
+
+
+def _detect_os(box: SshBox, job: dict[str, Any]) -> str:
+    """先按 POSIX 试一句 uname；不行就当 Windows，再用 PowerShell 确认。
+
+    不要用 `||` 之类的语法去一次分辨——Windows PowerShell 5.1 里根本没有 `||`，
+    探针本身会报错，反而分不清。
+    """
+    try:
+        rc, out = box.run("uname -s", timeout=30)
+        name = (out or "").strip().splitlines()[-1].strip() if (out or "").strip() else ""
+        if rc == 0 and name in ("Linux", "Darwin"):
+            return "macos" if name == "Darwin" else "linux"
+    except Exception:
+        pass
+    rc, out = box.run('powershell -NoProfile -Command "$env:OS"', timeout=60)
+    if "Windows" in (out or ""):
+        return "windows"
+    return ""
+
+
+def _box_for(p: dict[str, Any], job: dict[str, Any]) -> SshBox:
+    return SshBox(p["host"], p["port"], p["user"], p["password"],
+                  lambda line: _ssh_log(job, line))
+
+
+def _ssh_precheck(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
+    """先探一眼再动 GitHub：连得上吗、什么系统、目标目录能不能用。
+
+    这一步放在申请注册令牌之前——目录不可用的时候**一个令牌都不该造**。
+    """
+    box = _box_for(p, job)
+    try:
+        _ssh_log(job, f"连接 {p['user']}@{p['host']}:{p['port']} …")
+        box.connect()
+        _ssh_log(job, "连上了，看看是什么系统")
+        found = _detect_os(box, job)
+        if not found:
+            return False, "认不出这台机器是什么系统（uname 和 PowerShell 都没应答）"
+        if found != p["os"]:
+            _ssh_log(job, f"你选的是 {p['os']}，实际上是 {found}，按实际的来")
+            p["os"] = found
+
+        state = _dir_state(box, p)
+        _ssh_log(job, f"目录 {p['dir']} 状态：{state}")
+        if state == "CONFIGURED":
+            return False, (f"{p['dir']} 里已经有一个配好的 runner，不覆盖它。"
+                           f"换一个目录（比如 ~/actions-runner-{p['name']}）再装；"
+                           "或者先去那台机器上卸掉旧的。")
+        if state == "DIRTY":
+            return False, (f"{p['dir']} 里已经有别的内容，不敢替你删。"
+                           "换一个空目录再装，或者先在机器上清掉。")
+        if state == "UNKNOWN":
+            _ssh_log(job, "目录状态没读出来，继续试（脚本里还有一道检查）")
+        p["_wipe"] = state == "STALE"
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        box.close()
+
+
+def _ssh_install_blocking(job: dict[str, Any], p: dict[str, Any], token: str) -> tuple[bool, str]:
+    """装。预检已经确认过系统和目录，这里只管下、解、注册、起服务。"""
+    box = _box_for(p, job)
+    try:
+        box.connect()
+        archive = ("https://github.com/actions/runner/releases/download/v{v}/"
+                   + _RUNNER_ARCHIVE[p["os"]]).format(v=RUNNER_VERSION)
+        labels = f"self-hosted,{_RUNNER_OS_LABEL[p['os']]},X64"
+        _ssh_log(job, f"runner v{RUNNER_VERSION} · 标签 {labels} · 目录 {p['dir']}")
+        wipe = bool(p.get("_wipe"))
+
+        if p["os"] == "windows":
+            cmd = _ps(_win_install_script(p, token, archive, labels, wipe=wipe))
+            rc, out = box.run(cmd, timeout=1800)
+        else:
+            script = _posix_install_script(p, token, archive, labels, wipe=wipe)
+            cmd = f"bash -c {shlex.quote(script)}"
+            # 密码走 stdin，不进命令行
+            rc, out = box.run(cmd, stdin_text=p["password"], timeout=1800)
+
+        if rc != 0:
+            tail = "\n".join((out or "").strip().splitlines()[-3:])
+            if rc == 3:
+                return False, "这目录已经是一个配好的 runner，没盖它（换个目录再装）"
+            if rc == 5:
+                return False, "目录内容对不上（没有 runner 的痕迹），为了安全没动它"
+            return False, f"安装命令退出码 {rc}：{tail[:300]}"
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        box.close()
+
+
+async def _run_ssh_add(job: dict[str, Any], p: dict[str, Any]) -> None:
+    try:
+        ok, err = await asyncio.to_thread(_ssh_precheck, job, p)
+        if not ok:
+            job.update(status="failed", error=err)
+            _ssh_log(job, f"失败：{err}")
+            return
+
+        auth = await github_auth()
+        if not auth["logged_in"]:
+            job.update(status="failed", error=auth["error"] or "gh 未登录")
+            _ssh_log(job, "gh 没登录，取不到注册令牌（机器这次什么都没改）")
+            return
+
+        _ssh_log(job, f"给 {p['repo']} 要一个注册令牌（1 小时有效）")
+        token, terr = await _gh_registration_token(p["repo"])
+        if not token:
+            job.update(status="failed", error=terr or "GitHub 没给令牌")
+            _ssh_log(job, "令牌拿不到，停了（机器这次什么都没改）")
+            return
+        _ssh_log(job, "令牌拿到了（这里不打印，只当参数传过去）")
+
+        ok, err = await asyncio.to_thread(_ssh_install_blocking, job, p, token)
+        if not ok:
+            job.update(status="failed", error=err)
+            _ssh_log(job, f"失败：{err}")
+            return
+
+        SSH_MACHINES[p["name"]] = {
+            "host": p["host"], "port": p["port"], "user": p["user"],
+            "password": p["password"], "os": p["os"], "dir": p["dir"],
+            "repo": p["repo"], "at": time.time(),
+        }
+        _ssh_log(job, "装完了，等 GitHub 把它标成在线（最多 90 秒）")
+        for _ in range(30):
+            found = await _gh_runner_by_name(p["repo"], p["name"])
+            if found and found.get("status") == "online":
+                job.update(status="done", result={
+                    "id": found.get("id"), "name": p["name"],
+                    "os": p["os"], "status": "online",
+                })
+                _ssh_log(job, f"在线了：{p['name']}（id {found.get('id')}）")
+                return
+            await asyncio.sleep(3)
+        job.update(status="done", result={"name": p["name"], "os": p["os"], "status": "pending"})
+        _ssh_log(job, "注册成功了，但 90 秒内没等到在线——去机器看 _diag/Worker_*.log")
+    except asyncio.CancelledError:
+        job.update(status="failed", error="任务被取消（服务可能在关闭）")
+        _ssh_log(job, "任务被取消")
+        raise
+    except Exception as exc:                       # noqa: BLE001
+        job.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:300])
+        _ssh_log(job, f"意外出错：{exc}")
+
+
+
+def _ssh_uninstall_blocking(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
+    box = _box_for(p, job)
+    try:
+        _ssh_log(job, f"连接 {p['user']}@{p['host']}:{p['port']} …")
+        box.connect()
+        found = _detect_os(box, job)
+        if found and found != p["os"]:
+            _ssh_log(job, f"你记的是 {p['os']}，实际是 {found}，按实际的来")
+            p["os"] = found
+        if p["os"] == "windows":
+            cmd = _ps(_win_uninstall_script(p))
+            rc, out = box.run(cmd, timeout=300)
+        else:
+            cmd = "bash -c " + shlex.quote(_posix_uninstall_script(p))
+            rc, out = box.run(cmd, stdin_text=p["password"], timeout=300)
+        if rc != 0:
+            return False, "清理命令退出码 %d：%s" % (rc, (out or "").strip()[-300:])
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        box.close()
+
+
+async def _run_ssh_remove(job: dict[str, Any], p: dict[str, Any], runner_id: Optional[int]) -> None:
+    try:
+        ok, err = await asyncio.to_thread(_ssh_uninstall_blocking, job, p)
+        if not ok:
+            job.update(status="failed", error=err)
+            _ssh_log(job, f"机器侧清理失败：{err}")
+            return
+        _ssh_log(job, "机器侧停服务、装服务、删目录都做完了")
+
+        rid = runner_id
+        if rid is None:
+            found = await _gh_runner_by_name(p["repo"], p["name"])
+            rid = int(found["id"]) if found and found.get("id") else None
+        if rid is None:
+            SSH_MACHINES.pop(p["name"], None)
+            job.update(status="done", result={"name": p["name"], "github": "already-gone"})
+            _ssh_log(job, "GitHub 上本来就没有这个注册了")
+            return
+
+        rc, out, err = await gh_run([
+            "api", "-X", "DELETE", f"repos/{p['repo']}/actions/runners/{rid}",
+        ], attempts=1)
+        if rc != 0:
+            job.update(status="failed", error=(err or out).strip()[:300])
+            _ssh_log(job, "机器清理了，但删 GitHub 注册失败：" + (err or out).strip()[:200])
+            return
+        SSH_MACHINES.pop(p["name"], None)
+        job.update(status="done", result={"name": p["name"], "github": "removed", "id": rid})
+        _ssh_log(job, f"完了：机器清理干净，GitHub 上的注册 {rid} 也删了")
+    except asyncio.CancelledError:
+        job.update(status="failed", error="任务被取消（服务可能在关闭）")
+        _ssh_log(job, "任务被取消")
+        raise
+    except Exception as exc:                       # noqa: BLE001
+        job.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:300])
+        _ssh_log(job, f"意外出错：{exc}")
+
+
+async def handle_runner_ssh_add(request: web.Request) -> web.Response:
+    """通过 SSH 把一台机器接进来：下载 runner、注册、装服务、等它上线。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    if paramiko is None:
+        return web.json_response(
+            {"error": "服务缺 paramiko，先在 venv 里 pip install paramiko"}, status=501)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    p, err = _ssh_params(body)
+    if err:
+        return web.json_response({"error": err}, status=400)
+    job = _ssh_new_job("add", f"装 {p['name']} @ {p['host']}:{p['port']}")
+    _ssh_log(job, f"目标仓库 {p['repo']}，机器名 {p['name']}")
+    job["_task"] = asyncio.create_task(_run_ssh_add(job, p))
+    return web.json_response({"job": job["id"], "name": p["name"]})
+
+
+async def handle_runner_ssh_remove(request: web.Request) -> web.Response:
+    """连上机器停服务删目录，再把 GitHub 上的注册删掉。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    if paramiko is None:
+        return web.json_response({"error": "服务缺 paramiko"}, status=501)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    repo = str(body.get("repo") or "").strip()
+    name = str(body.get("name") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+    if not name:
+        return web.json_response({"error": "要说是哪一台"}, status=400)
+
+    known = dict(_machines_live().get(name) or {})
+    merged = {**known, **{k: v for k, v in body.items() if v not in (None, "")}}
+    p, err = _ssh_params(merged)
+    if err:
+        return web.json_response(
+            {"error": err, "need_creds": "这台机器的连接参数不在内存里（重启过），要重填地址/用户/密码"},
+            status=400)
+    rid = body.get("id")
+    try:
+        rid_int = int(rid) if rid not in (None, "") else None
+    except (TypeError, ValueError):
+        rid_int = None
+    job = _ssh_new_job("remove", f"卸 {name} @ {p['host']}:{p['port']}")
+    _ssh_log(job, f"从 {p['repo']} 里卸掉 {name}")
+    job["_task"] = asyncio.create_task(_run_ssh_remove(job, p, rid_int))
+    return web.json_response({"job": job["id"]})
+
+
+async def handle_runner_ssh_job(request: web.Request) -> web.Response:
+    """看一个安装/卸载任务跑到哪了。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    jid = (request.match_info.get("job") or "").strip()
+    job = SSH_JOBS.get(jid)
+    if not job:
+        return web.json_response({"error": "没这个任务（可能重启过）"}, status=404)
+    return web.json_response({
+        "id": job["id"], "kind": job["kind"], "title": job["title"],
+        "status": job["status"], "error": job["error"], "result": job["result"],
+        "lines": job["lines"],
+    })
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1258,6 +1982,9 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/runners", handle_github_runners)
     app.router.add_post("/github/runner-token", handle_github_runner_token)
     app.router.add_post("/github/runners/remove", handle_github_runner_remove)
+    app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
+    app.router.add_post("/runners/ssh/remove", handle_runner_ssh_remove)
+    app.router.add_get("/runners/ssh/job/{job}", handle_runner_ssh_job)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)

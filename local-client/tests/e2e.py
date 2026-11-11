@@ -280,6 +280,42 @@ reconnect_max = 2
                     ck.check(all({"name", "status", "busy", "labels"} <= set(r) for r in rows),
                              "runner 行字段齐全", str(rows[:1])[:120])
 
+            # ── 6f-2. SSH 装 runner：只做校验与边界，不真去连机器 ──
+            # 这层测的是「不会因为参数不对就把密码发出去」和「重启后说清楚要重填」。
+            bad = await s.post(f"{BASE}/runners/ssh/add",
+                               json={"repo": "a/b", "host": "h", "user": "u", "name": "n"})
+            ck.check(bad.status == 400, "SSH 添加：密码为空时拒绝", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/ssh/add",
+                               json={"repo": "nope", "host": "h", "user": "u",
+                                     "password": "p", "name": "n"})
+            ck.check(bad.status == 400, "SSH 添加：repo 格式错就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/ssh/add",
+                               json={"repo": "a/b", "host": "h", "user": "u",
+                                     "password": "p", "name": "有中文"})
+            ck.check(bad.status == 400, "SSH 添加：机器名不允许奇怪字符", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/ssh/remove",
+                               json={"repo": "a/b", "name": "ghost"})
+            ck.check(bad.status == 400, "SSH 卸载：没有凭据时明确要重填", str(bad.status))
+            gone = await s.get(f"{BASE}/runners/ssh/job/__nope__")
+            ck.check(gone.status == 404, "SSH 任务：不存在的任务返回 404", str(gone.status))
+            # 目录校验是删除路径的第一道闸：这几个必须被挡（否则 rm -rf 会删错东西）
+            for dir_bad, label in (("~/.ssh", "隐藏目录"), ("~/..", "上跳"),
+                                   ("~", "只有家目录"), ("/", "根"),
+                                   ("~/a b", "带空格")):
+                r0 = await s.post(f"{BASE}/runners/ssh/add",
+                                  json={"repo": "a/b", "host": "h", "user": "u",
+                                        "password": "p", "name": "n", "dir": dir_bad})
+                ck.check(r0.status == 400, f"SSH 添加：目录栅栏挡 {label}",
+                         f"{dir_bad} -> {r0.status}")
+            r0 = await s.post(f"{BASE}/runners/ssh/add",
+                              json={"repo": "a/b", "host": "h", "user": "u",
+                                    "password": "p", "name": "n", "port": "abc"})
+            ck.check(r0.status == 400, "SSH 添加：端口非数字被拒", str(r0.status))
+            r0 = await s.post(f"{BASE}/runners/ssh/add",
+                              json={"repo": "a/b", "host": "h", "user": "u",
+                                    "password": "p", "name": "n", "os": "bsd"})
+            ck.check(r0.status == 400, "SSH 添加：未知系统被拒", str(r0.status))
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))
