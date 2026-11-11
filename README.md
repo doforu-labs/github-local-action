@@ -192,6 +192,22 @@ jobs:
 - 文件留在机器上**不自动清**，多台机器要各自 tail；写 `/tmp` 重启就没了，要长期留就写到 `~/actions-runner/_logs/`。
 - 步骤失败时 `tee` 照样写完了，但 `pipefail` 没开的话 `tee` 的退出码会盖掉失败——要保留失败语义就在 run 开头加 `set -o pipefail`。
 
+#### 这不是我们踩的坑，是 GitHub 的已知限制
+
+社区里有一个从 2023-11 挂到现在的大帖：`REST API .../attempts/{n}/logs returns 404 while workflow run is still running`，985 个赞、241 条回复、**官方一直没回答**（`isAnswered: false`），最后一次有人回帖是 2026-11-09。
+
+- https://github.com/orgs/community/discussions/75518 （主帖，满屏 +1）
+- https://github.com/orgs/community/discussions/154834 （2025-03：说以前能拿到半截日志，后来变成 404）
+- https://github.com/actions/runner/issues/891 （self-hosted runner 能不能把 job 日志丢到 stdout）
+
+帖子里的两个关键说法，我们都去验了：
+
+1. **网页端能看到实时文字，是因为它走了未公开接口**。原帖的说法是「它调用了一个未公开的 API 去拿单个 step 的日志，而且是实时的」。这解释了为什么数据明明在服务器上、REST 却不给——要用这条路只能挂浏览器登录态去抓那个请求，GitHub 改一次前端就可能失效，不建议做进产品。
+2. **runner 把 step 日志放在 `_diag/pages`，上传后删掉**（runner 维护者 TingluoHuang 的说法）。**实测在我们这台 runner 2.338.2 上不可用**：连续采了十几次样，`_diag/pages/*.log` 在整个步骤执行期间一直是 **0 字节**，job 结束后整个目录被清空。也就是说它是「步骤结束时才落盘、随即上传删除」，tail 不到中间过程。（另一个项目 hangar 的文档说这里是「live console output」，至少在我们这个版本对不上。）
+3. 官方有个 `ACTIONS_RUNNER_PRINT_LOG_TO_STDOUT=1`（runner v2.300+），但它打的是 **runner 自己的日志**，不是步骤输出，而且很啰嗦（成段 JSON 折行），不适合当业务日志看。
+4. `?tail_logs=true` 这个参数在帖子里被提到，我们实测：**不是实时流**。同一个 job，plain 一直 404，`tail_logs=true` 在结束前约 12 秒才开始返 200，只是个提前量。
+
+
 ### Windows 自建 runner 的三个坑（都是实测撞到的）
 
 1. **没有 `pwsh`**。`shell: pwsh` 直接报 `pwsh: command not found` —— PowerShell 7 是托管镜像预装的，自建机器上只有 Windows PowerShell 5.1，写成 `shell: powershell`。
