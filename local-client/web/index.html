@@ -324,6 +324,14 @@
     font-size: 13px; cursor: pointer; user-select: none;
   }
   .jit-mchk input { margin: 0; cursor: pointer; }
+  /* 只读展示：不用选，连上的机器本来就会全用上 */
+  .jit-mchk-ro {
+    cursor: default;
+    padding: 3px 9px;
+    border: 1px solid var(--border-muted);
+    border-radius: 999px;
+    background: var(--bgColor-muted, #f6f8fa);
+  }
   .runner-query .input { flex: 1; min-width: 0; max-width: 320px; }
 
   .runner-row {
@@ -854,25 +862,18 @@
             <div class="label">有活才起，跑完就撤</div>
             <div class="hint">收到 <code>workflow_job</code> 的排队事件时，才去机器上拉一个一次性 runner；
               一个 job 一个进程，跑完自己从 GitHub 消失。不用把机器常驻注册到某个仓库，也用不到组织。</div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-              <input class="input mono" id="jitParallel" type="text" inputmode="numeric"
-                     value="2" aria-label="并发上限" style="flex:0 0 88px"
-                     title="最多同时开几个 runner">
-              <span class="hint" style="align-self:center">同时最多开几个</span>
-            </div>
-            <div class="hint" style="margin-top:6px">接哪些仓库，去「仓库」页逐个打开就行。</div>
+            <div class="hint" style="margin-top:6px">不用配池子：能连上的机器全在里面，一台机器一次接一个 job。
+              想让哪个仓库的活被接走，去「仓库」页把那一行的开关打开就行。</div>
           </div>
 
           <div class="form-row">
-            <div class="label">参与的机器</div>
+            <div class="label">现在能调的机器</div>
             <div id="jitMachines" class="jit-machines">
-              <span class="hint">池子是空的——先用上面的「连上去装」把机器连一遍，
-                密码还在有效期内的会列在这儿。</span>
+              <span class="hint">还没连过机器——密码只在内存里留 30 分钟，重启就没了。</span>
             </div>
           </div>
 
           <div class="form-actions">
-            <button class="btn btn-primary" id="jitStart">保存池子</button>
             <button class="btn" id="jitStop">全部停下</button>
             <div class="spacer"></div>
             <span class="hint" id="jitHint">没在接活</span>
@@ -1844,9 +1845,8 @@ function renderJit(d) {
   const on = !!d.on;
   const running = d.running || [];
   const watching = d.watching || [];
-  $('jitState').textContent = on ? ('接 ' + watching.length + ' 个仓 · ' + running.length + '/' + d.max_parallel) : '关';
+  $('jitState').textContent = on ? ('接 ' + watching.length + ' 个仓 · ' + running.length + ' 个在跑') : '关';
   $('jitState').style.color = on ? 'var(--fgColor-success, #1a7f37)' : '';
-  if (d.max_parallel) $('jitParallel').value = d.max_parallel;
 
   // 仓库页的开关跟着一起更新
   jitSwitchState.clear();
@@ -1864,18 +1864,16 @@ function renderJit(d) {
   const avail = d.available || [];
   // available_info 带平台和架构，有就用它——arm 机器在列表里得看得出来
   const info = new Map((d.available_info || []).map(m => [m.name, m]));
-  const chosen = new Set((d.machines || []).map(m => m.name));
   const box = $('jitMachines');
   if (!avail.length) {
-    box.innerHTML = '<span class="hint">池子是空的——先用上面的「连上去装」把机器连一遍，' +
+    box.innerHTML = '<span class="hint">还没连过机器——用左边的「连上去装」把机器连一遍，' +
       '密码还在有效期内的会列在这儿。</span>';
   } else {
+    // 只是展示，不用选：能连上的机器本来就会全用上
     box.innerHTML = avail.map(n => {
       const m = info.get(n) || {};
       const tag = m.os ? ' <span class="hint">' + esc(m.os) + '/' + esc(m.arch || 'x64') + '</span>' : '';
-      return '<label class="jit-mchk"><input type="checkbox" value="' + esc(n) + '"' +
-        (chosen.size ? (chosen.has(n) ? ' checked' : '') : ' checked') + '> ' +
-        esc(n) + tag + '</label>';
+      return '<span class="jit-mchk jit-mchk-ro">' + esc(n) + tag + '</span>';
     }).join('');
   }
 
@@ -1904,7 +1902,7 @@ function renderJit(d) {
   $('jitBody').innerHTML = rows.join('');
   const watching2 = d.watching || [];
   $('jitHint').textContent = on
-    ? ('正在接 ' + watching2.length + ' 个仓库 · 池子 ' + avail.length + ' 台')
+    ? ('正在接 ' + watching2.length + ' 个仓库 · ' + avail.length + ' 台机器可用')
     : '没在接活';
 }
 
@@ -1916,29 +1914,6 @@ async function loadJit() {
     renderJit(d);
   } catch (e) { /* 静默：不抢别的错误显示 */ }
 }
-
-$('jitStart').addEventListener('click', async () => {
-  const machines = [...document.querySelectorAll('#jitMachines input[type=checkbox]:checked')]
-    .map(x => x.value);
-  const body = {
-    max_parallel: parseInt($('jitParallel').value, 10) || 2,
-    machines,
-  };
-  $('jitHint').textContent = '保存中…';
-  try {
-    const r = await fetch('/runners/jit/pool', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    renderJit(d);
-    $('jitHint').textContent = '池子已保存：' + (d.machines || []).length + ' 台'
-      + ((d.watching || []).length ? '，正在接 ' + d.watching.length + ' 个仓库' : '，但还没开仓库');
-  } catch (e) {
-    $('jitHint').textContent = '没存成：' + e.message;
-  }
-});
 
 $('jitStop').addEventListener('click', async () => {
   try {
@@ -1980,9 +1955,9 @@ $('repos').addEventListener('change', async (e) => {
     renderJit(d);
     if (on) repoPage = 1;   // 打开的会跳到最上面，翻回第一页才看得到
     renderRepos();
-    const pool = (d.machines || []).length;
+    const pool = (d.available || []).length;
     $('repoHint').textContent = on
-      ? (pool ? 'webhook 已配好，交给按需模式' : 'webhook 已配好，但池子里还没机器')
+      ? (pool ? 'webhook 已配好，交给按需模式' : 'webhook 已配好，但手上没机器能连')
       : '已关掉';
     setTimeout(() => { $('repoHint').textContent = ''; }, 5000);
   } catch (err) {

@@ -2417,6 +2417,18 @@ def _jit_can_run(machine: dict[str, Any], labels: list[str]) -> bool:
     return True
 
 
+def _jit_auto_pool() -> None:
+    """池子不用人配：手上还能连的机器全算，并发上限就是机器数。
+
+    每台机器同时只接一个 job（_jit_pick 按 busy 排掉了），所以 max_parallel
+    只要不低于机器数就不会成为瓶颈——它存在的意义只是挡住“莫名跑出一堆进程”。
+    每次收事件都重算一次，这样新连上的机器自动进来、密码过期的自动退出。
+    """
+    live = _machines_live()
+    JIT_POOL["machines"] = list(live.keys())
+    JIT_POOL["max_parallel"] = max(1, len(live))
+
+
 def _jit_pick(labels: list[str]) -> Optional[dict[str, Any]]:
     """挑一台闲着又能跑这个 job 的机器。"""
     busy = {str(r.get("machine")) for r in JIT_POOL["running"].values()}
@@ -2576,6 +2588,9 @@ async def _jit_on_event(item: dict[str, Any]) -> None:
         return
     if not JIT_POOL["repos"].get(str(item.get("repo") or "")):
         return
+
+    # 池子跟着手头的机器走：新装上的自动能用，密码过期的自动退出
+    _jit_auto_pool()
     if len(JIT_POOL["running"]) >= int(JIT_POOL["max_parallel"]):
         JIT_POOL["stats"]["skipped"] += 1
         return
@@ -2694,7 +2709,8 @@ async def handle_runner_jit_start(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"这些机器没凭据或已过期：{', '.join(missing[:3])}"}, status=400)
     try:
-        parallel = int(body.get("max_parallel") or 2)
+        # 不填就跟机器数一样：一台机器一次接一个 job，再大也没意义
+        parallel = int(body.get("max_parallel") or max(1, len(names)))
     except (TypeError, ValueError):
         return web.json_response({"error": "max_parallel 要是数字"}, status=400)
     if parallel < 1 or parallel > 16:
@@ -2744,6 +2760,8 @@ async def handle_runner_jit_repo(request: web.Request) -> web.Response:
 
     if on:
         JIT_POOL["repos"][repo] = True
+        # 池子不用人配：这一下就把当前能连的机器全算进来
+        _jit_auto_pool()
         log.info("JIT 接上：%s", repo)
     else:
         if repo in JIT_POOL["repos"]:
