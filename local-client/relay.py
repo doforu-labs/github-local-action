@@ -2907,6 +2907,50 @@ async def handle_config_save(request: web.Request) -> web.Response:
     )
 
 
+# 给 agent 的说明书：仓库根放一份 AGENT.md，服务自己也吐一份。
+# 网址比文件好使——把 agent 指向 http://127.0.0.1:18091/agent.md 就行。
+_AGENT_DOCS = (
+    Path(__file__).resolve().parent / "AGENT.md",
+    Path(__file__).resolve().parent.parent / "AGENT.md",
+)
+_agent_doc_cache: dict[str, Any] = {"mtime": 0.0, "text": ""}
+
+
+def agent_doc() -> str:
+    for path in _AGENT_DOCS:
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            continue
+        if _agent_doc_cache["mtime"] != stamp:
+            try:
+                _agent_doc_cache["text"] = path.read_text(encoding="utf-8")
+                _agent_doc_cache["mtime"] = stamp
+            except OSError:
+                continue
+        if _agent_doc_cache["text"]:
+            return _agent_doc_cache["text"]
+    return ""
+
+
+async def handle_agent_doc(request: web.Request) -> web.Response:
+    """`/agent.md` 和 `/llms.txt` 都指这里。"""
+    text = agent_doc()
+    if not text:
+        return web.Response(
+            text="AGENT.md 没找到；仓库根目录应该有一份。\n",
+            content_type="text/plain",
+            charset="utf-8",
+            status=404,
+        )
+    return web.Response(
+        text=text,
+        content_type="text/markdown",
+        charset="utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 async def handle_index(request: web.Request) -> web.Response:
     html = read_index()
     if html:
@@ -3470,6 +3514,8 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app["state"] = state
     app["cfg"] = cfg
     app.router.add_get("/", handle_index)
+    app.router.add_get("/agent.md", handle_agent_doc)
+    app.router.add_get("/llms.txt", handle_agent_doc)
     app.router.add_get("/stream", handle_stream)
     app.router.add_get("/events", handle_events)
     app.router.add_get("/stats", handle_stats)

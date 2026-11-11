@@ -14,6 +14,21 @@ GitHub ──webhook──▶ remote-worker ──WebSocket──▶ local-clien
 | `remote-worker/` | Cloudflare（免费计划） | 收 GitHub 的 webhook，存进 D1，通过 WebSocket 推给本地 |
 | `local-client/` | 你的机器 | 连远端 WebSocket，落本地 SQLite，用 SSE 推给局域网设备 |
 
+## 给 agent 用
+
+不想看文档、想让 AI 直接用这套东西？把这一行丢给它：
+
+```
+读 http://127.0.0.1:18091/agent.md，照里面的接口操作
+```
+
+那份 [`AGENT.md`](AGENT.md) 写了全部接口、参数、返回结构、权限边界（哪些只限本机）、
+五个能直接粘贴的 curl 配方，以及「哪些操作得先问人」。服务自己也把它吐在
+`/agent.md` 和 `/llms.txt` 上，所以 agent 只要拿到一个地址就能开工。
+
+**没有 MCP server**。要接 MCP 客户端就往薄壳里套：把 `/actions`、`/github/jobs`、
+`/github/joblog`、`/runners` 包成几个 tool，一个文件就够，不需要额外依赖。
+
 ## 为什么要两层
 
 GitHub 只能往公网地址发东西，你家/公司的网进不去。Cloudflare 替你当那个公网落脚点；你的机器主动往外连一条 WebSocket（NAT 不拦出站），远端有事件就顺着这条线推下来。整条链路没有轮询，延迟 1 秒级。

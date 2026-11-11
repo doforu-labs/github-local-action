@@ -187,6 +187,16 @@ reconnect_max = 2
             ck.check(len(st.get("hourly", [])) == 24, "统计返回 24 个整点桶", str(len(st.get("hourly", []))))
             ck.check(st.get("total", 0) > 0, "统计有总事件数", str(st.get("total")))
 
+            async with s.get(f"http://127.0.0.1:{RELAY_PORT}/agent.md") as r:
+                doc = await r.text()
+                dct = r.headers.get("Content-Type", "")
+            ck.check(r.status == 200 and "markdown" in dct, "agent.md 以 markdown 返回", dct)
+            ck.check("18091" in doc and "/github/joblog" in doc and "token_hint" in doc,
+                     "agent.md 带上了地址和关键接口", f"{len(doc)} 字节")
+            async with s.get(f"http://127.0.0.1:{RELAY_PORT}/llms.txt") as r2:
+                ck.check(r2.status == 200 and (await r2.text()) == doc, "/llms.txt 与 agent.md 同内容", "")
+            ck.check(TOKEN not in doc, "agent.md 不带令牌明文", "")
+
             # ── 6b. 账号与仓库列表 ──
             acc = st.get("account") or {}
             ck.check(acc.get("login") == "demo", "从 payload 识别出账号", str(acc))
