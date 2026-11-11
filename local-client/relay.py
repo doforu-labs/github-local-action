@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sqlite3
 import time
@@ -664,6 +665,187 @@ async def handle_actions(request: web.Request) -> web.Response:
 
 
 # ─────────────────────────────────────────────────────────────
+# 借本地 gh 的登录态：拉运行、拉 job 与步骤
+# ─────────────────────────────────────────────────────────────
+
+# 这些接口会拿用户的 GitHub 凭据去读私有仓库，所以只对本机开放
+GH_TIMEOUT = 25.0
+_REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+_gh_auth: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+def is_local(request: web.Request) -> bool:
+    return request.remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def _local_only(request: web.Request) -> Optional[web.Response]:
+    if is_local(request):
+        return None
+    return web.json_response(
+        {"error": "GitHub 凭据只对本机开放；局域网设备请用 webhook 那套数据"}, status=403
+    )
+
+
+async def gh_run(args: list[str]) -> tuple[int, str, str]:
+    """跑一条 gh 命令。用 asyncio 子进程，不堵事件循环。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return 127, "", "本机没装 gh"
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=GH_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return 124, "", f"gh 超过 {GH_TIMEOUT:.0f}s 没返回"
+    return proc.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
+async def github_auth(force: bool = False) -> dict[str, Any]:
+    """探测本机 gh 登录态。结果缓存 60 秒，不会每个请求都起进程。"""
+    now = time.time()
+    cached = _gh_auth.get("value")
+    if not force and cached and now - _gh_auth["at"] < 60:
+        return cached
+
+    state: dict[str, Any] = {
+        "installed": False, "logged_in": False, "version": "",
+        "account": "", "scopes": [], "error": "",
+    }
+    rc, out, err = await gh_run(["--version"])
+    if rc != 0:
+        state["error"] = (err or out).strip()[:200] or "本机没装 gh"
+        _gh_auth.update(at=now, value=state)
+        return state
+    state["installed"] = True
+    parts = out.split()
+    state["version"] = parts[2] if len(parts) > 2 else ""
+
+    rc, out, err = await gh_run(["api", "-i", "user"])
+    if rc != 0:
+        state["error"] = (err or out).strip()[:200] or "gh 未登录"
+        _gh_auth.update(at=now, value=state)
+        return state
+    state["logged_in"] = True
+    for line in out.splitlines():          # 响应头里的 scope 最准
+        if line.lower().startswith("x-oauth-scopes:"):
+            raw = line.split(":", 1)[1].strip()
+            state["scopes"] = [s.strip() for s in raw.split(",") if s.strip()]
+            break
+    # 响应体就是 user 的 JSON，顺手把登录名拿出来，省一次网络往返
+    body = out.split("\r\n\r\n", 1)[-1] if "\r\n\r\n" in out else out.split("\n\n", 1)[-1]
+    try:
+        state["account"] = (json.loads(body) or {}).get("login") or ""
+    except (ValueError, AttributeError):
+        pass
+
+    _gh_auth.update(at=now, value=state)
+    return state
+
+
+def _api_row(repo: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """把 gh run list 的字段拼成和 build_actions 一样的行。"""
+    started = _iso_ms(raw.get("startedAt") or raw.get("createdAt"))
+    updated = _iso_ms(raw.get("updatedAt"))
+    return {
+        "id": raw.get("databaseId"),
+        "repo": repo,
+        "name": raw.get("workflowName") or raw.get("name") or "",
+        "branch": raw.get("headBranch") or "",
+        "trigger": raw.get("event") or "",
+        "path": "",
+        "status": raw.get("status") or "",
+        "conclusion": raw.get("conclusion") or "",
+        "run_number": raw.get("number"),
+        "run_attempt": raw.get("attempt") or 1,
+        "title": raw.get("displayTitle") or "",
+        "sha": (raw.get("headSha") or "")[:7],
+        "author": "",
+        "actor": "",
+        "actor_avatar": "",
+        "pr": None,
+        "url": raw.get("url") or "",
+        "started_at": started,
+        "updated_at": updated,
+        "duration_s": max(0, int((updated - started) / 1000)) if started and updated else None,
+        "seen_at": started,
+        "origin": "api",
+    }
+
+
+async def handle_github_auth(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    return web.json_response(await github_auth(force=request.query.get("refresh") == "1"))
+
+
+async def handle_github_runs(request: web.Request) -> web.Response:
+    """直接向 GitHub 要某个仓库的最近运行（需要 gh 已登录）。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    repo = (request.query.get("repo") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+    auth = await github_auth()
+    if not auth["logged_in"]:
+        return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
+    try:
+        limit = min(50, max(1, int(request.query.get("limit", "20"))))
+    except ValueError:
+        limit = 20
+
+    rc, out, err = await gh_run([
+        "run", "list", "-R", repo, "-L", str(limit), "--json",
+        "databaseId,number,name,workflowName,displayTitle,status,conclusion,"
+        "headBranch,headSha,event,startedAt,createdAt,updatedAt,attempt,url",
+    ])
+    if rc != 0:
+        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
+    try:
+        rows = json.loads(out or "[]")
+    except ValueError:
+        return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
+    runs = [_api_row(repo, r) for r in rows]
+    runs.sort(key=lambda r: r["started_at"] or 0, reverse=True)
+    return web.json_response({"repo": repo, "runs": runs, "total": len(runs)})
+
+
+async def handle_github_jobs(request: web.Request) -> web.Response:
+    """一次运行里的 job 与每一步状态——这个只有 API 有，webhook 不给。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    repo = (request.query.get("repo") or "").strip()
+    run_id = (request.query.get("run") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
+    if not run_id.isdigit():
+        return web.json_response({"error": "run 要是数字 id"}, status=400)
+    auth = await github_auth()
+    if not auth["logged_in"]:
+        return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
+
+    rc, out, err = await gh_run([
+        "api", f"repos/{repo}/actions/runs/{run_id}/jobs", "--jq",
+        "{total: .total_count, jobs: [.jobs[] | {id, name, status, conclusion, "
+        "started_at, completed_at, html_url, "
+        "steps: [.steps[] | {number, name, status, conclusion}]}]}",
+    ])
+    if rc != 0:
+        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
+    try:
+        data = json.loads(out or "{}")
+    except ValueError:
+        return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
+    return web.json_response(data)
+
+
+# ─────────────────────────────────────────────────────────────
 # 设置：读 / 改中继参数
 # ─────────────────────────────────────────────────────────────
 
@@ -883,6 +1065,9 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/events", handle_events)
     app.router.add_get("/stats", handle_stats)
     app.router.add_get("/actions", handle_actions)
+    app.router.add_get("/github/auth", handle_github_auth)
+    app.router.add_get("/github/runs", handle_github_runs)
+    app.router.add_get("/github/jobs", handle_github_jobs)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)

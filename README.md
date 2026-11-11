@@ -67,7 +67,23 @@ curl http://<你的内网IP>:18091/actions        # 工作流运行列表（?rep
 
 前提是 GitHub 的 webhook 里勾了 **Workflow runs** 事件，否则一条都不会来。
 
-做得到和做不到的界线很明确：webhook 载荷只有**运行级**信息。单个运行里的 job、每个步骤、日志都不在载荷里，要调 GitHub REST API（`/repos/{owner}/{repo}/actions/runs/{id}/jobs`、`/logs`）才拿得到——公开仓库可匿名读（60 次/小时），私有仓库要 PAT。
+做得到和做不到的界线很明确：webhook 载荷只有**运行级**信息。单个运行里的 job、每个步骤、日志都不在载荷里，要调 GitHub REST API（`/repos/{owner}/{repo}/actions/runs/{id}/jobs`、`/logs`）才拿得到。
+
+### 用本机的 gh 补齐 job 与步骤
+
+不用另建 PAT：只要本机装了 `gh` 且已 `gh auth login`，接收端会直接复用它的登录态。
+
+```bash
+gh auth status        # 确认已登录，scope 里要有 repo（私有仓库）
+```
+
+- 设置页有一张「GitHub 凭据」卡片，显示 gh 版本、账号、令牌 scope，可重新检测
+- 动作页底部的「直接问 GitHub」可以直接拉任意仓库的历史运行（不看 webhook）
+- 点开任意一次运行，「加载 job 与步骤」显示每个 job 和每一步的状态，和 GitHub 页面上看到的一致
+
+安全边界：令牌由 gh 自己（keyring）保管，接收端不读不写不落盘；`/github/*` 这几个接口**只接受本机请求**，局域网设备访问会拿到 403——没登录 GitHub 的设备不应该能通过这台机器读你的私有仓库。
+
+日志仍然要单独下：`/logs` 返回的是 zip，体积大、不适合放进这个中转，暂时没做。
 
 ## 成本
 

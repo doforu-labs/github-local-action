@@ -330,6 +330,20 @@
   }
   .run-detail .btn { margin-top: 4px; justify-self: start; display: inline-flex; gap: 6px; align-items: center; }
 
+  /* job 与步骤（只有走 GitHub API 才拿得到） */
+  .jobs { grid-column: 1 / -1; margin-top: 6px; display: grid; gap: 6px; }
+  .job {
+    border: 1px solid var(--border-muted); border-radius: var(--radius);
+    background: #fff; padding: 8px 10px;
+  }
+  .job-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+  .steps { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 1px; }
+  .steps li { font-size: 12px; color: var(--fg-muted); }
+  .steps li.ok { color: var(--fg); }
+  .steps li.bad { color: var(--danger); }
+  .steps li.skip { font-style: italic; }
+  .btn-sm { height: 26px; padding: 2px 10px; font-size: 12px; }
+
   .note {
     display: flex; align-items: flex-start; gap: 8px;
     padding: 12px 16px; margin-top: -8px; margin-bottom: 24px;
@@ -597,6 +611,26 @@
             公开仓库可以匿名读（每小时 60 次），私有仓库需要 PAT。
           </div>
         </div>
+
+        <div class="Box" id="ghBox" hidden>
+          <div class="Box-header">
+            直接问 GitHub
+            <div class="spacer"></div>
+            <span class="hint" id="ghWho">本机 gh</span>
+          </div>
+          <div class="form-row">
+            <div class="hint" style="margin-bottom:8px">
+              不走 webhook，直接用本机的 gh 登录态去读——能看到历史运行，点开一行的
+              「加载 job 与步骤」也只有这条路能拿到。
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input class="input mono" id="ghRepo" placeholder="owner/name" style="max-width:280px">
+              <button class="btn" id="ghPull">拉取最近运行</button>
+              <span class="hint" id="ghHint"></span>
+            </div>
+          </div>
+          <div id="ghRuns"></div>
+        </div>
       </section>
 
       <!-- 仓库 -->
@@ -696,6 +730,17 @@
             <div class="label">配置文件</div>
             <div class="hint">保存时写回这个文件，改动前会留一份 <code>.bak</code>。</div>
             <input class="input mono" id="cfg-path" type="text" readonly>
+          </div>
+        </div>
+
+        <div class="Box">
+          <div class="Box-header">
+            GitHub 凭据
+            <div class="spacer"></div>
+            <span class="hint">复用本机 gh 的登录态</span>
+          </div>
+          <div class="form-row" id="ghAuthBody">
+            <div class="hint">正在检测…</div>
           </div>
         </div>
       </section>
@@ -979,6 +1024,103 @@ function relTime(ms) {
   return Math.floor(s / 86400) + ' 天前';
 }
 
+// 一条运行的 HTML：webhook 和 GitHub API 两种来源共用
+function runRowHtml(r) {
+  const [icon, cls, label] = statusOf(r);
+  const branch = r.branch
+    ? '<span class="Label Label--secondary" style="height:18px;font-size:11px">' +
+      '<svg class="octicon" width="12" height="12" aria-hidden="true"><use href="#i-branch"/></svg>' +
+      esc(r.branch) + '</span>'
+    : '';
+  const apiTag = r.origin === 'api'
+    ? '<span class="Label Label--secondary" style="height:18px;font-size:11px">API</span>'
+    : '';
+  const sub = [
+    // displayTitle 有时就是工作流名，重复了就不再显一次
+    (r.title && r.title !== r.name) ? '<span class="t">' + esc(r.title) + '</span>' : '',
+    r.sha ? '<span class="sha">' + esc(r.sha) + '</span>' : '',
+    r.actor ? '<span>' + esc(r.actor) + '</span>' : ''
+  ].filter(Boolean).join('<span>·</span>');
+
+  const kv = (k, v) => '<div class="kv"><span class="k">' + k +
+    '</span><span class="v">' + v + '</span></div>';
+  const detail =
+    (r.path ? kv('工作流文件', esc(r.path)) : '') +
+    kv('运行号', '#' + (r.run_number ?? '—') + ' · 第 ' + (r.run_attempt || 1) + ' 次尝试') +
+    kv('触发事件', esc(r.trigger || '—')) +
+    (r.actor ? kv('发起人', esc(r.actor)) : '') +
+    kv('提交', esc(r.sha || '—') + (r.author ? ' · ' + esc(r.author) : '')) +
+    kv('开始', r.started_at ? esc(fmtFull(r.started_at)) : '—') +
+    kv('用时', fmtDur(r.duration_s)) +
+    (r.url ? '<a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noreferrer">' +
+      '在 GitHub 上打开<svg class="octicon" width="16" height="16" aria-hidden="true">' +
+      '<use href="#i-external"/></svg></a>' : '') +
+    jobsBox(r);
+
+  return '<div class="run-wrap">' +
+    '<div class="run" data-run="' + r.id + '">' +
+      '<span class="st ' + cls + '" title="' + esc(label) + '">' +
+        '<svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#' + icon + '"/></svg>' +
+      '</span>' +
+      '<div class="run-main">' +
+        '<div class="run-title">' + esc(r.name || '（未命名工作流）') +
+          ' <span class="num">#' + (r.run_number ?? '') + '</span></div>' +
+        '<div class="run-sub">' + sub + '</div>' +
+      '</div>' +
+      '<div class="run-side">' + apiTag + branch +
+        '<span class="trigger">' + esc(r.trigger || '') + '</span></div>' +
+      '<div class="run-time">' + fmtDur(r.duration_s) + ' · ' +
+        relTime(r.started_at || r.seen_at) + '</div>' +
+    '</div>' +
+    '<div class="run-detail" hidden>' + detail + '</div>' +
+  '</div>';
+}
+
+// job 与步骤只有 GitHub API 给得到，所以这里是按需加载的入口
+function jobsBox(r) {
+  if (!GH.logged_in) {
+    return '<div class="jobs"><div class="hint">job 与步骤需要本机 gh 已登录才能看</div></div>';
+  }
+  return '<div class="jobs" data-repo="' + esc(r.repo) + '" data-run="' + esc(r.id) + '">' +
+    '<button class="btn btn-sm" data-jobs>加载 job 与步骤</button></div>';
+}
+
+async function loadJobs(box) {
+  const repo = box.dataset.repo;
+  const run = box.dataset.run;
+  if (!repo || !run) return;
+  box.innerHTML = '<div class="hint">正在向 GitHub 读取 job…</div>';
+  try {
+    const r = await fetch('/github/jobs?repo=' + encodeURIComponent(repo) +
+      '&run=' + encodeURIComponent(run));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    const jobs = d.jobs || [];
+    if (!jobs.length) {
+      box.innerHTML = '<div class="hint">这个运行里没有 job 记录</div>';
+      return;
+    }
+    box.innerHTML = jobs.map((j) => {
+      const [icon, cls, label] = statusOf({ status: j.status, conclusion: j.conclusion });
+      const steps = (j.steps || []).map((s) => {
+        const k = s.conclusion === 'success' ? 'ok'
+          : (s.conclusion === 'skipped' || s.conclusion === 'neutral') ? 'skip'
+            : s.conclusion ? 'bad' : '';
+        return '<li class="' + k + '">' + esc(s.name) + '</li>';
+      }).join('');
+      return '<div class="job"><div class="job-head">' +
+        '<svg class="octicon ' + cls + '" width="14" height="14" aria-hidden="true">' +
+        '<use href="#' + icon + '"/></svg>' +
+        '<b>' + esc(j.name) + '</b><span class="hint">' + esc(label) + '</span>' +
+        (j.html_url ? '<a class="hint" href="' + esc(j.html_url) +
+          '" target="_blank" rel="noreferrer">在 GitHub 上</a>' : '') +
+        '</div><ol class="steps">' + steps + '</ol></div>';
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div class="hint">读取失败：' + esc(e.message) + '</div>';
+  }
+}
+
 function renderActions(d) {
   // 仓库下拉：保留用户当前选中的项
   const sel = $('actRepo');
@@ -987,59 +1129,19 @@ function renderActions(d) {
     '<option value="' + esc(r.repo) + '">' + esc(r.repo) + '（' + r.runs + '）</option>').join('');
   if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
 
+  // 「直接问 GitHub」那块默认填一个已知仓库，省得手打
+  const repoInput = $('ghRepo');
+  if (!repoInput.value && (d.repos || []).length) repoInput.value = d.repos[0].repo;
+
   $('actCount').textContent = d.total ?? 0;
   const box = $('actions');
   if (!(d.runs || []).length) {
     box.innerHTML = '<div class="empty"><h3>还没有工作流运行记录</h3>' +
-      '<p>在 GitHub 的 webhook 设置里勾上「Workflow runs」事件，下次跑 CI 就会出现在这里。</p></div>';
+      '<p>在 GitHub 的 webhook 设置里勾上「Workflow runs」事件，下次跑 CI 就会出现在这里。' +
+      (GH.logged_in ? '也可以先用下面的「直接问 GitHub」看一眼。' : '') + '</p></div>';
     return;
   }
-
-  box.innerHTML = d.runs.map((r) => {
-    const [icon, cls, label] = statusOf(r);
-    const branch = r.branch
-      ? '<span class="Label Label--secondary" style="height:18px;font-size:11px">' +
-        '<svg class="octicon" width="12" height="12" aria-hidden="true"><use href="#i-branch"/></svg>' +
-        esc(r.branch) + '</span>'
-      : '';
-    const sub = [
-      r.title ? '<span class="t">' + esc(r.title) + '</span>' : '',
-      r.sha ? '<span class="sha">' + esc(r.sha) + '</span>' : '',
-      r.actor ? '<span>' + esc(r.actor) + '</span>' : ''
-    ].filter(Boolean).join('<span>·</span>');
-
-    const kv = (k, v) => '<div class="kv"><span class="k">' + k +
-      '</span><span class="v">' + v + '</span></div>';
-    const detail =
-      kv('工作流文件', esc(r.path || '—')) +
-      kv('运行号', '#' + (r.run_number ?? '—') + ' · 第 ' + (r.run_attempt || 1) + ' 次尝试') +
-      kv('触发事件', esc(r.trigger || '—')) +
-      kv('发起人', esc(r.actor || '—')) +
-      kv('提交', esc(r.sha || '—') + (r.author ? ' · ' + esc(r.author) : '')) +
-      kv('开始', r.started_at ? esc(fmtFull(r.started_at)) : '—') +
-      kv('用时', fmtDur(r.duration_s)) +
-      (r.url ? '<a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noreferrer">' +
-        '在 GitHub 上打开<svg class="octicon" width="16" height="16" aria-hidden="true">' +
-        '<use href="#i-external"/></svg></a>' : '');
-
-    return '<div class="run-wrap">' +
-      '<div class="run" data-run="' + r.id + '">' +
-        '<span class="st ' + cls + '" title="' + esc(label) + '">' +
-          '<svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#' + icon + '"/></svg>' +
-        '</span>' +
-        '<div class="run-main">' +
-          '<div class="run-title">' + esc(r.name || '（未命名工作流）') +
-            ' <span class="num">#' + (r.run_number ?? '') + '</span></div>' +
-          '<div class="run-sub">' + sub + '</div>' +
-        '</div>' +
-        '<div class="run-side">' + branch +
-          '<span class="trigger">' + esc(r.trigger || '') + '</span></div>' +
-        '<div class="run-time">' + fmtDur(r.duration_s) + ' · ' +
-          relTime(r.started_at || r.seen_at) + '</div>' +
-      '</div>' +
-      '<div class="run-detail" hidden>' + detail + '</div>' +
-    '</div>';
-  }).join('');
+  box.innerHTML = d.runs.map(runRowHtml).join('');
 }
 
 async function loadActions() {
@@ -1056,12 +1158,102 @@ function scheduleActions() {
   actTimer = setTimeout(() => { actTimer = 0; loadActions(); }, 800);
 }
 
+/* ─────────── GitHub 凭据（本地 gh） ─────────── */
+let GH = { checked: false, installed: false, logged_in: false, account: '', scopes: [], error: '' };
+
+function renderGithubAuth() {
+  const box = $('ghAuthBody');
+  if (!box) return;
+  if (!GH.checked) { box.innerHTML = '<div class="hint">正在检测…</div>'; return; }
+
+  if (!GH.installed || !GH.logged_in) {
+    const reason = GH.error || (GH.installed ? 'gh 未登录' : '本机没装 gh');
+    box.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+        '<span class="Label Label--secondary">不可用</span><span class="hint">' + esc(reason) + '</span>' +
+      '</div>' +
+      '<div class="hint" style="margin-bottom:10px">' +
+        '装上并登录后，动作页就能看 job 与步骤：<code>brew install gh</code> 或 ' +
+        '<code>gh auth login</code>。' +
+      '</div>' +
+      '<button class="btn" id="ghRecheck">重新检测</button>';
+  } else {
+    const scopes = (GH.scopes || []).map((s) => '<code>' + esc(s) + '</code>').join(' ') || '（读不到）';
+    box.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+        '<span class="Label Label--success">可用</span>' +
+        '<span>gh ' + esc(GH.version || '') + ' · ' + esc(GH.account || '') + '</span>' +
+      '</div>' +
+      '<div class="hint">令牌权限：' + scopes + '</div>' +
+      '<div class="hint" style="margin:6px 0 10px">' +
+        '私有仓库要 <code>repo</code>；这个 scope 也够用它建 webhook。' +
+      '</div>' +
+      '<button class="btn" id="ghRecheck">重新检测</button>' +
+      '<div class="hint" style="margin-top:10px">' +
+        '令牌由 gh 自己保管（keyring），本服务不读、不写、不落盘；' +
+        '相关的 <code>/github/*</code> 接口只接受本机请求，局域网设备访问会拿到 403。' +
+      '</div>';
+  }
+  const btn = $('ghRecheck');
+  if (btn) btn.addEventListener('click', () => loadGithubAuth(true));
+}
+
+async function loadGithubAuth(force) {
+  renderGithubAuth();
+  try {
+    const r = await fetch('/github/auth' + (force ? '?refresh=1' : ''));
+    const d = await r.json();
+    GH = Object.assign({ checked: true }, d);
+    if (!r.ok) GH.installed = GH.installed || false;
+  } catch (e) {
+    GH = { checked: true, installed: false, logged_in: false, error: String(e.message) };
+  }
+  GH.checked = true;
+  renderGithubAuth();
+
+  const box = $('ghBox');
+  if (box) box.hidden = !GH.logged_in;
+  if (GH.logged_in) $('ghWho').textContent = '本机 gh · ' + (GH.account || '');
+  // 刚探测完才知道能不能拉 job，正在看动作页就重绘一次
+  if (currentView() === 'actions') loadActions();
+  return GH;
+}
+
+async function pullFromGithub() {
+  const repo = ($('ghRepo').value || '').trim();
+  const out = $('ghRuns');
+  if (!repo) { $('ghHint').textContent = '先填 owner/name'; $('ghRepo').focus(); return; }
+  $('ghHint').textContent = '读取中…';
+  out.innerHTML = '';
+  try {
+    const r = await fetch('/github/runs?repo=' + encodeURIComponent(repo) + '&limit=20');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    $('ghHint').textContent = d.total ? '共 ' + d.total + ' 条' : '';
+    if (!d.runs.length) {
+      out.innerHTML = '<div class="empty"><h3>GitHub 上没有任何运行</h3>' +
+        '<p>' + esc(repo) + ' 的 workflow 一次都没跑过，先确认仓库里有 ' +
+        '<code>.github/workflows</code> 目录。</p></div>';
+      return;
+    }
+    out.innerHTML = d.runs.map(runRowHtml).join('');
+  } catch (e) {
+    $('ghHint').textContent = '';
+    out.innerHTML = '<div class="empty"><h3>读取失败</h3><p>' + esc(e.message) + '</p></div>';
+  }
+}
+
 $('actRepo').addEventListener('change', (e) => {
   actRepo = e.target.value;
   loadActions();
 });
-// 点一行展开/收起细节；点详情里的链接不会冒泡到这里
-$('actions').addEventListener('click', (e) => {
+$('ghPull').addEventListener('click', pullFromGithub);
+$('ghRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') pullFromGithub(); });
+
+// 点一行展开/收起细节；点「加载 job」和详情里的链接不触发折叠
+$('view-actions').addEventListener('click', (e) => {
+  const jobsBtn = e.target.closest('[data-jobs]');
+  if (jobsBtn) { loadJobs(jobsBtn.closest('.jobs')); return; }
   const run = e.target.closest('.run');
   if (!run) return;
   const detail = run.parentElement.querySelector('.run-detail');
@@ -1195,6 +1387,7 @@ $('cfgReset').addEventListener('click', () => {
 
 window.addEventListener('hashchange', route);
 route();
+loadGithubAuth();   // 先知道 gh 能不能用，行里的「加载 job」入口靠它决定要不要显示
 loadHistory();
 connect();
 pollHealth();

@@ -242,6 +242,20 @@ reconnect_max = 2
             filtered = await (await s.get(f"{BASE}/actions?repo=demo/repo")).json()
             ck.check(filtered.get("total") == 1, "动作支持按仓库过滤", str(filtered.get("total")))
 
+            # ── 6e. 借本地 gh 的凭据（没装/未登录时走降级分支） ──
+            auth = await (await s.get(f"{BASE}/github/auth")).json()
+            ck.check({"installed", "logged_in"} <= set(auth), "github auth 返回合法结构", str(list(auth))[:80])
+            bad_repo = await s.get(f"{BASE}/github/runs?repo=not-a-repo")
+            ck.check(bad_repo.status == 400, "github 运行接口校验 repo 格式", str(bad_repo.status))
+            bad_run = await s.get(f"{BASE}/github/jobs?repo=a/b&run=abc")
+            ck.check(bad_run.status == 400, "github job 接口校验 run id", str(bad_run.status))
+            if auth.get("logged_in"):
+                missing = await s.get(f"{BASE}/github/runs?repo=OWNER/__no_such_repo__")
+                ck.check(missing.status == 502, "仓库不存在时把 gh 的报错透出来", str(missing.status))
+            else:
+                refused = await s.get(f"{BASE}/github/runs?repo=a/b")
+                ck.check(refused.status == 409, "gh 未登录时明确拒绝而不是假装空", str(refused.status))
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))
