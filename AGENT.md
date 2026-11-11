@@ -135,11 +135,41 @@ curl -s "$B/runners" | jq '.machines[] | "\(.name) \(.os)/\(.arch) \(.host):\(.p
 
 ## 关于 MCP
 
-**这个项目没有 MCP server**，现在是纯 HTTP/JSON。要在 MCP 客户端里用它，两条路：
+**有一个 MCP server**，但不跑在网络端口上：`local-client/mcp_server.py`，
+stdio 传输，只依赖标准库。客户端配置里写一行就行：
 
-1. **别接 MCP**：任何能发 HTTP 的 agent 直接照上面打接口就行，这份文件就是它的说明书。
-2. **套个薄壳**：写一个 stdio 的 MCP server，把 `/actions`、`/github/jobs`、`/github/joblog`、
-   `/runners`、`/stream` 包成 5 个 tool，内部就是 `urllib` 转发。没有额外依赖，一个文件即可。
+```json
+{
+  "mcpServers": {
+    "github-local-action": {
+      "command": "python3",
+      "args": ["/绝对路径/local-client/mcp_server.py"],
+      "env": { "LOCAL_ACTION_URL": "http://127.0.0.1:18091" }
+    }
+  }
+}
+```
 
-需要走第 2 条的话，注意 tool 的粒度：**一次运行的 job + 步骤 + 日志应该是一个 tool**，
-拆成三个会让 agent 多跑两轮；`/stream` 那种长连接不适合做成 tool，做成「取最近 N 条」更好。
+它有 7 个工具，全部只读：
+
+| 工具 | 对应接口 | 干什么 |
+|---|---|---|
+| `health` | `/health` | 服务在不在、链路通不通（连不上时先调它） |
+| `get_stats` | `/stats` | 今日/累计事件与运行数（24 小时分桶默认不带） |
+| `list_runs` | `/actions` | 最近运行（本地库，零配额） |
+| `get_run_detail` | `/github/jobs` | 一次运行的 job 与每步状态，可 `include_logs` 带日志尾巴 |
+| `get_job_log` | `/github/joblog` | 单个 job 的日志，可 `max_chars` 限长 |
+| `recent_events` | `/events` | 最近事件（payload 默认只给键名） |
+| `list_machines` | `/runners` | 纳管的机器（不含密码） |
+
+设计上的取舍：
+
+- **一次运行的 job + 步骤 + 日志是一个 tool**（`get_run_detail`），不拆三个，
+  否则 agent 要先看状态再回头取日志，多跑两轮。日志默认只给最后 60 行，
+  要全文自己传 `log_tail_lines: 0` 或改用 `get_job_log`。
+- **全部只读**。改配置、装/卸 runner、开按需池子这些会动别人机器或改本地配置的，
+  没有做成 tool —— 让用户在网页上点，或者直接用 HTTP 接口（见上面表格）。
+- `/stream` 那种长连接不适合做成 tool（MCP 的 tool 调用是请求-响应），
+  所以做成 `recent_events(after=N)`，当游标用。
+
+不想接 MCP 也没关系：它只是把下面这些 HTTP 接口翻译了一遍，直接 curl 一样能干活。
