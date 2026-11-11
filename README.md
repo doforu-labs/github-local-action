@@ -138,6 +138,30 @@ jobs:
 
 注册令牌 1 小时有效，只当文本返回、页面不落盘；这一页的接口和 `/github/*` 一样只接受本机请求。
 
+### 一次真实 push 之后发生了什么（实测）
+
+改一行 README 推到 `main`（commit `7777bde`），三个 workflow 全部自动起来，从推送到最后一个跑完共 2 分 39 秒：
+
+| 时刻 | 发生了什么 |
+|---|---|
+| 14:00:23 | `git push` 成功 |
+| 14:00:29 | 中继收到 push webhook（绕公网一圈回来，6 秒） |
+| 14:00:31 | GitHub 建出 3 个运行，7 个 job 陆续排队 |
+| 14:00:37 | 第一个 job 已在 `linux-22` 上开跑 |
+| 14:01:02 | Self-hosted Smoke 完成（32 秒） |
+| 14:02:39 | Three Platforms 完成（2 分 8 秒） |
+| 14:03:02 | Syntax Check 完成（2 分 30 秒），三个全 success |
+
+结果要在三处独立核对，只看到一处不算：
+
+1. **GitHub 侧**：`gh run list` / `gh api .../runs/<id>/jobs`，每个 job 的 `runner_name` 与 `labels` 直接写着落在哪台机器（`linux-22` / `mac-2222` / `win-2223`）。
+2. **机器侧**：`~/actions-runner/_diag/Worker_*.log` 里能搜到本次的完整 sha 与 run id；`_work/<repo>/<repo>/` 里的文件就是这次 checkout 下来的内容（改了哪行、有没有出现，一眼看得出）。
+3. **中继侧**：动作页的 `workflow_run` 事件流，这一次从 `requested` 到 `completed` 一共 32 条事件实时推过来。
+
+前提是仓库 webhook 里勾了 **Workflow runs**——没勾的表现是「CI 明明跑了，动作页一直空」，不是中继坏了。
+
+这次验的是链路（推送能不能自动触发、job 是不是真落在自己机器上、结果能不能看到），**不是真构建**：macOS 那台只有 CLT 没有 Xcode，Windows 那台 3G 内存，Electron + NSIS 打包这两台现在都出不了包。
+
 ### Windows 自建 runner 的三个坑（都是实测撞到的）
 
 1. **没有 `pwsh`**。`shell: pwsh` 直接报 `pwsh: command not found` —— PowerShell 7 是托管镜像预装的，自建机器上只有 Windows PowerShell 5.1，写成 `shell: powershell`。
