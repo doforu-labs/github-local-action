@@ -298,6 +298,19 @@
     grid-column: 1 / -1; grid-row: 2;
     display: flex; flex-wrap: wrap; gap: 4px;
   }
+  /* 仓库列表底部的翻页条 */
+  .pager {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 10px 16px; border-top: 1px solid var(--border-muted);
+    font: 400 12px/1.5 var(--font); color: var(--fg-muted);
+  }
+  .pager button {
+    font: 400 12px/1.4 var(--font); padding: 4px 10px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg); color: var(--fg);
+  }
+  .pager button:hover:not(:disabled) { background: var(--bg-muted); }
+  .pager button:disabled { opacity: .45; cursor: default; }
 
   /* ---------- Runner ---------- */
   .runner-query {
@@ -761,6 +774,7 @@
               <p>把 webhook 指向这个接收端后，仓库会自动出现在这里。</p>
             </div>
           </div>
+          <div class="pager" id="reposPager" hidden></div>
         </div>
       </section>
 
@@ -1112,17 +1126,29 @@ function mergeRepoRows() {
   return rows;
 }
 
+const REPO_PAGE_SIZE = 20;   // 一页放 20 个
+let repoPage = 1;
+
 function renderRepos() {
   const rows = mergeRepoRows();
   const box = $('repos');
+  const pager = $('reposPager');
   if (!rows.length) {
     box.innerHTML = '<div class="empty"><h3>一个仓库都没有</h3>' +
       '<p>gh 没登录，或者这个账号下确实没有仓库。</p></div>';
     $('repoSub').textContent = '0';
+    if (pager) { pager.hidden = true; pager.innerHTML = ''; }
     return;
   }
   $('repoSub').textContent = rows.length;
-  box.innerHTML = rows.map((r) => {
+
+  const pages = Math.max(1, Math.ceil(rows.length / REPO_PAGE_SIZE));
+  if (repoPage > pages) repoPage = pages;
+  if (repoPage < 1) repoPage = 1;
+  const from = (repoPage - 1) * REPO_PAGE_SIZE;
+  const slice = rows.slice(from, from + REPO_PAGE_SIZE);
+
+  box.innerHTML = slice.map((r) => {
     const badges = Object.entries(r.types || {})
       .sort((a, b) => b[1] - a[1])
       .map(([t, n]) =>
@@ -1141,7 +1167,26 @@ function renderRepos() {
       '<span class="badges">' + badges + '</span>' +
       '</div>';
   }).join('');
+
+  if (pages > 1) {
+    pager.hidden = false;
+    pager.innerHTML =
+      '<button data-page="prev"' + (repoPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
+      '<span>第 ' + repoPage + ' / ' + pages + ' 页 · 共 ' + rows.length + ' 个</span>' +
+      '<button data-page="next"' + (repoPage >= pages ? ' disabled' : '') + '>下一页</button>';
+  } else {
+    pager.hidden = true;
+    pager.innerHTML = '';
+  }
 }
+
+$('reposPager').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-page]');
+  if (!b || b.disabled) return;
+  repoPage += b.dataset.page === 'next' ? 1 : -1;
+  renderRepos();
+  $('repos').scrollIntoView({ block: 'start', behavior: 'smooth' });
+});
 
 async function loadAllRepos(force) {
   try {
@@ -1917,7 +1962,8 @@ $('repos').addEventListener('change', async (e) => {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     renderJit(d);
-    renderRepos();          // 开着的要排到最上面
+    if (on) repoPage = 1;   // 打开的会跳到最上面，翻回第一页才看得到
+    renderRepos();
     const pool = (d.machines || []).length;
     $('repoHint').textContent = on
       ? (pool ? '已交给按需模式' : '开了，但池子里还没机器')
