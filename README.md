@@ -1,6 +1,6 @@
-# gh-relay
+# GitHub Local Action
 
-把 GitHub 账户下所有仓库的事件，实时送到局域网里的设备。
+把 GitHub 账户下所有仓库的事件，实时送到局域网里的设备；把 GitHub 的 job，派到你自己机器上跑。
 
 ```text
 GitHub ──webhook──▶ remote-worker ──WebSocket──▶ local-client ──SSE──▶ 局域网设备

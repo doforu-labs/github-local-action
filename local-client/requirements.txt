@@ -1,4 +1,4 @@
-# gh-relay 本地接收端
+# GitHub Local Action 本地接收端
 # 只需要 aiohttp：它同时提供 WebSocket 客户端和 HTTP 服务端
 aiohttp>=3.9,<4
 # 走 SSH 装 runner 用（可选：没装只是这一块不可用）

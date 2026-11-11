@@ -2725,7 +2725,7 @@ async def handle_index(request: web.Request) -> web.Response:
         )
     return web.Response(
         text=(
-            "gh-relay 本地端（web/index.html 没找到，退化为纯文本）\n\n"
+            "GitHub Local Action 本地端（web/index.html 没找到，退化为纯文本）\n\n"
             "  GET /                  状态面板\n"
             "  GET /stream            SSE 事件流（支持 Last-Event-ID 续传）\n"
             "  GET /events?after=N    按游标拉一段历史\n"
@@ -3355,7 +3355,7 @@ async def main_async(cfg: Config) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="gh-relay 本地接收端")
+    parser = argparse.ArgumentParser(description="GitHub Local Action 本地接收端")
     parser.add_argument("-c", "--config", default="config.toml", help="配置文件路径")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()

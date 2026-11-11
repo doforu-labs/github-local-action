@@ -180,7 +180,7 @@ reconnect_max = 2
                 html = await r.text()
                 ctype = r.headers.get("Content-Type", "")
             ck.check(r.status == 200 and "text/html" in ctype, "状态页返回 HTML", ctype)
-            ck.check("gh-relay" in html and "EventSource" in html, "状态页内容完整", f"{len(html)} 字节")
+            ck.check("Local Action" in html and "EventSource" in html, "状态页内容完整", f"{len(html)} 字节")
 
             async with s.get(f"http://127.0.0.1:{RELAY_PORT}/stats") as r:
                 st = await r.json()
