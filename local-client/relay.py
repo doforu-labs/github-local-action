@@ -2090,13 +2090,13 @@ JIT_DIRNAME = "jitlab"          # 跟常驻 runner 的 actions-runner 分开放�
 JIT_HISTORY_MAX = 30
 
 JIT_POOL: dict[str, Any] = {
-    "on": False,
-    "repo": "",
+    # 一个仓库一个开关。开着的仓库才接活，没开的一条都不看。
+    "repos": {},
     "machines": [],             # 参与调度的机器名（对应 SSH_MACHINES 的键）
     "max_parallel": 2,
     "running": {},              # job_id -> {job, machine, name, label, at}
     "history": [],              # 最近的接活记录，新的在前
-    "stats": {"picked": 0, "failed": 0, "done": 0, "last_error": ""},
+    "stats": {"picked": 0, "failed": 0, "done": 0, "skipped": 0, "last_error": ""},
 }
 
 _JIT_TASKS: set[asyncio.Task] = set()
@@ -2262,7 +2262,7 @@ async def _jit_take_job(item: dict[str, Any]) -> None:
 
 async def _jit_on_event(item: dict[str, Any]) -> None:
     """按需模式的入口：只关心「有 job 排队」和「job 结束」。"""
-    if not JIT_POOL["on"]:
+    if not any(JIT_POOL["repos"].values()):
         return
     if item.get("event") != "workflow_job":
         return
@@ -2278,7 +2278,7 @@ async def _jit_on_event(item: dict[str, Any]) -> None:
 
     if action != "queued":
         return
-    if str(item.get("repo") or "") != JIT_POOL["repo"]:
+    if not JIT_POOL["repos"].get(str(item.get("repo") or "")):
         return
     if len(JIT_POOL["running"]) >= int(JIT_POOL["max_parallel"]):
         JIT_POOL["stats"]["skipped"] += 1
@@ -2323,8 +2323,10 @@ def _jit_view() -> dict[str, Any]:
             "busy": busy,
         })
     return {
-        "on": JIT_POOL["on"],
-        "repo": JIT_POOL["repo"],
+        # on 是推出来的：只要还开着一个仓库就算在干活
+        "on": any(JIT_POOL["repos"].values()),
+        "repos": dict(JIT_POOL["repos"]),
+        "watching": sorted(r for r, v in JIT_POOL["repos"].items() if v),
         "max_parallel": JIT_POOL["max_parallel"],
         "machines": machines,
         "available": sorted(_machines_live().keys()),
@@ -2357,10 +2359,25 @@ async def handle_runner_jit_start(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         body = {}
 
-    repo = str(body.get("repo") or "").strip()
-    if not _REPO_RE.match(repo):
+    raw = body.get("repos")
+    if raw is None:
+        one = str(body.get("repo") or "").strip()
+        raw = [one] if one else []
+    if not isinstance(raw, list):
+        return web.json_response({"error": "repos 要是数组"}, status=400)
+    repos: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if not name:
+            continue
+        if not _REPO_RE.match(name):
+            return web.json_response(
+                {"error": f"仓库名要写成 owner/name（只填组织名走组织级）：{name}"}, status=400)
+        if name not in repos:
+            repos.append(name)
+    if not repos:
         return web.json_response(
-            {"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
+            {"error": "至少要说一个仓库——去「仓库」页把要接的打开"}, status=400)
 
     live = _machines_live()
     wanted = body.get("machines")
@@ -2386,9 +2403,11 @@ async def handle_runner_jit_start(request: web.Request) -> web.Response:
             {"error": "池子是空的：先用「添加一台机器」把机器连一遍，密码只在 30 分钟内有效"},
             status=400)
 
-    JIT_POOL.update(on=True, repo=repo, machines=names, max_parallel=parallel)
+    JIT_POOL.update(machines=names, max_parallel=parallel)
+    JIT_POOL["repos"] = {r: True for r in repos}
     JIT_POOL["stats"]["last_error"] = ""
-    log.info("JIT 开启：仓库 %s，机器 %s，并发 %d", repo, names, parallel)
+    log.info("JIT 开启：接 %d 个仓库 %s，机器 %s，并发 %d",
+             len(repos), repos, names, parallel)
     return web.json_response(_jit_view())
 
 
@@ -2396,8 +2415,74 @@ async def handle_runner_jit_stop(request: web.Request) -> web.Response:
     blocked = _local_only(request)
     if blocked:
         return blocked
-    JIT_POOL.update(on=False)
-    log.info("JIT 关闭")
+    JIT_POOL["repos"] = {}
+    log.info("JIT 关闭（所有仓库都停了）")
+    return web.json_response(_jit_view())
+
+
+async def handle_runner_jit_repo(request: web.Request) -> web.Response:
+    """仓库页那排开关：单独开/关一个仓库，不影响别的。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    repo = str(body.get("repo") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response(
+            {"error": "仓库名要写成 owner/name"}, status=400)
+    on = body.get("on")
+    if not isinstance(on, bool):
+        return web.json_response({"error": "on 要是 true 或 false"}, status=400)
+
+    if on:
+        JIT_POOL["repos"][repo] = True
+        log.info("JIT 接上：%s", repo)
+    else:
+        if repo in JIT_POOL["repos"]:
+            JIT_POOL["repos"][repo] = False
+        log.info("JIT 放手：%s", repo)
+    return web.json_response(_jit_view())
+
+
+async def handle_runner_jit_pool(request: web.Request) -> web.Response:
+    """机器池和并发：跟仓库开关分开设，改这个不动仓库。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    live = _machines_live()
+    wanted = body.get("machines")
+    if wanted is None:
+        names = list(JIT_POOL["machines"])
+    else:
+        if not isinstance(wanted, list):
+            return web.json_response({"error": "machines 要是数组"}, status=400)
+        names = [str(x) for x in wanted]
+        missing = [n for n in names if n not in live]
+        if missing:
+            return web.json_response(
+                {"error": f"这些机器没凭据或已过期：{', '.join(missing[:3])}"}, status=400)
+
+    try:
+        parallel = int(body.get("max_parallel") or JIT_POOL["max_parallel"] or 2)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "max_parallel 要是数字"}, status=400)
+    if parallel < 1 or parallel > 16:
+        return web.json_response({"error": "max_parallel 要在 1~16 之间"}, status=400)
+
+    JIT_POOL.update(machines=names, max_parallel=parallel)
     return web.json_response(_jit_view())
 
 
@@ -2497,6 +2582,8 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/runners/jit", handle_runner_jit)
     app.router.add_post("/runners/jit/start", handle_runner_jit_start)
     app.router.add_post("/runners/jit/stop", handle_runner_jit_stop)
+    app.router.add_post("/runners/jit/repo", handle_runner_jit_repo)
+    app.router.add_post("/runners/jit/pool", handle_runner_jit_pool)
     app.router.add_post("/runners/jit/prepare", handle_runner_jit_prepare)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)

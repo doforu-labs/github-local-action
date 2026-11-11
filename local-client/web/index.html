@@ -263,15 +263,35 @@
   .repo-link:hover em, .repo-link:focus-visible em { color: var(--accent); }
   .repo-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+  /* 仓库行右边的「按需接管」开关 */
+  .jit-sw {
+    grid-column: 2; grid-row: 1;
+    display: inline-flex; align-items: center; cursor: pointer;
+  }
+  .jit-sw input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .jit-sw-track {
+    width: 34px; height: 20px; border-radius: 999px; background: #d1d9e0;
+    position: relative; transition: background .15s ease;
+  }
+  .jit-sw-track::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .25); transition: transform .15s ease;
+  }
+  .jit-sw input:checked + .jit-sw-track { background: var(--success); }
+  .jit-sw input:checked + .jit-sw-track::after { transform: translateX(14px); }
+  .jit-sw input:focus-visible + .jit-sw-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .jit-sw input:disabled + .jit-sw-track { opacity: .5; }
+
   .repo-row {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 8px 16px; align-items: center;
     padding: 12px 16px; border-top: 1px solid var(--border-muted);
   }
   .repo-row:first-child { border-top: 0; }
   .repo-row:hover { background: #f6f8fa80; }
   .repo-row .time {
-    grid-column: 2; grid-row: 1;
+    grid-column: 3; grid-row: 1;
     color: var(--fg-muted); font: 400 12px/1.5 var(--mono);
   }
   .repo-row .badges {
@@ -732,6 +752,7 @@
           <div class="Box-header">
             仓库
             <div class="spacer"></div>
+            <span class="hint" id="repoHint" style="margin-right:8px"></span>
             <span class="Counter" id="repoSub">0</span>
           </div>
           <div id="repos">
@@ -820,14 +841,12 @@
             <div class="hint">收到 <code>workflow_job</code> 的排队事件时，才去机器上拉一个一次性 runner；
               一个 job 一个进程，跑完自己从 GitHub 消失。不用把机器常驻注册到某个仓库，也用不到组织。</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-              <input class="input mono" id="jitRepo" type="text" spellcheck="false"
-                     placeholder="owner/name" aria-label="仓库" list="runnerRepoList"
-                     style="flex:1 1 200px">
               <input class="input mono" id="jitParallel" type="text" inputmode="numeric"
                      value="2" aria-label="并发上限" style="flex:0 0 88px"
                      title="最多同时开几个 runner">
+              <span class="hint" style="align-self:center">同时最多开几个</span>
             </div>
-            <div class="hint" style="margin-top:6px">左边填仓库，右边是同时最多开几个。</div>
+            <div class="hint" style="margin-top:6px">接哪些仓库，去「仓库」页逐个打开就行。</div>
           </div>
 
           <div class="form-row">
@@ -839,8 +858,8 @@
           </div>
 
           <div class="form-actions">
-            <button class="btn btn-primary" id="jitStart">开始接活</button>
-            <button class="btn" id="jitStop">停下</button>
+            <button class="btn btn-primary" id="jitStart">保存池子</button>
+            <button class="btn" id="jitStop">全部停下</button>
             <div class="spacer"></div>
             <span class="hint" id="jitHint">没在接活</span>
           </div>
@@ -1038,7 +1057,21 @@ function renderAccount(acc) {
   else { img.style.display = 'none'; }
 }
 
+// 哪些仓库被「按需接管」了：repo -> true/false，来自 /runners/jit
+const jitSwitchState = new Map();
+
+function repoSwitchHtml(repo) {
+  const on = !!jitSwitchState.get(repo);
+  return '<label class="jit-sw" title="' +
+    (on ? '开着：这个仓库有活就临时起一个 runner' : '关着：这个仓库的活得靠常驻 runner') +
+    '"><input type="checkbox" data-jit-repo="' + esc(repo) + '"' + (on ? ' checked' : '') +
+    ' aria-label="按需接管 ' + esc(repo) + '"><span class="jit-sw-track"></span></label>';
+}
+
+let lastRepos = [];
+
 function renderRepos(repos) {
+  lastRepos = Array.isArray(repos) ? repos : [];
   const box = $('repos');
   if (!repos.length) {
     box.innerHTML = '<div class="empty"><h3>还没有收到任何事件</h3>' +
@@ -1056,6 +1089,7 @@ function renderRepos(repos) {
       .join('');
     return '<div class="repo-row">' +
       '<span class="repo-name">' + repoHtml(r.repo, true, true) + '</span>' +
+      repoSwitchHtml(r.repo) +
       '<span class="time" title="' + esc(fmtFull(r.last_at)) + '">' + fmtTime(r.last_at) + '</span>' +
       '<span class="badges">' + badges + '</span>' +
       '</div>';
@@ -1178,6 +1212,7 @@ async function pollStats() {
     $('total').textContent = d.total ?? 0;
     renderAccount(d.account);
     renderRepos(d.repos || []);
+    loadJit();      // 仓库行上的开关得知道现在开着哪几个
 
     const hours = d.hourly || [];
     const max = Math.max(1, ...hours.map((h) => h.count));
@@ -1703,10 +1738,23 @@ $('runnerRefresh').addEventListener('click', () => loadRunners(false));
 function renderJit(d) {
   const on = !!d.on;
   const running = d.running || [];
-  $('jitState').textContent = on ? ('开着 ' + running.length + '/' + d.max_parallel) : '关';
+  const watching = d.watching || [];
+  $('jitState').textContent = on ? ('接 ' + watching.length + ' 个仓 · ' + running.length + '/' + d.max_parallel) : '关';
   $('jitState').style.color = on ? 'var(--fgColor-success, #1a7f37)' : '';
-  if (d.repo) $('jitRepo').value = d.repo;
   if (d.max_parallel) $('jitParallel').value = d.max_parallel;
+
+  // 仓库页的开关跟着一起更新
+  jitSwitchState.clear();
+  Object.entries(d.repos || {}).forEach(([k, v]) => jitSwitchState.set(k, !!v));
+  document.querySelectorAll('#repos input[data-jit-repo]').forEach((cb) => {
+    cb.checked = !!jitSwitchState.get(cb.dataset.jitRepo);
+    const label = cb.closest('label');
+    if (label) {
+      label.title = cb.checked
+        ? '开着：这个仓库有活就临时起一个 runner'
+        : '关着：这个仓库的活得靠常驻 runner';
+    }
+  });
 
   const avail = d.available || [];
   const chosen = new Set((d.machines || []).map(m => m.name));
@@ -1744,7 +1792,10 @@ function renderJit(d) {
     rows.push('<div class="hint">最近一次错误：' + esc(s.last_error) + '</div>');
   }
   $('jitBody').innerHTML = rows.join('');
-  $('jitHint').textContent = on ? ('仓库 ' + d.repo + ' · 池子 ' + avail.length + ' 台') : '没在接活';
+  const watching2 = d.watching || [];
+  $('jitHint').textContent = on
+    ? ('正在接 ' + watching2.length + ' 个仓库 · 池子 ' + avail.length + ' 台')
+    : '没在接活';
 }
 
 async function loadJit() {
@@ -1757,26 +1808,25 @@ async function loadJit() {
 }
 
 $('jitStart').addEventListener('click', async () => {
-  const repo = ($('jitRepo').value || '').trim();
   const machines = [...document.querySelectorAll('#jitMachines input[type=checkbox]:checked')]
     .map(x => x.value);
   const body = {
-    repo,
     max_parallel: parseInt($('jitParallel').value, 10) || 2,
     machines,
   };
-  $('jitHint').textContent = '开启中…';
+  $('jitHint').textContent = '保存中…';
   try {
-    const r = await fetch('/runners/jit/start', {
+    const r = await fetch('/runners/jit/pool', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     renderJit(d);
-    $('jitHint').textContent = '开始接活了';
+    $('jitHint').textContent = '池子已保存：' + (d.machines || []).length + ' 台'
+      + ((d.watching || []).length ? '，正在接 ' + d.watching.length + ' 个仓库' : '，但还没开仓库');
   } catch (e) {
-    $('jitHint').textContent = '没开成：' + e.message;
+    $('jitHint').textContent = '没存成：' + e.message;
   }
 });
 
@@ -1785,9 +1835,39 @@ $('jitStop').addEventListener('click', async () => {
     const r = await fetch('/runners/jit/stop', { method: 'POST' });
     const d = await r.json();
     renderJit(d);
-    $('jitHint').textContent = '已停';
+    $('jitHint').textContent = '全部停了（仓库开关都复位）';
+    renderRepos(lastRepos);
   } catch (e) {
     $('jitHint').textContent = '停不下来：' + e.message;
+  }
+});
+
+// 仓库页那些开关：点一下就开/关这一个仓库，不动别的
+$('repos').addEventListener('change', async (e) => {
+  const cb = e.target.closest('input[data-jit-repo]');
+  if (!cb) return;
+  const repo = cb.dataset.jitRepo;
+  const on = cb.checked;
+  cb.disabled = true;
+  try {
+    const r = await fetch('/runners/jit/repo', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo, on }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    renderJit(d);
+    const pool = (d.machines || []).length;
+    $('repoHint').textContent = on
+      ? (pool ? '已交给按需模式' : '开了，但池子里还没机器')
+      : '已关掉';
+    setTimeout(() => { $('repoHint').textContent = ''; }, 4000);
+  } catch (err) {
+    cb.checked = !on;
+    $('repoHint').textContent = '切换失败：' + err.message;
+    setTimeout(() => { $('repoHint').textContent = ''; }, 6000);
+  } finally {
+    cb.disabled = false;
   }
 });
 $('runnerRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRunners(false); });

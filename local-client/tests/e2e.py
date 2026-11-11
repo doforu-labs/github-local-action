@@ -343,7 +343,7 @@ reconnect_max = 2
             jit = await s.get(f"{BASE}/runners/jit")
             jd = await jit.json()
             ck.check(jit.status == 200, "JIT：状态接口可用", str(jit.status))
-            need = {"on", "repo", "max_parallel", "machines", "available",
+            need = {"on", "repos", "watching", "max_parallel", "machines", "available",
                     "running", "history", "stats"}
             ck.check(need <= set(jd), "JIT：状态结构完整", str(sorted(set(jd)))[:120])
             ck.check(jd.get("on") is False, "JIT：默认是关的", str(jd.get("on")))
@@ -371,10 +371,39 @@ reconnect_max = 2
             bad = await s.post(f"{BASE}/runners/jit/prepare", json={"name": "nope"})
             ck.check(bad.status == 400, "JIT：准备目录要机器有凭据", str(bad.status))
 
+            # ── 6h-2. 仓库开关：一个一个来，互不影响 ──
+            # 这一步不需要机器，只改「接不接这个仓库」的状态
+            on1 = await s.post(f"{BASE}/runners/jit/repo", json={"repo": "a/b", "on": True})
+            ck.check(on1.status == 200, "JIT：能单独打开一个仓库", str(on1.status))
+            d1 = await on1.json()
+            ck.check(d1.get("repos", {}).get("a/b") is True, "JIT：打开后状态里是 true",
+                     str(d1.get("repos"))[:80])
+
+            on2 = await s.post(f"{BASE}/runners/jit/repo", json={"repo": "c/d", "on": True})
+            d2 = await on2.json()
+            ck.check(sorted(d2.get("watching") or []) == ["a/b", "c/d"],
+                     "JIT：能同时接多个仓库", str(d2.get("watching")))
+
+            off1 = await s.post(f"{BASE}/runners/jit/repo", json={"repo": "a/b", "on": False})
+            d3 = await off1.json()
+            ck.check(d3.get("watching") == ["c/d"], "JIT：关一个不影响另一个",
+                     str(d3.get("watching")))
+
+            bad = await s.post(f"{BASE}/runners/jit/repo", json={"repo": "a b", "on": True})
+            ck.check(bad.status == 400, "JIT：开关也校验仓库名", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/jit/repo", json={"repo": "a/b", "on": "yes"})
+            ck.check(bad.status == 400, "JIT：开关 on 必须是布尔", str(bad.status))
+
+            bad = await s.post(f"{BASE}/runners/jit/pool", json={"machines": ["不存在的机器"]})
+            ck.check(bad.status == 400, "JIT：池子只认有凭据的机器", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/jit/pool", json={"max_parallel": 99})
+            ck.check(bad.status == 400, "JIT：池子并发也卡范围", str(bad.status))
+
             stop = await s.post(f"{BASE}/runners/jit/stop")
             ck.check(stop.status == 200, "JIT：能停下来", str(stop.status))
             sd = await stop.json()
             ck.check(sd.get("on") is False, "JIT：停完确实关了", str(sd.get("on")))
+            ck.check(sd.get("repos") == {}, "JIT：停下会把仓库开关清空", str(sd.get("repos")))
 
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
