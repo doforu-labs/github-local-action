@@ -316,6 +316,27 @@ reconnect_max = 2
                                     "password": "p", "name": "n", "os": "bsd"})
             ck.check(r0.status == 400, "SSH 添加：未知系统被拒", str(r0.status))
 
+            # 页面现在只让填四样：地址/端口/用户/密码。机器名和目录都不传也得能交上去
+            # （名字连上后读主机名，目录从 ~/actions-runner 顺延），所以不能报 400。
+            r0 = await s.post(f"{BASE}/runners/ssh/add",
+                              json={"repo": "a/b", "host": "127.0.0.1", "port": 1,
+                                    "user": "u", "password": "p"})
+            ck.check(r0.status == 200, "SSH 添加：不传机器名和目录也能提交", str(r0.status))
+            if r0.status == 200:
+                jd = await r0.json()
+                ck.check(bool(jd.get("job")), "SSH 添加：返回任务号", str(jd)[:80])
+                state = "running"
+                for _ in range(24):
+                    await asyncio.sleep(0.5)
+                    q = await s.get(f"{BASE}/runners/ssh/job/{jd['job']}")
+                    if q.status != 200:
+                        break
+                    state = (await q.json()).get("status") or ""
+                    if state != "running":
+                        break
+                # 端口 1 上没人监听：必须在连接阶段就失败，不能卡住或假装成功
+                ck.check(state == "failed", "SSH 添加：连不上的机器明确失败", state)
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))

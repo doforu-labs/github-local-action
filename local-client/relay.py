@@ -1058,6 +1058,12 @@ SSH_JOBS: dict[str, dict[str, Any]] = {}
 SSH_MACHINES: dict[str, dict[str, Any]] = {}
 SSH_MACHINE_TTL = 30 * 60
 
+# 机器名和目录都不让人填：名字取机器自己的主机名（连上看一眼就知道），
+# 目录从 ~/actions-runner 开始，那儿已经有一个就顺延到 -2、-3。
+# 只有直接打 API 的人才会传这两个参数——页面已经不给了。
+DEFAULT_RUNNER_DIR = "~/actions-runner"
+_AUTO_DIR_TRIES = 8
+
 
 def _machines_live() -> dict[str, dict[str, Any]]:
     """还在有效期内的机器凭据。过期的顺手清掉。"""
@@ -1210,15 +1216,49 @@ def _dir_reject_reason(path: str) -> str:
     return ""
 
 
+def _clean_runner_name(raw: str) -> str:
+    """把主机名洗成能当 runner 名的样子。
+
+    Linux 主机名可能长成 `lab-linux-1`，macOS 带 `.local`，
+    Windows 是 `WIN-XXXX`。统一：不合法的字符换成横线，去掉首尾符号。
+    """
+    s = re.sub(r"[^A-Za-z0-9._-]+", "-", (raw or "").strip())
+    s = re.sub(r"[-._]{2,}", "-", s).strip("-._")
+    return s[:63]
+
+
+def _remote_hostname(box: SshBox, plat: str) -> str:
+    """读机器自己的名字。取不到就给空串，让调用方兜底。"""
+    cmd = ('powershell -NoProfile -Command "$env:COMPUTERNAME"'
+           if plat == "windows" else "hostname -s 2>/dev/null || hostname")
+    try:
+        rc, out = box.run(cmd, timeout=30)
+    except Exception:
+        return ""
+    if rc != 0:
+        return ""
+    # 从下往上看：登录提示里可能夹着一堆东西，最后一行才是真正的输出
+    for line in reversed((out or "").splitlines()):
+        name = _clean_runner_name(line)
+        if name:
+            return name
+    return ""
+
+
 def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    """校验连接参数。返回 (参数, 错误)。"""
+    """校验连接参数。返回 (参数, 错误)。
+
+    name / dir 都是可选的：不传就由连上之后自动定（主机名 + 顺延目录）。
+    传了也照样校验——API 直接调用时这两个值会落到 rm -rf 的路径上。
+    """
     repo = str(body.get("repo") or "").strip()
     host = str(body.get("host") or "").strip()
     user = str(body.get("user") or "").strip()
     password = str(body.get("password") or "")
     name = str(body.get("name") or "").strip()
     plat = str(body.get("os") or "linux").strip().lower()
-    directory = str(body.get("dir") or "").strip() or "~/actions-runner"
+    given_dir = str(body.get("dir") or "").strip()
+    directory = given_dir or DEFAULT_RUNNER_DIR
     try:
         port = int(body.get("port") or 22)
     except (TypeError, ValueError):
@@ -1232,9 +1272,7 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
         return {}, "要填 SSH 用户名"
     if not password:
         return {}, "这里要走密码登录，密码不能空（密钥登录暂时不支持）"
-    if not name:
-        return {}, "要填机器名"
-    if not re.match(r"^[A-Za-z0-9._-]{1,64}$", name):
+    if name and not re.match(r"^[A-Za-z0-9._-]{1,63}$", name):
         return {}, "机器名只能用字母、数字、点、横线、下划线"
     if plat not in _RUNNER_ARCHIVE:
         return {}, "系统只支持 linux / macos / windows"
@@ -1246,6 +1284,7 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return {
         "repo": repo, "host": host, "port": port, "user": user,
         "password": password, "name": name, "os": plat, "dir": directory,
+        "auto_name": not name, "auto_dir": not given_dir,
     }, ""
 
 
@@ -1293,7 +1332,7 @@ def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: s
         'echo "[3/4] 注册"',
         f'./config.sh --url {shlex.quote("https://github.com/" + p["repo"])} '
         f'--token {shlex.quote(token)} --name {shlex.quote(p["name"])} '
-        f'--labels {shlex.quote(labels)} --work _work --unattended --replace',
+        f'--labels {shlex.quote(labels)} --work _work --unattended',
         'echo "[4/4] 装成服务并启动"',
     ]
     if p["os"] == "macos":
@@ -1367,7 +1406,7 @@ def _win_install_script(p: dict[str, Any], token: str, archive: str, labels: str
         'Write-Output \'[3/4] configuring\'',
         f'.\\config.cmd --url {_psq("https://github.com/" + p["repo"])} '
         f'--token {_psq(token)} --name {_psq(p["name"])} '
-        f'--labels {_psq(labels)} --work _work --unattended --replace',
+        f'--labels {_psq(labels)} --work _work --unattended',
         'Write-Output \'[4/4] starting (runner has no svc.cmd on Windows)\'',
         '$p = Invoke-CimMethod -ClassName Win32_Process -MethodName Create '
         '-Arguments @{ CommandLine = \"`\"$dir\\run.cmd`\"\" }',
@@ -1467,6 +1506,23 @@ async def _gh_runner_by_name(repo: str, name: str) -> Optional[dict[str, Any]]:
     return None
 
 
+async def _gh_runner_names(repo: str) -> list[str]:
+    """仓库里已经存在哪些 runner 名（包括掉线的僵尸注册）。
+
+    用来避名：同名注册会被 config.sh 顶掉，那样会把另一台机器的 runner 带走。
+    """
+    rc, out, err = await gh_run([
+        "api", f"repos/{repo}/actions/runners", "--jq", "[.runners[].name]",
+    ])
+    if rc != 0:
+        return []
+    try:
+        data = json.loads(out or "[]")
+    except ValueError:
+        return []
+    return [str(x) for x in data] if isinstance(data, list) else []
+
+
 def _detect_os(box: SshBox, job: dict[str, Any]) -> str:
     """先按 POSIX 试一句 uname；不行就当 Windows，再用 PowerShell 确认。
 
@@ -1492,9 +1548,11 @@ def _box_for(p: dict[str, Any], job: dict[str, Any]) -> SshBox:
 
 
 def _ssh_precheck(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
-    """先探一眼再动 GitHub：连得上吗、什么系统、目标目录能不能用。
+    """连上去看三件事：什么系统、机器叫什么、装到哪个目录。
 
     这一步放在申请注册令牌之前——目录不可用的时候**一个令牌都不该造**。
+    名字和目录在页面里都不用填：名字读机器自己的主机名，目录从
+    ~/actions-runner 开始顺延，直到找到一个能用的。
     """
     box = _box_for(p, job)
     try:
@@ -1508,18 +1566,53 @@ def _ssh_precheck(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
             _ssh_log(job, f"你选的是 {p['os']}，实际上是 {found}，按实际的来")
             p["os"] = found
 
-        state = _dir_state(box, p)
-        _ssh_log(job, f"目录 {p['dir']} 状态：{state}")
-        if state == "CONFIGURED":
-            return False, (f"{p['dir']} 里已经有一个配好的 runner，不覆盖它。"
-                           f"换一个目录（比如 ~/actions-runner-{p['name']}）再装；"
-                           "或者先去那台机器上卸掉旧的。")
-        if state == "DIRTY":
-            return False, (f"{p['dir']} 里已经有别的内容，不敢替你删。"
-                           "换一个空目录再装，或者先在机器上清掉。")
-        if state == "UNKNOWN":
-            _ssh_log(job, "目录状态没读出来，继续试（脚本里还有一道检查）")
-        p["_wipe"] = state == "STALE"
+        # 名字：机器自己叫什么就叫什么，不用人填
+        if not p.get("name"):
+            guess = _remote_hostname(box, p["os"])
+            if guess:
+                p["name"] = guess
+                _ssh_log(job, f"机器名自动取成 {guess}（读的是它自己的主机名）")
+            else:
+                # 主机名读不出来时退回「用户名-地址」，至少两台机器不会撞在一起
+                fallback = _clean_runner_name(f"{p['user']}-{p['host'].replace('.', '-')}")
+                p["name"] = fallback or f"runner-{p['port']}"
+                _ssh_log(job, f"主机名没读到，机器名用 {p['name']} 顶着")
+
+        # 目录：默认 ~/actions-runner；那里已经有一个就顺延到 -2、-3
+        if p.get("auto_dir"):
+            picks = [DEFAULT_RUNNER_DIR if i == 1 else f"{DEFAULT_RUNNER_DIR}-{i}"
+                     for i in range(1, _AUTO_DIR_TRIES + 1)]
+        else:
+            picks = [p["dir"]]
+
+        chosen = ""
+        for candidate in picks:
+            p["dir"] = candidate
+            state = _dir_state(box, p)
+            _ssh_log(job, f"目录 {candidate} 状态：{state}")
+            if state in ("FRESH", "STALE"):
+                chosen = candidate
+                p["_wipe"] = state == "STALE"
+                break
+            if state == "UNKNOWN" and not p.get("auto_dir"):
+                # 指定的目录、状态读不出来：按原样继续试，安装脚本里还有一道检查
+                _ssh_log(job, "目录状态没读出来，继续试（脚本里还有一道检查）")
+                chosen = candidate
+                p["_wipe"] = False
+                break
+            if not p.get("auto_dir"):
+                if state == "CONFIGURED":
+                    return False, (f"{candidate} 里已经有一个配好的 runner，不覆盖它。"
+                                   "同一台机器装第二个得用别的目录；"
+                                   "或者先去那台机器上卸掉旧的。")
+                if state == "DIRTY":
+                    return False, f"{candidate} 里已经有别的内容，不敢替你删。"
+            # 自动模式下 CONFIGURED / DIRTY 都不算错，换个目录接着看
+        if not chosen:
+            return False, (f"从 {DEFAULT_RUNNER_DIR} 到 -{_AUTO_DIR_TRIES} 都占满了，"
+                           "这台机器装不下新的了；先卸掉一个再装")
+        p["dir"] = chosen
+        _ssh_log(job, f"目录定在 {chosen}")
         return True, ""
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"[:300]
@@ -1574,6 +1667,22 @@ async def _run_ssh_add(job: dict[str, Any], p: dict[str, Any]) -> None:
             job.update(status="failed", error=auth["error"] or "gh 未登录")
             _ssh_log(job, "gh 没登录，取不到注册令牌（机器这次什么都没改）")
             return
+
+        # 重名先避掉：主杺名差不多、或同一台机器装第二个，都会撞名。
+        # 没避的话 config.sh 会直接报名字已存在，报错信息还很难看懂。
+        taken = {n.lower() for n in await _gh_runner_names(p["repo"])}
+        if p["name"].lower() in taken:
+            base = p["name"]
+            for i in range(2, 10):
+                candidate = f"{base}-{i}"[:63]
+                if candidate.lower() not in taken:
+                    p["name"] = candidate
+                    _ssh_log(job, f"仓库里已经有叫 {base} 的 runner，这台改叫 {candidate}")
+                    break
+            else:
+                job.update(status="failed", error=f"{base} 这个名字以及 -2..-9 都被占了")
+                _ssh_log(job, "名字全被占了，没动 GitHub、也没上机器装")
+                return
 
         _ssh_log(job, f"给 {p['repo']} 要一个注册令牌（1 小时有效）")
         token, terr = await _gh_registration_token(p["repo"])
@@ -1696,8 +1805,9 @@ async def handle_runner_ssh_add(request: web.Request) -> web.Response:
     p, err = _ssh_params(body)
     if err:
         return web.json_response({"error": err}, status=400)
-    job = _ssh_new_job("add", f"装 {p['name']} @ {p['host']}:{p['port']}")
-    _ssh_log(job, f"目标仓库 {p['repo']}，机器名 {p['name']}")
+    job = _ssh_new_job("add", f"装机器 @ {p['host']}:{p['port']}")
+    _ssh_log(job, f"目标仓库 {p['repo']}，机器名和目录连上去自己定"
+                   if not p["name"] else f"目标仓库 {p['repo']}，机器名 {p['name']}")
     job["_task"] = asyncio.create_task(_run_ssh_add(job, p))
     return web.json_response({"job": job["id"], "name": p["name"]})
 

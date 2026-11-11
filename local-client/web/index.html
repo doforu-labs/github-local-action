@@ -766,7 +766,9 @@
           <div class="form-row">
             <div class="label">SSH 登录</div>
             <div class="hint">连上之后会自己认系统（Linux / macOS / Windows）；
-              标签按实际系统拼成 <code>self-hosted,系统,X64</code>。</div>
+              标签按实际系统拼成 <code>self-hosted,系统,X64</code>。
+              机器名用那台机器自己的主机名，目录默认 <code>~/actions-runner</code>，
+              那儿已经有一个就自动顺延——都不用填。</div>
             <div class="ssh-grid">
               <input class="input mono" id="sshHost" type="text" spellcheck="false"
                      placeholder="10.0.0.5" aria-label="地址">
@@ -777,20 +779,6 @@
               <input class="input mono" id="sshPass" type="password"
                      placeholder="密码" aria-label="密码" autocomplete="new-password">
             </div>
-          </div>
-
-          <div class="form-row">
-            <div class="label">机器名</div>
-            <div class="hint">在 runner 列表里显示的名字，建议带机器标识，比如 <code>linux-22</code>。</div>
-            <input class="input mono" id="runnerName" type="text" spellcheck="false" placeholder="linux-22">
-          </div>
-
-          <div class="form-row">
-            <div class="label">装到哪个目录</div>
-            <div class="hint">一台机器的一个目录只能配一个 runner；同一台机器装第二个要换目录。
-              目录里已经有配好的 runner 时不会覆盖。</div>
-            <input class="input mono" id="sshDir" type="text" spellcheck="false"
-                   value="~/actions-runner" aria-label="目录">
           </div>
 
           <div class="form-actions">
@@ -1529,7 +1517,8 @@ async function loadRunners(quiet) {
 }
 
 function runnerCommands(d) {
-  const name = d.name || 'my-runner';
+  // 名字也不用选：在目标机器上让它自己取主机名
+  const name = d.name || (d.platform === 'windows' ? '$env:COMPUTERNAME' : '"$(hostname -s)"');
   if (d.platform === 'windows') {
     return [
       'mkdir C:\\actions-runner',
@@ -1553,7 +1542,6 @@ function runnerCommands(d) {
 
 async function makeRunnerToken() {
   const repo = ($('runnerRepo').value || '').trim();
-  const name = ($('runnerName').value || '').trim();
   const platform = $('runnerOs').value;
   const hint = $('runnerMakeHint');
   if (!repo) { hint.textContent = '先在上面填仓库'; $('runnerRepo').focus(); return; }
@@ -1563,7 +1551,7 @@ async function makeRunnerToken() {
     const r = await fetch('/github/runner-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo: repo, platform: platform, name: name })
+      body: JSON.stringify({ repo: repo, platform: platform })
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
@@ -1685,23 +1673,19 @@ async function sshAddMachine() {
   const port = ($('sshPort').value || '22').trim();
   const user = ($('sshUser').value || '').trim();
   const password = $('sshPass').value || '';
-  const name = ($('runnerName').value || '').trim();
   if (!repo) { flashRunner('error', '先在上面填仓库'); $('runnerRepo').focus(); return; }
-  if (!host || !user || !password || !name) {
-    flashRunner('error', '地址、用户、密码、机器名都要填齐');
+  if (!host || !user || !password) {
+    flashRunner('error', '地址、用户、密码要填齐');
     return;
   }
   $('sshAdd').disabled = true;
   $('sshHint').textContent = '正在连 ' + host + '…';
-  sshShowLog('装 ' + name + ' @ ' + host + ':' + port);
+  sshShowLog('装机器 @ ' + host + ':' + port);
   try {
     const r = await fetch('/runners/ssh/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        repo: repo, host: host, port: port, user: user, password: password, name: name,
-        dir: ($('sshDir').value || '').trim()
-      })
+      body: JSON.stringify({ repo: repo, host: host, port: port, user: user, password: password })
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
