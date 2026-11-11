@@ -1472,7 +1472,7 @@ def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: s
     """拼一个 bash 脚本。sudo 密码从 stdin 第一行读（read SUDOPW），
     不写在命令里——写进去的话 `ps` 一眼就能看到。
 
-    安装包先落进 ~/.cache/gh-relay：同一台机器装第二个 runner 不用再下 200MB，
+    安装包先落进 ~/.cache/github-local-action：同一台机器装第二个 runner 不用再下 200MB，
     弱网下这条能省十几分钟。
     """
     d = p["dir"].replace("~", "$HOME")
@@ -1483,7 +1483,7 @@ def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: s
         f'DIR="{d}"',
         # 再查一道：探测和下载之间那段空档里可能被人插了一脚
         'if [ -f "$DIR/.runner" ]; then echo "这目录已经是一个配好的 runner，不盖它"; exit 3; fi',
-        'CACHE="$HOME/.cache/gh-relay"',
+        'CACHE="$HOME/.cache/github-local-action"',
         'mkdir -p "$CACHE"',
         f'TAR="$CACHE/{name}"',
         'if tar -tzf "$TAR" >/dev/null 2>&1; then',
@@ -1576,7 +1576,7 @@ def _win_install_script(p: dict[str, Any], token: str, archive: str, labels: str
         '$OutputEncoding=[Text.Encoding]::UTF8',
         f'$dir=\"{d}\"',
         'if (Test-Path \"$dir\\.runner\") { Write-Output \'dir already configured\'; exit 3 }',
-        '$cache=\"$env:USERPROFILE\\.cache\\gh-relay\"',
+        '$cache=\"$env:USERPROFILE\\.cache\\github-local-action\"',
         'New-Item -ItemType Directory -Force $cache | Out-Null',
         f'$zip=\"$cache\\{zipname}\"',
     ]
@@ -2095,8 +2095,8 @@ if [ -x "$SRC/run.sh" ]; then
       -cf - . 2>/dev/null | tar -C "$D" -xf -
   test -x "$D/run.sh" && echo "复制完成" && exit 0
 fi
-PKG="$HOME/.cache/gh-relay/{pkg}"
-mkdir -p "$HOME/.cache/gh-relay"
+PKG="$HOME/.cache/github-local-action/{pkg}"
+mkdir -p "$HOME/.cache/github-local-action"
 if tar -tzf "$PKG" >/dev/null 2>&1; then
   echo "用机器上已经存着的安装包"
 else
@@ -2130,7 +2130,7 @@ if (Test-Path (Join-Path $SRC 'bin\\Runner.Listener.exe')) {{
   '复制完成'
   exit 0
 }}
-$CACHE="$env:USERPROFILE\\.cache\\gh-relay"
+$CACHE="$env:USERPROFILE\\.cache\\github-local-action"
 New-Item -ItemType Directory -Force -Path $CACHE | Out-Null
 $ZIP=Join-Path $CACHE 'runner.zip'
 '机器上没有安装包，得下一份'

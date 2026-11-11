@@ -1,6 +1,6 @@
 [relay]
 # 远程 Worker 的地址（部署 wrangler 后拿到）
-ws_url = "wss://gh-relay.YOUR-SUBDOMAIN.workers.dev/ws"
+ws_url = "wss://github-local-action.YOUR-SUBDOMAIN.workers.dev/ws"
 
 # 和 wrangler secret put CLIENT_TOKEN 填的值一致
 token = "REPLACE_WITH_A_LONG_RANDOM_STRING"

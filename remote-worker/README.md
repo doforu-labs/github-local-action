@@ -13,10 +13,10 @@ GET  /health       事件总数与当前游标
 ```bash
 npm install
 
-npx wrangler d1 create gh_relay
+npx wrangler d1 create github_local_action
 # 把输出的 database_id 填进 wrangler.toml
 
-npx wrangler d1 execute gh_relay --file schema.sql --remote
+npx wrangler d1 execute github_local_action --file schema.sql --remote
 
 npx wrangler secret put GITHUB_WEBHOOK_SECRET   # 和 GitHub App 里填的一致
 npx wrangler secret put CLIENT_TOKEN            # 客户端连 WS 用的口令，随机长串
@@ -30,7 +30,7 @@ npx wrangler deploy
 
 建 GitHub App（Settings → Developer settings → GitHub Apps）：
 
-- **Webhook URL**：`https://gh-relay.<你的子域>.workers.dev/gh/webhook`
+- **Webhook URL**：`https://github-local-action.<你的子域>.workers.dev/gh/webhook`
 - **Webhook secret**：就是上面的 `GITHUB_WEBHOOK_SECRET`
 - **Repository permissions**：至少 `Metadata: read`；要看 PR / issue 就加对应只读权限
 - **Subscribe to events**：push / pull_request / issues / issue_comment / release 按需勾
@@ -41,7 +41,7 @@ npx wrangler deploy
 ## 本地验证（不需要 Cloudflare 账号）
 
 ```bash
-npx wrangler d1 execute gh_relay --local --file schema.sql
+npx wrangler d1 execute github_local_action --local --file schema.sql
 npx wrangler dev --port 17903 \
   --var GITHUB_WEBHOOK_SECRET:testsecret \
   --var CLIENT_TOKEN:testtoken

@@ -25,18 +25,18 @@ GitHub 只能往公网地址发东西，你家/公司的网进不去。Cloudflar
 ```bash
 cd remote-worker
 npm install
-npx wrangler d1 create gh_relay          # 记下输出的 database_id 填进 wrangler.toml
-npx wrangler d1 execute gh_relay --file schema.sql --remote
+npx wrangler d1 create github_local_action          # 记下输出的 database_id 填进 wrangler.toml
+npx wrangler d1 execute github_local_action --file schema.sql --remote
 npx wrangler secret put GITHUB_WEBHOOK_SECRET
 npx wrangler secret put CLIENT_TOKEN
 npx wrangler deploy
 ```
 
-部署完会给你一个 `https://gh-relay.<你的账号>.workers.dev`。
+部署完会给你一个 `https://github-local-action.<你的账号>.workers.dev`。
 
 **2. GitHub 侧**
 
-建一个 GitHub App（比逐仓库配 webhook 省事），Webhook URL 填 `https://gh-relay.xxx.workers.dev/gh/webhook`，secret 用上一步那个，订阅你要的事件（push / pull_request / issues 等），然后安装到你的账户。
+建一个 GitHub App（比逐仓库配 webhook 省事），Webhook URL 填 `https://github-local-action.xxx.workers.dev/gh/webhook`，secret 用上一步那个，订阅你要的事件（push / pull_request / issues 等），然后安装到你的账户。
 
 **3. 本地**
 
@@ -146,7 +146,7 @@ jobs:
 1. **先探，不动 GitHub**：连上 → `uname -s` 认系统（Windows 没有 uname，退回去问 `$env:OS`）→ 读主机名定机器名 → 看目录里是什么
 2. 目录分四种：`FRESH` 空、`STALE` 上次没配完的残留（清掉重来）、`CONFIGURED` 已经有个配好的 runner、`DIRTY` 有别的文件。后两种在「自己顺延」模式下不算错，直接试下一个目录名；只有调用方明确指定了目录才拒。**目录不可用的时候一个令牌都不会去要**——早期版本先要令牌再检查，目录不可用时白造一堆令牌
 3. **重名先避**：装之前拿一次仓库里的 runner 名单，撞名就换成 `-2`、`-3`（`config.sh` 的同名注册会互相顶掉，所以不再用 `--replace`）
-4. 要注册令牌 → 下载（**先看 `~/.cache/gh-relay` 里有没有包**，有就不下）→ 解包 → `config.sh` 注册 → 装服务 → 启服务
+4. 要注册令牌 → 下载（**先看 `~/.cache/github-local-action` 里有没有包**，有就不下）→ 解包 → `config.sh` 注册 → 装服务 → 启服务
 5. 轮询 GitHub 等它变成 `online`（最多 90 秒），拿到 id 才算完
 
 几个实现上的取舍：
