@@ -119,6 +119,11 @@ class Store:
               payload TEXT
             );
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS gh_cache (
+              key  TEXT PRIMARY KEY,
+              body TEXT NOT NULL,
+              at   INTEGER NOT NULL
+            );
             """
         )
         self.conn.commit()
@@ -129,6 +134,32 @@ class Store:
             return int(row["value"])
         row = self.conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM events").fetchone()
         return int(row["m"])
+
+    # ── GitHub 那边取回来的东西（job 列表、日志）:存一份，第二次直接给 ──
+    #
+    # 只缓存「不会再变」的结果：job 全部完成的运行、能取到的日志（GitHub 在
+    # job 没跑完时给 404，所以能取到就意味着跑完了）。还在跑的运行不读缓存，
+    # 每次重取——那才是「同步」。
+    def cache_get(self, key: str) -> Optional[tuple[str, int]]:
+        row = self.conn.execute(
+            "SELECT body, at FROM gh_cache WHERE key = ?", (key,)
+        ).fetchone()
+        if not row:
+            return None
+        return str(row["body"]), int(row["at"])
+
+    def cache_put(self, key: str, body: str) -> None:
+        self.conn.execute(
+            "INSERT INTO gh_cache (key, body, at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET body=excluded.body, at=excluded.at",
+            (key, body, int(time.time())),
+        )
+        # 别让库无限长：只留最近 400 条（日志一条最多 2MB，400 条封顶）
+        self.conn.execute(
+            "DELETE FROM gh_cache WHERE key NOT IN "
+            "(SELECT key FROM gh_cache ORDER BY at DESC LIMIT 400)"
+        )
+        self.conn.commit()
 
     def set_cursor(self, value: int) -> None:
         self.conn.execute(
@@ -877,7 +908,12 @@ async def handle_github_runs(request: web.Request) -> web.Response:
 
 
 async def handle_github_jobs(request: web.Request) -> web.Response:
-    """一次运行里的 job 与每一步状态——这个只有 API 有，webhook 不给。"""
+    """一次运行里的 job 与每一步状态——这个只有 API 有，webhook 不给。
+
+    job 一旦全部跑完就不再变，所以落库；第二次问同一个运行直接给库里的，
+    不再去 GitHub。还在跑的运行不读缓存，每次都重取，前端那 5 秒一轮的
+    刷新才真的是「同步」。
+    """
     blocked = _local_only(request)
     if blocked:
         return blocked
@@ -887,6 +923,22 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
         return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
     if not run_id.isdigit():
         return web.json_response({"error": "run 要是数字 id"}, status=400)
+
+    store: Store = request.app["store"]
+    key = f"jobs:{repo}:{run_id}"
+    hit = store.cache_get(key)
+    if hit:
+        body, at = hit
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data.get("jobs") and all(
+                j.get("status") == "completed" for j in data["jobs"]):
+            data["cached"] = True
+            data["cached_at"] = at
+            return web.json_response(data)
+
     auth = await github_auth()
     if not auth["logged_in"]:
         return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
@@ -903,6 +955,8 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
         data = json.loads(out or "{}")
     except ValueError:
         return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
+    if data.get("jobs"):
+        store.cache_put(key, json.dumps(data, ensure_ascii=False))
     return web.json_response(data)
 
 
@@ -932,6 +986,21 @@ async def handle_github_joblog(request: web.Request) -> web.Response:
         return web.json_response({"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
     if not job_id.isdigit():
         return web.json_response({"error": "job 要是数字 id"}, status=400)
+
+    store: Store = request.app["store"]
+    key = f"log:{job_id}"
+    hit = store.cache_get(key)
+    if hit:
+        body, at = hit
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and "text" in data:
+            data["cached"] = True
+            data["cached_at"] = at
+            return web.json_response(data)
+
     auth = await github_auth()
     if not auth["logged_in"]:
         return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
@@ -962,13 +1031,16 @@ async def handle_github_joblog(request: web.Request) -> web.Response:
             break
 
     limit = 2 * 1024 * 1024
+    result: dict[str, Any]
     if not location:
         # gh 自己跟了 302（GET 默认跟随），体里就是日志正文
         raw = body.encode("utf-8", "replace")
-        return web.json_response({
+        result = {
             "text": _strip_ansi(body[:limit]),
             "truncated": len(raw) > limit,
-            "bytes": len(raw)})
+            "bytes": len(raw)}
+        store.cache_put(key, json.dumps(result, ensure_ascii=False))
+        return web.json_response(result)
 
     try:
         async with aiohttp.ClientSession() as sess:
@@ -980,11 +1052,14 @@ async def handle_github_joblog(request: web.Request) -> web.Response:
     except Exception as exc:  # noqa: BLE001 - 网络问题原样告诉前端
         return web.json_response({"error": f"下载日志失败：{exc}"}, status=502)
 
-    return web.json_response({
+    result = {
         "text": _strip_ansi(raw[:limit].decode("utf-8", "replace")),
         "truncated": len(raw) > limit,
         "bytes": len(raw),
-    })
+    }
+    # 能取到就说明 job 已经跑完，日志不会再变，存一份
+    store.cache_put(key, json.dumps(result, ensure_ascii=False))
+    return web.json_response(result)
 
 
 # ─────────────────────────────────────────────────────────────

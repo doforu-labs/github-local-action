@@ -476,7 +476,8 @@
   .steps li.skip { font-style: italic; }
   /* 展开后的 job 卡片：头部一条带底色，步骤带编号和用时，日志就地展开 */
   .job { padding: 0; overflow: hidden; }
-  .job-head { padding: 7px 10px; background: var(--neutral); border-bottom: 1px solid var(--border-muted); }
+  .job-head { padding: 7px 10px; background: var(--neutral); border-bottom: 1px solid var(--border-muted); cursor: pointer; }
+  .job-head:hover { background: var(--bg-muted); }
   .job-head b { font-size: 12.5px; }
   .job-head .grow { flex: 1; }
   .jdur { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
@@ -492,6 +493,14 @@
     max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   }
   .btn-sm { height: 26px; padding: 2px 10px; font-size: 12px; }
+  /* 等 GitHub 的那点时间只转圈，不写文字：字出来一闪就没了，反而碍眼 */
+  .spin {
+    display: inline-block; width: 15px; height: 15px; border-radius: 50%;
+    border: 2px solid var(--border-muted); border-top-color: var(--fg-muted);
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .jobs-loading { padding: 10px 11px; }
 
   .note {
     display: flex; align-items: flex-start; gap: 8px;
@@ -1030,12 +1039,12 @@ const I18N_EN = {
   "查看日志": "View log",
   "隐藏日志": "Hide log",
   "正在读取日志…": "Loading log…",
+  "日志还没生成（job 跑完才有），出来会自动出现": "Log not generated yet (only appears once the job finishes) — it will show up on its own",
   "进行中": "running",
   "这个 job 没有步骤记录": "No step records for this job",
   "这个运行还没有 job，可能还在排队": "No jobs yet for this run — it may still be queued",
   "（这个 job 没有输出）": "(this job produced no output)",
   "…（日志太长，只给了前 2MB）": "… (log too long, first 2MB only)",
-  "正在向 GitHub 读取 job…": "Reading jobs from GitHub…",
   "这个运行里没有 job 记录": "This run has no job records",
   "job 与步骤需要本机 gh 已登录才能看": "Jobs and steps need gh to be logged in on this machine",
   "本机没装 gh": "gh is not installed here",
@@ -1646,8 +1655,12 @@ const openRuns = new Set();      // 展开着的运行
 const jobsHtml = new Map();      // run id → 渲染好的 job 区块（重渲染时还原用）
 const openLogs = new Set();      // 已经翻开的日志
 const logText = new Map();       // job id → 日志正文
+const logPending = new Set();    // job id → 在等 GitHub 生成（跑完才有）
+const autoLog = new Map();       // run id → 已经自动开过日志，别再抢
 const jobTimers = new Map();     // run id → 自动刷新定时器
 const jobTries = new Map();      // run id → 空 job 时已经等了几轮
+
+const SPIN = '<span class="spin"></span>';
 
 function jobsBox(r) {
   if (!GH.logged_in) {
@@ -1700,6 +1713,7 @@ function jobCard(j) {
 
 // 把「哪些日志开着」这个状态刷到刚渲染出来的 DOM 上
 function fillOpenLogs(box) {
+  if (!box) return;
   box.querySelectorAll('.job').forEach((job) => {
     const pre = job.querySelector('pre.joblog');
     const btn = job.querySelector('[data-joblog]');
@@ -1708,7 +1722,10 @@ function fillOpenLogs(box) {
     const isOpen = openLogs.has(jid);
     pre.hidden = !isOpen;
     btn.textContent = isOpen ? '隐藏日志' : '查看日志';
-    if (isOpen) pre.textContent = logText.has(jid) ? logText.get(jid) : '正在读取日志…';
+    if (!isOpen) return;
+    if (logText.has(jid)) pre.textContent = logText.get(jid);
+    else if (logPending.has(jid)) pre.textContent = '日志还没生成（job 跑完才有），出来会自动出现';
+    else pre.innerHTML = SPIN;
   });
 }
 
@@ -1717,7 +1734,8 @@ async function loadJobs(detail, opts) {
   const box = detail.querySelector('.jobs');
   if (!repo || !run || !box) return;
   const silent = !!(opts && opts.silent);
-  if (!silent) box.innerHTML = '<div class="hint">正在向 GitHub 读取 job…</div>';
+  // 已经有内容（内存里存的）时不刷成转圈：那一下闪得人以为没记住
+  if (!silent && !box.childElementCount) box.innerHTML = '<div class="jobs-loading">' + SPIN + '</div>';
   let d;
   try {
     const r = await fetch('/github/jobs?repo=' + encodeURIComponent(repo) +
@@ -1728,6 +1746,8 @@ async function loadJobs(detail, opts) {
     box.innerHTML = '<div class="hint">读取失败：' + esc(e.message) + '</div>';
     return;
   }
+  // 期间列表突然重渲染，这份 detail 已经不在页面上了：交给新的那份去画
+  if (!detail.isConnected) return;
   const jobs = d.jobs || [];
   if (!jobs.length) {
     // 刚触发的运行还没分配 runner，jobs 接口这时是空的；继续等它出现
@@ -1749,6 +1769,22 @@ async function loadJobs(detail, opts) {
   box.innerHTML = jobs.map(jobCard).join('');
   jobsHtml.set(run, box.innerHTML);
   fillOpenLogs(box);
+
+  // 只有一个 job 时没什么可挑的，日志直接打开（每次展开只自动开一回，
+  // 用户自己关上就不再抢）
+  if (jobs.length === 1 && !autoLog.has(run)) {
+    autoLog.set(run, true);
+    const btn = box.querySelector('[data-joblog]');
+    if (btn) toggleJobLog(btn);
+  }
+
+  // 日志开着但还在等的（job 刚跑完），惜手再要一次
+  box.querySelectorAll('.job').forEach((job) => {
+    const pre = job.querySelector('pre.joblog');
+    if (!pre || pre.hidden) return;
+    const jid = pre.dataset.logfor;
+    if (!logText.has(jid) && logPending.has(jid)) fetchJobLog(detail, jid);
+  });
 
   const live = jobs.some((j) => j.status !== 'completed');
   const timer = jobTimers.get(run);
@@ -1781,6 +1817,39 @@ function restoreDetails(container) {
   });
 }
 
+// 列表重渲染会换掉整个 DOM，手握的 detail 可能已经不在页面上了。
+// 回填日志时按 run id 现找当前的那份，别往死节点里写。
+function jobsBoxOf(runId) {
+  if (!runId) return null;
+  const d = document.querySelector('.run-detail[data-run="' + runId + '"]');
+  return d ? d.querySelector('.jobs') : null;
+}
+
+async function fetchJobLog(detail, jid) {
+  const runId = detail.dataset.run;
+  logPending.delete(jid);
+  fillOpenLogs(jobsBoxOf(runId));
+  try {
+    const r = await fetch('/github/joblog?repo=' + encodeURIComponent(detail.dataset.repo) +
+      '&job=' + encodeURIComponent(jid));
+    const d = await r.json();
+    if (r.status === 404 && d.pending) {
+      // 跑完才有：先标上，等下一轮 job 刷新时自己再来要
+      logPending.add(jid);
+      fillOpenLogs(jobsBoxOf(runId));
+      return;
+    }
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    let text = (d.text || '').replace(/\s+$/, '');
+    if (!text) text = '（这个 job 没有输出）';
+    if (d.truncated) text += '\n\n…（日志太长，只给了前 2MB）';
+    logText.set(jid, text);
+  } catch (e) {
+    logText.set(jid, '读取失败：' + e.message);
+  }
+  fillOpenLogs(jobsBoxOf(runId));
+}
+
 async function toggleJobLog(btn) {
   const detail = btn.closest('.run-detail');
   const job = btn.closest('.job');
@@ -1791,26 +1860,12 @@ async function toggleJobLog(btn) {
 
   if (openLogs.has(jid)) {
     openLogs.delete(jid);
-    fillOpenLogs(detail.querySelector('.jobs'));
+    fillOpenLogs(jobsBoxOf(detail.dataset.run));
     return;
   }
   openLogs.add(jid);
-  fillOpenLogs(detail.querySelector('.jobs'));
-  if (logText.has(jid)) return;
-
-  try {
-    const r = await fetch('/github/joblog?repo=' + encodeURIComponent(detail.dataset.repo) +
-      '&job=' + encodeURIComponent(jid));
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    let text = (d.text || '').replace(/\s+$/, '');
-    if (!text) text = '（这个 job 没有输出）';
-    if (d.truncated) text += '\n\n…（日志太长，只给了前 2MB）';
-    logText.set(jid, text);
-  } catch (e) {
-    logText.set(jid, '读取失败：' + e.message);
-  }
-  fillOpenLogs(detail.querySelector('.jobs'));
+  fillOpenLogs(jobsBoxOf(detail.dataset.run));
+  if (!logText.has(jid)) fetchJobLog(detail, jid);
 }
 
 function renderActions(d) {
@@ -1934,10 +1989,17 @@ $('actRepo').addEventListener('change', (e) => {
 $('ghPull').addEventListener('click', pullFromGithub);
 $('ghRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') pullFromGithub(); });
 
-// 点一行展开/收起细节；展开就自动去拉 job。点日志按钮不触发折叠
+// 点一行展开/收起细节；展开就自动去拉 job。点日志按钮或 job 卡片（头）都翻日志
 $('view-actions').addEventListener('click', (e) => {
   const logBtn = e.target.closest('[data-joblog]');
   if (logBtn) { toggleJobLog(logBtn); return; }
+  const jobHead = e.target.closest('.job-head');
+  if (jobHead) {
+    if (e.target.closest('a')) return;  // job 卡片右上角那个小 GitHub 链接
+    const btn = jobHead.querySelector('[data-joblog]');
+    if (btn) toggleJobLog(btn);
+    return;
+  }
   const run = e.target.closest('.run');
   if (!run) return;
   const detail = run.parentElement.querySelector('.run-detail');
@@ -1947,6 +2009,11 @@ $('view-actions').addEventListener('click', (e) => {
   if (!rid) return;
   if (detail.hidden) { openRuns.delete(rid); return; }
   openRuns.add(rid);
+  // 重新展开时重新自动开日志（上一次可能是用户自己关掉的）
+  autoLog.delete(rid);
+  // 内存里还留着上次的内容就先接上去，不闪转圈；后台再静默刷一次
+  const box = detail.querySelector('.jobs');
+  if (box && jobsHtml.has(rid)) { box.innerHTML = jobsHtml.get(rid); fillOpenLogs(box); }
   loadJobs(detail);
 });
 
