@@ -2839,8 +2839,15 @@ async def _machines_live_view(repos: list[str]) -> dict[str, Any]:
 
     runner_of: dict[str, dict[str, Any]] = {}     # 小写 runner 名 → runner 记录
     job_of: dict[str, dict[str, Any]] = {}        # 小写 runner 名 → 在跑的 job
-    for repo in repos:
-        runners, rerr = await _repo_runners(repo)
+    # 一次 gh api 打底 1.1 秒（TLS 往返就那样），串着问 3 个仓库就是 4 秒。
+    # 这些仓库之间没有依赖，并发问。
+    fetched = await asyncio.gather(*[_repo_runners(r) for r in repos], return_exceptions=True)
+    busy_repos: list[str] = []
+    for repo, res in zip(repos, fetched):
+        if isinstance(res, BaseException):
+            errors[repo] = f"{type(res).__name__}: {res}"[:200]
+            continue
+        runners, rerr = res
         if rerr:
             errors[repo] = rerr
             continue
@@ -2854,7 +2861,16 @@ async def _machines_live_view(repos: list[str]) -> dict[str, Any]:
                     or (r.get("status") == "online" and old.get("status") != "online"):
                 runner_of[key] = {**r, "repo": repo}
         if any(r.get("busy") for r in runners):
-            jobs, jerr = await _repo_running_jobs(repo)
+            busy_repos.append(repo)
+
+    if busy_repos:
+        job_lists = await asyncio.gather(*[_repo_running_jobs(r) for r in busy_repos],
+                                         return_exceptions=True)
+        for repo, res in zip(busy_repos, job_lists):
+            if isinstance(res, BaseException):
+                errors.setdefault(repo, f"{type(res).__name__}: {res}"[:200])
+                continue
+            jobs, jerr = res
             if jerr:
                 errors.setdefault(repo, jerr)
             for j in jobs:
@@ -2911,6 +2927,26 @@ async def handle_machines_live(request: web.Request) -> web.Response:
     _LIVE_CACHE["at"] = time.time()
     _LIVE_CACHE["data"] = data
     return web.json_response(data)
+
+
+async def _prime_machine_live(app: web.Application) -> None:
+    """启动后先把机器状态问一遍。
+
+    冷着问一次要 1~4 秒（每次 gh api 打底 1.1 秒），别让第一个打开页面的人干等。
+    失败就算了——页面自己会再问。
+    """
+    try:
+        await asyncio.sleep(2.0)          # 先让 WebSocket 连上，别跟它抢
+        repos = await _offload(_live_candidate_repos, app["store"])
+        data = await _machines_live_view(repos)
+        _LIVE_CACHE["at"] = time.time()
+        _LIVE_CACHE["data"] = data
+        log.info("机器状态已预热（%s 台，查了 %s）", len(data.get("machines") or {}),
+                 "、".join(data.get("repos") or []) or "无仓库")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:                       # noqa: BLE001
+        log.info("机器状态预热失败（不影响用）：%s", exc)
 
 
 def _live_candidate_repos(store: Store) -> list[str]:
@@ -4054,6 +4090,8 @@ async def main_async(cfg: Config) -> None:
 
     task = asyncio.create_task(ws_loop(cfg, store, bus, state, stop))
     jit_task = asyncio.create_task(jit_loop(bus))
+    # 机器状态提前问一次，等真有人打开页面时是热的（冷启动要 1~4 秒）
+    prime_task = asyncio.create_task(_prime_machine_live(app))
     try:
         await stop.wait()
     finally:
@@ -4067,6 +4105,7 @@ async def main_async(cfg: Config) -> None:
             await jit_task
         except asyncio.CancelledError:
             pass
+        prime_task.cancel()
         bus.close_all()
         await runner.cleanup()
         store.close()

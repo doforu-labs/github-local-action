@@ -2177,6 +2177,7 @@ let machineLoadError = '';
 let machineLive = {};
 let machineLiveRepos = [];
 let machineLiveError = '';
+let liveLoadToken = 0;
 
 // 多条接入记录使用同一个 SSH 地址时，在列表中只显示一台。
 function groupMachines(machines) {
@@ -2228,8 +2229,16 @@ function machineRowHtml(group) {
 // 状态标签：忙的时候直接写正在跑哪个 workflow，而且能点（跳到动作页那次运行）。
 function machineLiveHtml(m) {
   const lv = machineLive[m.name];
-  const state = (lv && lv.state) || 'unknown';
-  const job = lv && lv.job;
+  if (!lv) {
+    // 清单已经出来了但状态还没到：先占个位，别把整页卡住
+    if (machineLiveError) {
+      return '<span class="Label Label--secondary machine-live" title="' + esc(machineLiveError) + '">' +
+        t('状态未知') + '</span>';
+    }
+    return '<span class="Label Label--secondary machine-live">' + SPIN + t('读取中…') + '</span>';
+  }
+  const state = lv.state || 'unknown';
+  const job = lv.job;
   if (state === 'busy' && job && job.run_id) {
     const title = (job.run_name || job.job_name || '') + (job.run_number ? ' #' + job.run_number : '');
     const tip = [job.repo, job.job_name, job.step ? L('正在跑步骤：' + job.step, 'step: ' + job.step) : '',
@@ -2261,24 +2270,48 @@ function machineLiveHtml(m) {
 }
 
 async function loadMachines(quiet) {
-  const jobs = [
-    fetch('/runners').then(async (r) => {
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-      machineInventory = d.machines || [];
-      machineInventoryLoaded = true;
-      machineLoadError = '';
-    }).catch((e) => { machineLoadError = e.message; }),
-    fetch('/machines/live').then(async (r) => {
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-      machineLive = d.machines || {};
-      machineLiveRepos = d.repos || [];
-      machineLiveError = d.error || '';
-    }).catch((e) => { machineLiveError = e.message; machineLive = {}; })
-  ];
-  await Promise.all(jobs);
+  // 第一步：机器清单本身（读本地库，2 毫秒）。这一步不能让 GitHub 拖住。
+  try {
+    const r = await fetch('/runners');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    machineInventory = d.machines || [];
+    machineInventoryLoaded = true;
+    machineLoadError = '';
+  } catch (e) {
+    machineLoadError = e.message;
+  }
   renderMachineInventory();
+
+  // 第二步：状态（背后是 GitHub，冷的要 1~4 秒）。到了只换那几个标签，不重画整页。
+  const token = ++liveLoadToken;
+  try {
+    const r = await fetch('/machines/live');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    if (token !== liveLoadToken) return;
+    machineLive = d.machines || {};
+    machineLiveRepos = d.repos || [];
+    machineLiveError = d.error || '';
+  } catch (e) {
+    if (token !== liveLoadToken) return;
+    machineLiveError = e.message;
+  }
+  paintMachineLive();
+}
+
+// 只换状态标签，不动整块 DOM：否则每 8 秒轮一次会把页面洗一遍
+function paintMachineLive() {
+  document.querySelectorAll('#machines .machine-card').forEach((card) => {
+    const box = card.querySelector('.machine-live');
+    if (!box) return;
+    const name = card.dataset.machine;
+    const m = machineInventory.find((x) => x.name === name) || { name };
+    const holder = document.createElement('span');
+    holder.innerHTML = machineLiveHtml(m);
+    const fresh = holder.firstElementChild;
+    if (fresh && fresh.outerHTML !== box.outerHTML) box.replaceWith(fresh);
+  });
 }
 
 function flashRunner(kind, text) {
