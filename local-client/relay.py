@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import signal
 import sqlite3
@@ -1558,9 +1559,176 @@ async def _gh_my_repos(force: bool = False) -> tuple[list[dict[str, Any]], str]:
     return data, ""
 
 
+# ─────────────────────────────────────────────────────────────
+# 给仓库自动配 webhook
+#
+# GitHub 那边要三样东西：接收地址、content-type、密钥。地址和 content-type 是死的，
+# 密钥以前只有 Cloudflare 上有（secret_text 读不出来），所以只能手工去网页点五步。
+# 现在接收端支持「一个仓库一个密钥」（存 D1）：这里生成一个、注册上去、
+# 再拿它把 hook 建好——点一下开关就完事，不用再找人要密钥。
+# ─────────────────────────────────────────────────────────────
+
+HOOK_EVENTS = ["workflow_job", "workflow_run", "push", "issues",
+               "issue_comment", "pull_request"]
+
+
+def _worker_base(cfg: Config) -> str:
+    """从 ws_url 反推接收端的 HTTP 根地址（wss://x/ws → https://x）。"""
+    url = str(cfg.ws_url or "").strip()
+    url = url.replace("wss://", "https://").replace("ws://", "http://")
+    if url.endswith("/ws"):
+        url = url[:-3]
+    return url.rstrip("/")
+
+
+def _hook_target(cfg: Config) -> str:
+    base = _worker_base(cfg)
+    return f"{base}/gh/webhook" if base else ""
+
+
+async def _worker_put_secret(cfg: Config, repo: str, secret: str) -> tuple[bool, str]:
+    """把仓库自己的密钥登记到接收端，之后它就用这个密钥验签。"""
+    base = _worker_base(cfg)
+    if not base:
+        return False, "配置里没有 ws_url，不知道接收端在哪"
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.post(f"{base}/gh/secret",
+                                 json={"repo": repo, "secret": secret},
+                                 headers={"Authorization": f"Bearer {cfg.token}"}) as resp:
+                if resp.status != 200:
+                    return False, f"接收端拒绝：HTTP {resp.status} {(await resp.text())[:120]}"
+                return True, ""
+    except Exception as exc:                       # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:200]
+
+
+def _hook_args(target: str, secret: str) -> list[str]:
+    args = ["-f", f"config[url]={target}",
+            "-f", "config[content_type]=json",
+            "-f", f"config[secret]={secret}",
+            "-f", "config[insecure_ssl]=0",
+            "-F", "active=true"]
+    for ev in HOOK_EVENTS:
+        args += ["-f", f"events[]={ev}"]
+    return args
+
+
+async def _gh_setup_hook(cfg: Config, repo: str,
+                         secret: str) -> tuple[bool, str, dict[str, Any]]:
+    """在仓库上建（或更新）指向我们的 webhook。幂等：已存在就改，不重复建。"""
+    target = _hook_target(cfg)
+    if not target:
+        return False, "配置里没有 ws_url，不知道接收端在哪", {}
+
+    rc, out, err = await gh_run([
+        "api", f"repos/{repo}/hooks",
+        "--jq", '[.[] | {id, url: .config.url}]',
+    ])
+    if rc != 0:
+        return False, _gh_error_text(err or out, repo), {}
+
+    hooks: list[dict[str, Any]] = []
+    try:
+        parsed = json.loads(out or "[]")
+        if isinstance(parsed, list):
+            hooks = [h for h in parsed if isinstance(h, dict)]
+    except ValueError:
+        hooks = []
+
+    mine = [h for h in hooks if str(h.get("url") or "") == target]
+    if mine:
+        hid = mine[0]["id"]
+        rc, out, err = await gh_run(
+            ["api", "-X", "PATCH", f"repos/{repo}/hooks/{hid}"] + _hook_args(target, secret))
+        if rc != 0:
+            return False, _gh_error_text(err or out, repo), {}
+        return True, "", {"id": hid, "created": False, "url": target}
+
+    rc, out, err = await gh_run(
+        ["api", "-X", "POST", f"repos/{repo}/hooks", "-f", "name=web"]
+        + _hook_args(target, secret))
+    if rc != 0:
+        return False, _gh_error_text(err or out, repo), {}
+
+    info: dict[str, Any] = {}
+    try:
+        got = json.loads(out or "{}")
+        if isinstance(got, dict):
+            info = got
+    except ValueError:
+        pass
+    return True, "", {"id": info.get("id"), "created": True, "url": target}
+
+
+async def handle_webhook_setup(request: web.Request) -> web.Response:
+    """一次把 webhook 配好：生成密钥 → 登记到接收端 → 建/更新 hook。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:                              # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    repo = str(body.get("repo") or "").strip()
+    if not _REPO_RE.match(repo) or "/" not in repo:
+        return web.json_response(
+            {"error": "要写成 owner/name"}, status=400)
+
+    cfg: Config = request.app["cfg"]
+    secret = secrets.token_hex(32)
+
+    ok, err = await _worker_put_secret(cfg, repo, secret)
+    if not ok:
+        return web.json_response({"error": err}, status=400)
+
+    ok, err, info = await _gh_setup_hook(cfg, repo, secret)
+    if not ok:
+        return web.json_response({"error": err}, status=400)
+
+    log.info("webhook %s：%s（hook %s）",
+             "新建" if info.get("created") else "更新", repo, info.get("id"))
+    return web.json_response({"ok": True, "repo": repo, **info})
+
+
+async def handle_webhook_status(request: web.Request) -> web.Response:
+    """看一个仓库配没配：我们这边有没有它的密钥 + GitHub 上有没有指向我们的 hook。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    repo = (request.query.get("repo") or "").strip()
+    if not _REPO_RE.match(repo) or "/" not in repo:
+        return web.json_response({"error": "要写成 owner/name"}, status=400)
+
+    cfg: Config = request.app["cfg"]
+    target = _hook_target(cfg)
+    has_hook = False
+    hook_id = None
+    rc, out, err = await gh_run([
+        "api", f"repos/{repo}/hooks", "--jq", '[.[] | {id, url: .config.url}]',
+    ])
+    if rc == 0:
+        try:
+            for h in json.loads(out or "[]"):
+                if isinstance(h, dict) and str(h.get("url") or "") == target:
+                    has_hook, hook_id = True, h.get("id")
+                    break
+        except ValueError:
+            pass
+    return web.json_response({
+        "repo": repo, "target": target,
+        "hook": has_hook, "hook_id": hook_id,
+        "ready": has_hook,
+        "error": "" if rc == 0 else _gh_error_text(err or out, repo),
+    })
+
+
 def _detect_os(box: SshBox, job: dict[str, Any]) -> str:
     """先按 POSIX 试一句 uname；不行就当 Windows，再用 PowerShell 确认。
-
     不要用 `||` 之类的语法去一次分辨——Windows PowerShell 5.1 里根本没有 `||`，
     探针本身会报错，反而分不清。
     """
@@ -2613,6 +2781,8 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/auth", handle_github_auth)
     app.router.add_get("/github/runs", handle_github_runs)
     app.router.add_get("/github/jobs", handle_github_jobs)
+    app.router.add_post("/webhook/setup", handle_webhook_setup)
+    app.router.add_get("/webhook/status", handle_webhook_status)
     app.router.add_get("/github/repos", handle_github_repos)
     app.router.add_get("/github/runners", handle_github_runners)
     app.router.add_post("/github/runners/remove", handle_github_runner_remove)

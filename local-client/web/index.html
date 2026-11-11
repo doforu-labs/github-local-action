@@ -1955,6 +1955,17 @@ $('repos').addEventListener('change', async (e) => {
   const on = cb.checked;
   cb.disabled = true;
   try {
+    // 打开之前先把 webhook 配好，否则开了也收不到事件
+    if (on) {
+      $('repoHint').textContent = '正在配 webhook…';
+      const w = await fetch('/webhook/setup', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ repo }),
+      });
+      const wd = await w.json();
+      if (!w.ok) throw new Error('webhook 没配上：' + (wd.error || ('HTTP ' + w.status)));
+    }
+
     const r = await fetch('/runners/jit/repo', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ repo, on }),
@@ -1966,13 +1977,13 @@ $('repos').addEventListener('change', async (e) => {
     renderRepos();
     const pool = (d.machines || []).length;
     $('repoHint').textContent = on
-      ? (pool ? '已交给按需模式' : '开了，但池子里还没机器')
+      ? (pool ? 'webhook 已配好，交给按需模式' : 'webhook 已配好，但池子里还没机器')
       : '已关掉';
-    setTimeout(() => { $('repoHint').textContent = ''; }, 4000);
+    setTimeout(() => { $('repoHint').textContent = ''; }, 5000);
   } catch (err) {
     cb.checked = !on;
-    $('repoHint').textContent = '切换失败：' + err.message;
-    setTimeout(() => { $('repoHint').textContent = ''; }, 6000);
+    $('repoHint').textContent = String(err.message || err);
+    setTimeout(() => { $('repoHint').textContent = ''; }, 8000);
   } finally {
     cb.disabled = false;
   }

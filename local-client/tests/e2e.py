@@ -426,6 +426,23 @@ reconnect_max = 2
                 # gh 没登录时拿不到名单，但接口本身不能挂
                 ck.check(True, "仓库清单：拿不到名单也不报错", "")
 
+            # ── 6j. webhook 能不能自动配 ──
+            ws = await s.get(f"{BASE}/webhook/status",
+                             params={"repo": "example-org/demo-test"})
+            ck.check(ws.status == 200, "webhook 状态：接口可用", str(ws.status))
+            wd = await ws.json()
+            ck.check({"hook", "target", "ready"} <= set(wd),
+                     "webhook 状态：带 hook/target/ready", str(sorted(wd))[:80])
+            ck.check(str(wd.get("target", "")).endswith("/gh/webhook"),
+                     "webhook 状态：目标地址是接收端", str(wd.get("target"))[:60])
+
+            bad = await s.get(f"{BASE}/webhook/status", params={"repo": "a b"})
+            ck.check(bad.status == 400, "webhook 状态：仓库名不对就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/webhook/setup", json={"repo": "a b"})
+            ck.check(bad.status == 400, "webhook 配置：仓库名不对就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/webhook/setup", json={})
+            ck.check(bad.status == 400, "webhook 配置：不填仓库就拒", str(bad.status))
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))
