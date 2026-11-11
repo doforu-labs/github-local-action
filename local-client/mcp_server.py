@@ -168,7 +168,10 @@ def tool_list_runs(args: dict[str, Any]) -> Any:
     repo = _check_repo(str(repo).strip()) if repo else None
     data = http_json("/actions", {"repo": repo, "limit": limit})
     runs = data.get("runs") or []
-    return {
+    out: dict[str, Any] = {
+        "scope": repo or "全部仓库",
+        # total 是「当前过滤条件下」的条数。带了 repo 时补一个全库总数，
+        # 不然 agent 看到 total=81 会以为系统里就只有这一个仓库。
         "total": data.get("total"),
         "repos": data.get("repos"),
         "runs": [
@@ -181,6 +184,12 @@ def tool_list_runs(args: dict[str, Any]) -> Any:
             for r in runs
         ],
     }
+    if repo:
+        try:
+            out["total_all"] = http_json("/stats").get("runs_total")
+        except ToolError:
+            pass  # 拿不到就不给，不影响主结果
+    return out
 
 
 def tool_recent_events(args: dict[str, Any]) -> Any:
@@ -315,7 +324,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_runs",
         "description": "最近的工作流运行列表（来自本地库，不联网、不消耗 GitHub 配额）。"
-                       "每条含 id / 名称 / 状态 / 结论 / 分支 / 短 sha / 用时 / 链接。",
+                       "每条含 id / 名称 / 状态 / 结论 / 分支 / 短 sha / 用时 / 链接。"
+                       "传了 repo 时，total 是「这个仓库」的条数，total_all 是全库总数。",
         "inputSchema": {
             "type": "object",
             "properties": {

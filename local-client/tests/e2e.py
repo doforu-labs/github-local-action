@@ -197,6 +197,49 @@ reconnect_max = 2
                 ck.check(r2.status == 200 and (await r2.text()) == doc, "/llms.txt 与 agent.md 同内容", "")
             ck.check(TOKEN not in doc, "agent.md 不带令牌明文", "")
 
+            # ── 6a2. MCP over HTTP（Streamable HTTP）──
+            MCP = f"http://127.0.0.1:{RELAY_PORT}/mcp"
+            init = await s.post(f"{MCP}", json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                           "clientInfo": {"name": "e2e", "version": "0"}}})
+            ijson = await init.json()
+            sid = init.headers.get("Mcp-Session-Id", "")
+            ck.check(init.status == 200 and ijson["result"]["protocolVersion"] == "2025-06-18",
+                     "MCP HTTP 握手返回协议版本", str(ijson.get("result", {}))[:60])
+            ck.check(bool(sid), "MCP HTTP 握手给了会话号", sid)
+            tl = await (await s.post(f"{MCP}", json={
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list"})).json()
+            ck.check(len(tl["result"]["tools"]) == 7, "MCP HTTP 列出 7 个工具",
+                     str([t["name"] for t in tl["result"]["tools"]]))
+            call = await (await s.post(f"{MCP}", json={
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "health", "arguments": {}}})).json()
+            ck.check(call["result"]["isError"] is False
+                     and "connected" in call["result"]["content"][0]["text"],
+                     "MCP HTTP 工具能回调自己的接口", call["result"]["content"][0]["text"][:60])
+            note = await s.post(f"{MCP}", json={"jsonrpc": "2.0",
+                                                       "method": "notifications/initialized"})
+            ck.check(note.status == 202 and not (await note.text()), "MCP HTTP 通知回 202 空体",
+                     str(note.status))
+            got = await s.get(f"{MCP}")
+            ck.check(got.status == 405, "MCP HTTP 的 GET 回 405（没开 SSE 长流）", str(got.status))
+            bad_json = await s.post(f"{MCP}", data="not json",
+                                    headers={"Content-Type": "application/json"})
+            ck.check(bad_json.status == 400
+                     and (await bad_json.json())["error"]["code"] == -32700,
+                     "MCP HTTP 坏 JSON 回 -32700", str(bad_json.status))
+            stale = await s.post(f"{MCP}", json={"jsonrpc": "2.0", "id": 4,
+                                                      "method": "ping"},
+                                 headers={"Mcp-Session-Id": "deadbeef"})
+            ck.check(stale.status == 404, "MCP HTTP 不认得的会话号回 404", str(stale.status))
+            good = await s.post(f"{MCP}", json={"jsonrpc": "2.0", "id": 5,
+                                                     "method": "ping"},
+                                headers={"Mcp-Session-Id": sid})
+            ck.check(good.status == 200, "MCP HTTP 带对的会话号能用", str(good.status))
+            bye = await s.delete(f"{MCP}", headers={"Mcp-Session-Id": sid})
+            ck.check(bye.status == 200, "MCP HTTP 能正常收尾", str(bye.status))
+
             # ── 6b. 账号与仓库列表 ──
             acc = st.get("account") or {}
             ck.check(acc.get("login") == "demo", "从 payload 识别出账号", str(acc))

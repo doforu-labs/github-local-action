@@ -27,11 +27,13 @@ import secrets
 import shlex
 import signal
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Set
+from typing import Any, Callable, Optional, Set
+from collections import OrderedDict
 
 import aiohttp
 from aiohttp import web
@@ -104,6 +106,8 @@ class Store:
 
     def __init__(self, path: str):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self._local = threading.local()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -127,13 +131,37 @@ class Store:
             """
         )
         self.conn.commit()
+        # 游标放内存：/health 每两秒被轮一次，让它去读库没意义，
+        # 高峰期它还得排在其它查询后面等（实测 1ms 变 140ms）。
+        self._cursor = self._read_cursor()
 
-    def cursor(self) -> int:
+    def _ro(self) -> sqlite3.Connection:
+        """读用连接：每个线程一条。
+
+        WAL 下多读本可以真并行，但共用一条连接会把并发读排成一队，
+        12 个并发 /stats 就能把 /health 拖到 140ms。写入仍然走 self.conn。
+        """
+        conn = getattr(self._local, "ro", None)
+        if conn is None:
+            conn = sqlite3.connect(self.path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            self._local.ro = conn
+        return conn
+
+    def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+        """只读查询（可以放心在别的线程里调）。"""
+        return self._ro().execute(sql, params).fetchall()
+
+    def _read_cursor(self) -> int:
         row = self.conn.execute("SELECT value FROM meta WHERE key='cursor'").fetchone()
         if row:
             return int(row["value"])
         row = self.conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM events").fetchone()
         return int(row["m"])
+
+    def cursor(self) -> int:
+        return self._cursor
 
     # ── GitHub 那边取回来的东西（job 列表、日志）:存一份，第二次直接给 ──
     #
@@ -141,7 +169,7 @@ class Store:
     # job 没跑完时给 404，所以能取到就意味着跑完了）。还在跑的运行不读缓存，
     # 每次重取——那才是「同步」。
     def cache_get(self, key: str) -> Optional[tuple[str, int]]:
-        row = self.conn.execute(
+        row = self._ro().execute(
             "SELECT body, at FROM gh_cache WHERE key = ?", (key,)
         ).fetchone()
         if not row:
@@ -162,6 +190,7 @@ class Store:
         self.conn.commit()
 
     def set_cursor(self, value: int) -> None:
+        self._cursor = int(value)
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES('cursor', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -188,19 +217,21 @@ class Store:
             return False
         if cur.rowcount:
             self.conn.commit()
+            if int(ev["id"]) > self._cursor:
+                self._cursor = int(ev["id"])
             return True
         return False
 
     # ── 给状态页用的统计 ──
 
     def count_since(self, ts_ms: int) -> int:
-        row = self.conn.execute(
+        row = self._ro().execute(
             "SELECT COUNT(*) AS n FROM events WHERE at >= ?", (ts_ms,)
         ).fetchone()
         return int(row["n"])
 
     def count_all(self) -> int:
-        row = self.conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
+        row = self._ro().execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
 
     def run_count(self, since_ms: int | None = None) -> int:
@@ -219,7 +250,7 @@ class Store:
             sql += " AND at >= ?"
             params = (since_ms,)
         try:
-            row = self.conn.execute(sql, params).fetchone()
+            row = self._ro().execute(sql, params).fetchone()
             return int(row["n"])
         except sqlite3.OperationalError:
             # 很老的 SQLite 没有 json_extract：退回在 Python 里数
@@ -227,7 +258,7 @@ class Store:
             if since_ms is not None:
                 q += " AND at >= ?"
             ids = set()
-            for row in self.conn.execute(q, params).fetchall():
+            for row in self._ro().execute(q, params).fetchall():
                 try:
                     rid = (json.loads(row["payload"] or "{}").get("workflow_run") or {}).get("id")
                 except ValueError:
@@ -237,7 +268,7 @@ class Store:
             return len(ids)
 
     def hourly(self, start_ms: int) -> dict[str, int]:
-        rows = self.conn.execute(
+        rows = self._ro().execute(
             "SELECT strftime('%Y-%m-%d %H', at/1000, 'unixepoch', 'localtime') AS h, "
             "COUNT(*) AS n FROM events WHERE at >= ? GROUP BY h",
             (start_ms,),
@@ -245,7 +276,7 @@ class Store:
         return {r["h"]: int(r["n"]) for r in rows if r["h"]}
 
     def type_counts(self, limit: int = 8) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
+        rows = self._ro().execute(
             "SELECT event AS k, COUNT(*) AS n FROM events GROUP BY event ORDER BY n DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -254,7 +285,7 @@ class Store:
     # ── 账号与仓库：直接从 payload 里取，不额外存字段 ──
 
     def repos(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
+        rows = self._ro().execute(
             """
             SELECT repo,
                    COUNT(*) AS events,
@@ -267,7 +298,7 @@ class Store:
              ORDER BY last_at DESC
             """
         ).fetchall()
-        type_rows = self.conn.execute(
+        type_rows = self._ro().execute(
             """
             SELECT repo, event, COUNT(*) AS n
               FROM events WHERE repo IS NOT NULL AND repo <> ''
@@ -291,7 +322,7 @@ class Store:
 
     def account(self) -> dict[str, Any] | None:
         """事件最多的那个仓库归属账号；头像用最近一条事件的 sender"""
-        row = self.conn.execute(
+        row = self._ro().execute(
             """
             SELECT CASE WHEN json_valid(payload)
                         THEN json_extract(payload, '$.repository.owner.login') END AS login,
@@ -308,7 +339,7 @@ class Store:
         if not row or not row["login"]:
             return None
 
-        av = self.conn.execute(
+        av = self._ro().execute(
             """
             SELECT CASE WHEN json_valid(payload)
                         THEN json_extract(payload, '$.sender.avatar_url') END AS avatar
@@ -326,7 +357,7 @@ class Store:
         }
 
     def replay(self, after: int, limit: int = 500) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
+        rows = self._ro().execute(
             "SELECT id, event, repo, action, at, payload FROM events "
             "WHERE id > ? ORDER BY id LIMIT ?",
             (after, limit),
@@ -583,6 +614,16 @@ async def handle_stream(request: web.Request) -> web.StreamResponse:
     return resp
 
 
+async def _offload(fn: Callable[..., Any], *args: Any) -> Any:
+    """把同步的库查询丢到线程池。
+
+    这些查询要读几千行事件并解 JSON（约 20~40ms）。直接在事件循环里做，
+    一次并发就能把整个服务卡住：SSE 心跳发不出去、/health 从 1ms 变几百 ms。
+    实测 12 个并发 /stats 能把 /health 拖到 477ms，就是这么来的。
+    """
+    return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+
+
 async def handle_events(request: web.Request) -> web.Response:
     store: Store = request.app["store"]
     after = _after_from(request)
@@ -590,7 +631,8 @@ async def handle_events(request: web.Request) -> web.Response:
         limit = min(1000, max(1, int(request.query.get("limit", "200"))))
     except ValueError:
         limit = 200
-    return web.json_response({"events": store.replay(after, limit), "after": after})
+    events = await _offload(store.replay, after, limit)
+    return web.json_response({"events": events, "after": after})
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -598,11 +640,14 @@ async def handle_health(request: web.Request) -> web.Response:
     store: Store = request.app["store"]
     bus: Bus = request.app["bus"]
     gap = int(time.time() - state.last_event_at) if state.last_event_at else None
+    # cursor 也是一次库查询。高峰期它要排在别的请求后面等连接锁，
+    # 直接在循环里等会把「本应 1ms」的健康检查拖到上百 ms。
+    cursor = await _offload(store.cursor)
     return web.json_response(
         {
             "ok": state.connected,
             "connected": state.connected,
-            "cursor": store.cursor(),
+            "cursor": cursor,
             "connects": state.connects,
             "sse_clients": len(bus._subs),  # noqa: SLF001
             "seconds_since_last_event": gap,
@@ -642,7 +687,7 @@ def build_stats(store: Store) -> dict[str, Any]:
 
 
 async def handle_stats(request: web.Request) -> web.Response:
-    return web.json_response(build_stats(request.app["store"]))
+    return web.json_response(await _offload(build_stats, request.app["store"]))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -673,7 +718,7 @@ def build_actions(store: Store, repo: str = "", limit: int = 60) -> dict[str, An
         sql += " AND repo = ?"
         params.append(repo)
     sql += " ORDER BY id DESC LIMIT 4000"
-    rows = store.conn.execute(sql, params).fetchall()
+    rows = store.query(sql, tuple(params))
 
     runs: dict[int, dict[str, Any]] = {}
     for row in rows:
@@ -733,7 +778,8 @@ async def handle_actions(request: web.Request) -> web.Response:
         limit = min(200, max(1, int(request.query.get("limit", "60"))))
     except ValueError:
         limit = 60
-    return web.json_response(build_actions(request.app["store"], repo, limit))
+    data = await _offload(build_actions, request.app["store"], repo, limit)
+    return web.json_response(data)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2590,6 +2636,13 @@ async def handle_machines(request: web.Request) -> web.Response:
     blocked = _local_only(request)
     if blocked:
         return blocked
+    rows = await _offload(_machine_rows)
+    return web.json_response({
+        "machines": rows, "count": len(rows),
+    })
+
+
+def _machine_rows() -> list[dict[str, Any]]:
     live = _machines_live()
     now = time.time()
     rows: list[dict[str, Any]] = []
@@ -2610,9 +2663,7 @@ async def handle_machines(request: web.Request) -> web.Response:
             "last_ok": int(m.get("last_ok") or 0),
         })
     rows.sort(key=lambda x: str(x["name"]).lower())
-    return web.json_response({
-        "machines": rows, "count": len(rows),
-    })
+    return rows
 
 
 async def handle_machine_delete(request: web.Request) -> web.Response:
@@ -2949,6 +3000,152 @@ async def handle_agent_doc(request: web.Request) -> web.Response:
         charset="utf-8",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+# ═════════════════ MCP over HTTP（Streamable HTTP 传输）══════════════════
+#
+# MCP 除了 stdio 还有 HTTP 传输（2025-03-26 版起叫 Streamable HTTP）：
+# 就一个端点，POST 发 JSON-RPC，回 JSON（或 SSE）。服务本来就是 aiohttp，
+# 直接在它身上挂 /mcp，好处是不用为每个客户端各起一个子进程，
+# 而且 18091 这个端口本来就在那儿。
+#
+# 工具实现跟 mcp_server.py 共用一份（import 过来），不重写第二遍。
+#
+# 两个坑已处理：
+#   1. mcp_server 里的 http_json 是同步 urllib，而工具要回调本服务的
+#      /actions、/github/*。在事件循环里直接调会把循环卡死（自己等自己），
+#      所以丢到线程池里跑。
+#   2. 工具里有些只能本机看（/github/* 用的是本机 gh 的凭据），/mcp 要是
+#      对局域网开就等于绕过了那道墙，所以这里一律只收 127.0.0.1。
+
+MCP_SESSIONS: "OrderedDict[str, float]" = OrderedDict()
+MCP_SESSION_MAX = 64
+
+
+def mcp_touch_session(sid: str) -> None:
+    """记一笔会话最近用过的时间。
+
+    淘汰必须按「最久没用」——用 set.pop() 随机弹的时候，实测会把**正在
+    使用中**的会话挤掉，客户端下一次请求就莫名 404。
+    """
+    if sid in MCP_SESSIONS:
+        MCP_SESSIONS.move_to_end(sid)
+        MCP_SESSIONS[sid] = time.time()
+        return
+    MCP_SESSIONS[sid] = time.time()
+    while len(MCP_SESSIONS) > MCP_SESSION_MAX:
+        MCP_SESSIONS.popitem(last=False)
+
+try:  # 文件不在就当没这个功能，别把整个服务拖死
+    import mcp_server as _mcp
+    if not getattr(_mcp, "TOOLS", None):
+        raise RuntimeError("mcp_server 里没有 TOOLS")
+    _MCP_ERR = ""
+except Exception as _exc:  # noqa: BLE001
+    _mcp = None  # type: ignore[assignment]
+    _MCP_ERR = f"{type(_exc).__name__}: {_exc}"
+    log.warning("MCP over HTTP 不可用：%s", _MCP_ERR)
+
+
+def mcp_base(request: web.Request) -> str:
+    """工具回调本服务时的基地址。必须走本机回环——/github/* 只认 127.0.0.1，
+    自报局域网 IP 会被自己 403。"""
+    cfg: Config = request.app["cfg"]
+    return f"http://127.0.0.1:{cfg.http_port}"
+
+
+def mcp_handle(msg: dict[str, Any], base: str) -> dict[str, Any] | None:
+    """在别的线程里跑。BASE 是模块级变量，并发请求写同一个值不影响结果——
+    它们指向的是同一个本机地址。"""
+    if _mcp is None:
+        return None
+    _mcp.BASE = base
+    return _mcp.handle(msg)
+
+
+async def handle_mcp_post(request: web.Request) -> web.Response:
+    """POST /mcp：收一条（或一批）JSON-RPC。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    if _mcp is None:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32603, "message": f"MCP 模块没加载：{_MCP_ERR}"}},
+            status=501)
+
+    raw = await request.text()
+    try:
+        payload = json.loads(raw or "null")
+    except ValueError:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32700, "message": "不是合法 JSON"}}, status=400)
+
+    if isinstance(payload, dict):
+        msgs = [payload]
+        single = True
+    elif isinstance(payload, list):
+        msgs = [m for m in payload if isinstance(m, dict)]
+        single = False
+    else:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32600, "message": "请求必须是对象"}}, status=400)
+
+    # 客户端报的会话号认得就行；报了不认识的（比如服务重启过）就让它重新初始化
+    sid = request.headers.get("Mcp-Session-Id", "")
+    if sid and sid not in MCP_SESSIONS:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32001, "message": "会话不在了，重新 initialize"}},
+            status=404)
+    if sid:
+        mcp_touch_session(sid)
+
+    base = mcp_base(request)
+
+    # 全是通知（没有 id）时按规范回 202 空体
+    if not any(m.get("id") is not None for m in msgs):
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: [mcp_handle(m, base) for m in msgs])
+        return web.Response(status=202, headers=mcp_cors())
+
+    loop = asyncio.get_running_loop()
+    if single:
+        out = await loop.run_in_executor(None, mcp_handle, msgs[0], base)
+    else:
+        replies = await loop.run_in_executor(
+            None, lambda: [r for r in (mcp_handle(m, base) for m in msgs) if r is not None])
+        out = replies or None
+
+    if out is None:
+        return web.Response(status=202, headers=mcp_cors())
+
+    headers = mcp_cors()
+    if single and msgs[0].get("method") == "initialize":
+        new_sid = uuid.uuid4().hex
+        mcp_touch_session(new_sid)
+        headers["Mcp-Session-Id"] = new_sid
+    return web.json_response(out, headers=headers)
+
+
+def mcp_cors() -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type, Mcp-Session-Id, MCP-Protocol-Version",
+        "Access-Control-Expose-Headers": "Mcp-Session-Id",
+    }
+
+
+async def handle_mcp_other(request: web.Request) -> web.Response:
+    """GET 会想开 SSE 长流；本服务没有「主动推给客户端」的需求，回 405 让
+    客户端回到 POST。DELETE 是客户端收尾，直接受。"""
+    if request.method == "DELETE":
+        sid = request.headers.get("Mcp-Session-Id", "")
+        MCP_SESSIONS.pop(sid, None)
+        return web.Response(status=200, headers=mcp_cors())
+    return web.Response(status=405, headers={**mcp_cors(), "Allow": "POST, DELETE"})
 
 
 async def handle_index(request: web.Request) -> web.Response:
@@ -3289,7 +3486,7 @@ async def handle_runner_jit(request: web.Request) -> web.Response:
     blocked = _local_only(request)
     if blocked:
         return blocked
-    return web.json_response(_jit_view())
+    return web.json_response(await _offload(_jit_view))
 
 
 async def handle_runner_jit_start(request: web.Request) -> web.Response:
@@ -3514,6 +3711,10 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app["state"] = state
     app["cfg"] = cfg
     app.router.add_get("/", handle_index)
+    app.router.add_post("/mcp", handle_mcp_post)
+    app.router.add_get("/mcp", handle_mcp_other)
+    app.router.add_delete("/mcp", handle_mcp_other)
+    app.router.add_route("OPTIONS", "/mcp", handle_mcp_other)
     app.router.add_get("/agent.md", handle_agent_doc)
     app.router.add_get("/llms.txt", handle_agent_doc)
     app.router.add_get("/stream", handle_stream)

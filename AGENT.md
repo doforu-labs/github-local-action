@@ -78,6 +78,7 @@ curl -s http://127.0.0.1:18091/health
 | `GET /runners/ssh/job/{id}` | 上面那类任务的结果 | — |
 | `GET /webhook/status` | 仓库 webhook 有没有指过来 | `repo` |
 | `POST /webhook/setup` | 自动给仓库配 webhook | `{"repo": "..."}` |
+| `POST /mcp` | MCP over HTTP 端点（JSON-RPC 2.0，只收本机） | 见下面 MCP 一节 |-
 
 ## 五个常用配方
 
@@ -135,8 +136,38 @@ curl -s "$B/runners" | jq '.machines[] | "\(.name) \(.os)/\(.arch) \(.host):\(.p
 
 ## 关于 MCP
 
-**有一个 MCP server**，但不跑在网络端口上：`local-client/mcp_server.py`，
-stdio 传输，只依赖标准库。客户端配置里写一行就行：
+**有两种接法，选一个就行**：
+
+| 传输 | 怎么接 | 适用 |
+|---|---|---|
+| **HTTP**（Streamable HTTP） | 端点 `http://127.0.0.1:18091/mcp` | 客户端支持「远程/HTTP MCP」时首选，不额外起进程 |
+| stdio | `python3 local-client/mcp_server.py` | 客户端只会拉起子进程时用（Claude Desktop 这种） |
+
+两种后端是**同一份工具实现**（HTTP 那个就是把 `mcp_server.py` 的 handler 挂在 aiohttp 上），
+行为、参数、返回完全一致。
+
+### HTTP 接法
+
+```json
+{
+  "mcpServers": {
+    "github-local-action": {
+      "type": "http",
+      "url": "http://127.0.0.1:18091/mcp"
+    }
+  }
+}
+```
+
+命令行客户端一般就是 `claude mcp add --transport http local-action http://127.0.0.1:18091/mcp`。
+协议要点：`POST /mcp` 发 JSON-RPC，`initialize` 的响应头带 `Mcp-Session-Id`，后续请求把它带回去；
+纯通知回 `202` 空体；`GET /mcp` 回 `405`（本服务没有「服务端主动推」的需求，不用 SSE 长流）。
+
+**限制**：`/mcp` 只收本机（127.0.0.1）。因为工具里有 `/github/*`（吃本机 gh 的凭据），
+要是对局域网开放，等于绕过了那道墙。要从别的机器用就起个隧道：
+`ssh -L 18091:localhost:18091 dev@10.0.0.5`。
+
+### stdio 接法
 
 ```json
 {
@@ -150,7 +181,7 @@ stdio 传输，只依赖标准库。客户端配置里写一行就行：
 }
 ```
 
-它有 7 个工具，全部只读：
+### 工具（两种传输一样）
 
 | 工具 | 对应接口 | 干什么 |
 |---|---|---|

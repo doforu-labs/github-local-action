@@ -54,6 +54,37 @@ class CacheStore(unittest.TestCase):
         cols = {r["name"] for r in self.store.conn.execute("PRAGMA table_info(gh_cache)")}
         self.assertEqual(cols, {"key", "body", "at"})
 
+    def test_cursor_lives_in_memory(self):
+        # /health 每两秒被轮一次，不该为它读库。插入/设值都要同步到内存。
+        self.assertEqual(self.store.cursor(), 0)
+        self.store.insert({"id": 7, "event": "push", "at": 1})
+        self.assertEqual(self.store.cursor(), 7)
+        self.store.set_cursor(99)
+        self.assertEqual(self.store.cursor(), 99)
+        # 旧事件（id 更小）不该把游标拉回去
+        self.store.insert({"id": 3, "event": "push", "at": 2})
+        self.assertEqual(self.store.cursor(), 99)
+
+    def test_read_connection_is_per_thread(self):
+        # 并发读共用一个连接会排成一队（实测把 /health 拖到 140ms），
+        # 所以读走线程本地连接；顺手确认它拒写。
+        import threading
+        seen = {}
+
+        def grab(key):
+            first = self.store._ro()
+            seen[key] = (id(first), id(self.store._ro()))  # 同一线程要复用同一个
+
+        for key in ("a", "b"):
+            t = threading.Thread(target=grab, args=(key,))
+            t.start(); t.join()
+        self.assertEqual(seen["a"][0], seen["a"][1], "同一线程要复用")
+        self.assertNotEqual(seen["a"][0], seen["b"][0], "不同线程应该拿到不同连接")
+        mine = id(self.store._ro())
+        self.assertEqual(mine, id(self.store._ro()), "主线程也要复用")
+        with self.assertRaises(Exception):
+            self.store._ro().execute("INSERT INTO meta(key,value) VALUES('x','y')")
+
 
 class CacheWiring(unittest.TestCase):
     """只想确认接口里那两处「什么才缓存」的判断没写反。"""

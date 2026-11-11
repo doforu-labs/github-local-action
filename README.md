@@ -26,17 +26,22 @@ GitHub ──webhook──▶ remote-worker ──WebSocket──▶ local-clien
 五个能直接粘贴的 curl 配方，以及「哪些操作得先问人」。服务自己也把它吐在
 `/agent.md` 和 `/llms.txt` 上，所以 agent 只要拿到一个地址就能开工。
 
-**有 MCP server**：`local-client/mcp_server.py`（stdio，只依赖标准库）。客户端配置里写一行就行：
+**有 MCP server，两种传输都支持**：
 
-```json
+```jsonc
+// HTTP（推荐：不用起子进程，端点就是 18091）
+{"mcpServers": {"github-local-action": {
+  "type": "http", "url": "http://127.0.0.1:18091/mcp"}}}
+
+// stdio
 {"mcpServers": {"github-local-action": {
   "command": "python3",
   "args": ["/绝对路径/local-client/mcp_server.py"]}}}
 ```
 
 7 个工具全只读：`health` `get_stats` `list_runs` `get_run_detail` `get_job_log` `recent_events`
-`list_machines`。它不重写任何逻辑，就是把下面那些 HTTP 接口翻译一遍——不接 MCP 直接 curl
-也一样能干活。
+`list_machines`。两种传输同一份实现，它不重写任何逻辑，就是把下面那些 HTTP 接口翻译一遍——
+不接 MCP 直接 curl 也一样能干活。`/mcp` 只收本机（工具里有吃本机 gh 凭据的 `/github/*`）。
 
 ## 为什么要两层
 
