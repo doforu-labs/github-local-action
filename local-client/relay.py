@@ -2075,6 +2075,406 @@ async def handle_index(request: web.Request) -> web.Response:
 # ─────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────
+# 按需 runner（JIT）
+#
+# 常驻模式是一台机器绑一个仓库、一直在线；按需模式是「谁有活才起谁」：
+#   workflow_job(queued) 事件 → 看它要哪些 label → 从池子里挑一台闲着的机器
+#   → 向 GitHub 要一张一次性票 → SSH 过去把进程拉起来 → 跑完自己消失。
+#
+# 票是一次性的，用完即废，所以没有缓存、也没有「复用」这回事。
+# 机器凭据来自 SSH_MACHINES（就是「添加一台机器」填密码那次留下的，30 分钟内有效）。
+# ─────────────────────────────────────────────────────────────
+
+JIT_DIRNAME = "jitlab"          # 跟常驻 runner 的 actions-runner 分开放，互不干扰
+JIT_HISTORY_MAX = 30
+
+JIT_POOL: dict[str, Any] = {
+    "on": False,
+    "repo": "",
+    "machines": [],             # 参与调度的机器名（对应 SSH_MACHINES 的键）
+    "max_parallel": 2,
+    "running": {},              # job_id -> {job, machine, name, label, at}
+    "history": [],              # 最近的接活记录，新的在前
+    "stats": {"picked": 0, "failed": 0, "done": 0, "last_error": ""},
+}
+
+_JIT_TASKS: set[asyncio.Task] = set()
+
+
+def _jit_os(machine: dict[str, Any]) -> str:
+    return str(machine.get("os") or "").lower()
+
+
+def _jit_home_dir(machine: dict[str, Any]) -> str:
+    """机器上放 JIT 的那份 runner 的目录。
+
+    Windows 没法用 ~，从常驻 runner 的安装目录推一层上去：
+    C:\\Users\\Docker\\actions-runner → C:\\Users\\Docker\\jitlab
+    """
+    if _jit_os(machine) == "windows":
+        base = str(machine.get("dir") or r"C:\actions-runner")
+        parent = base.rsplit("\\", 1)[0] if "\\" in base else r"C:\Users"
+        return parent.rstrip("\\") + "\\" + JIT_DIRNAME
+    return f"~/{JIT_DIRNAME}"
+
+
+def _jit_can_run(machine: dict[str, Any], labels: list[str]) -> bool:
+    """这台机器能不能接这个 job。
+
+    只看两件事：job 要 self-hosted，以及它点名的平台跟机器对得上。
+    自定义 label（比如 jit-lab）不用管——票是我们自己发的，带上就是了。
+    """
+    want = {str(x).lower() for x in labels}
+    if "self-hosted" not in want:
+        return False
+    plat = want & {"linux", "macos", "windows"}
+    if plat and _jit_os(machine) not in plat:
+        return False
+    return True
+
+
+def _jit_pick(labels: list[str]) -> Optional[dict[str, Any]]:
+    """挑一台闲着又能跑这个 job 的机器。"""
+    busy = {str(r.get("machine")) for r in JIT_POOL["running"].values()}
+    for name in JIT_POOL["machines"]:
+        machine = SSH_MACHINES.get(name)
+        if not machine or name in busy:
+            continue
+        if _jit_can_run(machine, labels):
+            return {"name": name, **machine}
+    return None
+
+
+def _jit_record(kind: str, **fields: Any) -> None:
+    entry = {"kind": kind, "at": time.time(), **fields}
+    JIT_POOL["history"].insert(0, entry)
+    del JIT_POOL["history"][JIT_HISTORY_MAX:]
+
+
+async def _jit_ticket(repo: str, name: str, labels: list[str]) -> tuple[str, str]:
+    """向 GitHub 要一张一次性票。labels 原样带上 job 要的那些。"""
+    args = ["api", "-X", "POST",
+            f"{_gh_scope(repo)}/actions/runners/generate-jitconfig",
+            "-f", f"name={name}", "-F", "runner_group_id=1",
+            "-f", "work_folder=_work"]
+    for label in labels:
+        args += ["-f", f"labels[]={label}"]
+    rc, out, err = await gh_run(args, attempts=2)
+    if rc != 0:
+        return "", (err or out).strip()[:200]
+    try:
+        data = json.loads(out or "{}")
+    except ValueError:
+        return "", "GitHub 返回的不是 JSON"
+    cfg = data.get("encoded_jit_config")
+    if not cfg:
+        return "", "票是空的"
+    return str(cfg), ""
+
+
+async def _jit_launch(machine: dict[str, Any], cfg: str) -> tuple[bool, str]:
+    """把票送过去、把进程拉起来。票走 stdin 写文件，不进命令行也不进日志。"""
+    box = SshBox(machine["host"], int(machine["port"]), machine["user"],
+                 machine["password"], log.info)
+    try:
+        await asyncio.to_thread(box.connect)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"连不上：{exc}"
+
+    directory = _jit_home_dir(machine)
+    try:
+        if _jit_os(machine) == "windows":
+            ps = (
+                f"$c=(Get-Content -Raw '{directory}\\jit.cfg').Trim(); "
+                "foreach($n in @('.runner','.credentials','.credentials_rsaparams')){ "
+                f"$p=Join-Path '{directory}' $n; "
+                "if(Test-Path -LiteralPath $p){ $i=Get-Item -LiteralPath $p -Force; "
+                "$i.IsReadOnly=$false; "
+                "Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } }; "
+                f"$line='{directory}\\bin\\Runner.Listener.exe run --jitconfig ' + $c; "
+                "Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+                f"-Arguments @{{CommandLine=$line; CurrentDirectory='{directory}'}} | "
+                "Select-Object -ExpandProperty ProcessId"
+            )
+            rc, out = await asyncio.to_thread(
+                box.run, f'powershell -NoProfile -Command "{ps}"', None, 60)
+            return rc == 0, "" if rc == 0 else (out or "").strip()[:200]
+
+        # 票写进文件：base64 走 stdin 落地，省得处理引号和换行
+        b64 = base64.b64encode(cfg.encode("utf-8")).decode("ascii")
+        rc, out = await asyncio.to_thread(
+            box.run,
+            f'cd {directory} && printf %s {shlex.quote(b64)} | base64 -d > jit.cfg && '
+            f'wc -c < jit.cfg',
+            None, 60, True)
+        if rc != 0:
+            return False, (out or "").strip()[:200]
+        # macOS 没有 setsid，nohup 就能活过 ssh 断开；顺手清掉上次被 kill 的残留
+        cmd = (f'cd {directory} && rm -f .runner .credentials .credentials_rsaparams && '
+               f'nohup ./run.sh --jitconfig "$(cat jit.cfg)" > run.log 2>&1 < /dev/null & '
+               f'echo started')
+        rc, out = await asyncio.to_thread(box.run, cmd, None, 60, True)
+        return rc == 0, "" if rc == 0 else (out or "").strip()[:200]
+    except Exception as exc:  # noqa: BLE001
+        return False, f"拉起失败：{exc}"
+    finally:
+        box.close()
+
+
+async def _jit_take_job(item: dict[str, Any]) -> None:
+    """一个 job 排队了：挑机器、发票、起进程。"""
+    payload = item.get("payload") or {}
+    job = payload.get("workflow_job") or {}
+    labels = [str(x) for x in (job.get("labels") or [])]
+    repo = str(item.get("repo") or "")
+    jid = str(job.get("id") or "")
+    jname = str(job.get("name") or "")
+
+    machine = _jit_pick(labels)
+    if not machine:
+        JIT_POOL["stats"]["skipped"] += 1
+        return
+
+    runner_name = f"jit-{machine['name']}-{jid[-6:]}" if jid else f"jit-{machine['name']}"
+    cfg, err = await _jit_ticket(repo, runner_name, labels)
+    if not cfg:
+        JIT_POOL["stats"]["failed"] += 1
+        JIT_POOL["stats"]["last_error"] = err
+        _jit_record("failed", job=jname, machine=machine["name"], job_id=jid, error=err)
+        return
+
+    ok, err = await _jit_launch(machine, cfg)
+    if not ok:
+        JIT_POOL["stats"]["failed"] += 1
+        JIT_POOL["stats"]["last_error"] = err
+        _jit_record("failed", job=jname, machine=machine["name"], job_id=jid, error=err)
+        return
+
+    JIT_POOL["running"][jid or runner_name] = {
+        "job": jname, "machine": machine["name"], "name": runner_name,
+        "labels": labels, "at": time.time(),
+    }
+    JIT_POOL["stats"]["picked"] += 1
+    _jit_record("picked", job=jname, machine=machine["name"], runner=runner_name, job_id=jid)
+    log.info("JIT 接活：%s → %s（%s）", jname, machine["name"], runner_name)
+
+
+async def _jit_on_event(item: dict[str, Any]) -> None:
+    """按需模式的入口：只关心「有 job 排队」和「job 结束」。"""
+    if not JIT_POOL["on"]:
+        return
+    if item.get("event") != "workflow_job":
+        return
+    action = item.get("action")
+    payload = item.get("payload") or {}
+    job = payload.get("workflow_job") or {}
+    jid = str(job.get("id") or "")
+
+    if action == "completed":
+        if JIT_POOL["running"].pop(jid, None) is not None:
+            JIT_POOL["stats"]["done"] += 1
+        return
+
+    if action != "queued":
+        return
+    if str(item.get("repo") or "") != JIT_POOL["repo"]:
+        return
+    if len(JIT_POOL["running"]) >= int(JIT_POOL["max_parallel"]):
+        JIT_POOL["stats"]["skipped"] += 1
+        return
+
+    task = asyncio.create_task(_jit_take_job(item))
+    _JIT_TASKS.add(task)
+    task.add_done_callback(_JIT_TASKS.discard)
+
+
+async def jit_loop(bus: Bus) -> None:
+    """订阅事件总线，来一条看一条。"""
+    queue = bus.subscribe()
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            try:
+                await _jit_on_event(item)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("JIT 处理事件出错：%s", exc)
+                JIT_POOL["stats"]["last_error"] = str(exc)[:200]
+    finally:
+        bus.unsubscribe(queue)
+
+
+# ── 接口 ──
+
+def _jit_view() -> dict[str, Any]:
+    now = time.time()
+    machines = []
+    for name in JIT_POOL["machines"]:
+        machine = SSH_MACHINES.get(name)
+        if not machine:
+            continue
+        busy = any(r.get("machine") == name for r in JIT_POOL["running"].values())
+        machines.append({
+            "name": name,
+            "os": _jit_os(machine),
+            "dir": _jit_home_dir(machine),
+            "busy": busy,
+        })
+    return {
+        "on": JIT_POOL["on"],
+        "repo": JIT_POOL["repo"],
+        "max_parallel": JIT_POOL["max_parallel"],
+        "machines": machines,
+        "available": sorted(_machines_live().keys()),
+        "running": [
+            {"job": r["job"], "machine": r["machine"], "name": r["name"],
+             "seconds": round(now - float(r["at"]), 1)}
+            for r in JIT_POOL["running"].values()
+        ],
+        "history": JIT_POOL["history"][:12],
+        "stats": dict(JIT_POOL["stats"]),
+        "pool_size": len(SSH_MACHINES),
+    }
+
+
+async def handle_runner_jit(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    return web.json_response(_jit_view())
+
+
+async def handle_runner_jit_start(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    repo = str(body.get("repo") or "").strip()
+    if not _REPO_RE.match(repo):
+        return web.json_response(
+            {"error": "填 owner/name 走仓库级，只填组织名走组织级"}, status=400)
+
+    live = _machines_live()
+    wanted = body.get("machines")
+    if wanted is None:
+        names = list(live.keys())
+    else:
+        if not isinstance(wanted, list):
+            return web.json_response({"error": "machines 要是数组"}, status=400)
+        names = [str(x) for x in wanted]
+        missing = [n for n in names if n not in live]
+        if missing:
+            return web.json_response(
+                {"error": f"这些机器没凭据或已过期：{', '.join(missing[:3])}"}, status=400)
+    try:
+        parallel = int(body.get("max_parallel") or 2)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "max_parallel 要是数字"}, status=400)
+    if parallel < 1 or parallel > 16:
+        return web.json_response({"error": "max_parallel 要在 1~16 之间"}, status=400)
+
+    if not names:
+        return web.json_response(
+            {"error": "池子是空的：先用「添加一台机器」把机器连一遍，密码只在 30 分钟内有效"},
+            status=400)
+
+    JIT_POOL.update(on=True, repo=repo, machines=names, max_parallel=parallel)
+    JIT_POOL["stats"]["last_error"] = ""
+    log.info("JIT 开启：仓库 %s，机器 %s，并发 %d", repo, names, parallel)
+    return web.json_response(_jit_view())
+
+
+async def handle_runner_jit_stop(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    JIT_POOL.update(on=False)
+    log.info("JIT 关闭")
+    return web.json_response(_jit_view())
+
+
+async def handle_runner_jit_prepare(request: web.Request) -> web.Response:
+    """给一台机器准备一份独立的 JIT 目录（从常驻那份复制二进制，不重新下载）。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    name = str(body.get("name") or "").strip()
+    machine = _machines_live().get(name)
+    if not machine:
+        return web.json_response(
+            {"error": "这台机器没有凭据（没连过，或者密码已过期）"}, status=400)
+
+    job = _ssh_new_job("jit-prepare", f"准备 JIT 目录：{name}")
+
+    async def work() -> None:
+        directory = _jit_home_dir(machine)
+        source = str(machine.get("dir") or "")
+        if not source:
+            job.update(status="failed", error="不知道常驻 runner 装在哪")
+            return
+        _ssh_log(job, f"从 {source} 复制一份到 {directory}（不重新下载）")
+        box = SshBox(machine["host"], int(machine["port"]), machine["user"],
+                     machine["password"], lambda t: _ssh_log(job, t))
+        try:
+            await asyncio.to_thread(box.connect)
+            if _jit_os(machine) == "windows":
+                cmd = (
+                    f'powershell -NoProfile -Command "'
+                    f'if (Test-Path \'{directory}\') {{ Remove-Item \'{directory}\' '
+                    f'-Recurse -Force -ErrorAction SilentlyContinue }}; '
+                    f'Copy-Item \'{source}\' \'{directory}\' -Recurse -Force; '
+                    f'foreach($n in @(\'_work\',\'_diag\')) {{ '
+                    f'Remove-Item (Join-Path \'{directory}\' $n) -Recurse -Force '
+                    f'-ErrorAction SilentlyContinue }}; '
+                    f'foreach($n in @(\'.runner\',\'.credentials\',\'._credentials_rsap\','
+                    f'\'.credentials_rsaparams\',\'.service\')) {{ '
+                    f'$p=Join-Path \'{directory}\' $n; '
+                    f'if (Test-Path -LiteralPath $p) {{ $i=Get-Item -LiteralPath $p -Force; '
+                    f'$i.IsReadOnly=$false; '
+                    f'Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }} }}; '
+                    f'Write-Output (\'run.cmd: \' + (Test-Path (Join-Path \'{directory}\' '
+                    f'\'bin\\Runner.Listener.exe\')))"'
+                )
+            else:
+                keep = " ".join(f"--exclude={x}" for x in (
+                    "_work", "_diag", ".runner", ".credentials",
+                    ".credentials_rsaparams", ".service"))
+                cmd = (f'rm -rf {directory} && mkdir -p {directory} && '
+                       f'tar -C {source} {keep} -cf - . 2>/dev/null | '
+                       f'tar -C {directory} -xf - && ls {directory}/run.sh')
+            rc, out = await asyncio.to_thread(box.run, cmd, None, 600, True)
+            if rc != 0:
+                job.update(status="failed", error=(out or "").strip()[:300])
+                _ssh_log(job, "失败：" + (out or "").strip()[:200])
+                return
+            job.update(status="done", result={"name": name, "dir": directory})
+            _ssh_log(job, f"好了，以后这台机器按需起 runner 就用 {directory}")
+        except Exception as exc:  # noqa: BLE001
+            job.update(status="failed", error=str(exc)[:300])
+            _ssh_log(job, f"失败：{exc}")
+        finally:
+            box.close()
+
+    task = asyncio.create_task(work())
+    _JIT_TASKS.add(task)
+    task.add_done_callback(_JIT_TASKS.discard)
+    return web.json_response({"job": job["id"], "kind": job["kind"]})
+
+
 def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Application:
     app = web.Application()
     app["store"] = store
@@ -2094,6 +2494,10 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
     app.router.add_post("/runners/ssh/remove", handle_runner_ssh_remove)
     app.router.add_get("/runners/ssh/job/{job}", handle_runner_ssh_job)
+    app.router.add_get("/runners/jit", handle_runner_jit)
+    app.router.add_post("/runners/jit/start", handle_runner_jit_start)
+    app.router.add_post("/runners/jit/stop", handle_runner_jit_stop)
+    app.router.add_post("/runners/jit/prepare", handle_runner_jit_prepare)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)
@@ -2123,12 +2527,18 @@ async def main_async(cfg: Config) -> None:
             pass
 
     task = asyncio.create_task(ws_loop(cfg, store, bus, state, stop))
+    jit_task = asyncio.create_task(jit_loop(bus))
     try:
         await stop.wait()
     finally:
         task.cancel()
         try:
             await task
+        except asyncio.CancelledError:
+            pass
+        jit_task.cancel()
+        try:
+            await jit_task
         except asyncio.CancelledError:
             pass
         bus.close_all()

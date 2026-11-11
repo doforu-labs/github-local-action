@@ -338,6 +338,44 @@ reconnect_max = 2
                 # 端口 1 上没人监听：必须在连接阶段就失败，不能卡住或假装成功
                 ck.check(state == "failed", "SSH 添加：连不上的机器明确失败", state)
 
+            # ── 6h. 按需 runner（JIT）──
+            # 这个例子里池子是空的（没有真实 SSH 凭据），所以正好验校验层。
+            jit = await s.get(f"{BASE}/runners/jit")
+            jd = await jit.json()
+            ck.check(jit.status == 200, "JIT：状态接口可用", str(jit.status))
+            need = {"on", "repo", "max_parallel", "machines", "available",
+                    "running", "history", "stats"}
+            ck.check(need <= set(jd), "JIT：状态结构完整", str(sorted(set(jd)))[:120])
+            ck.check(jd.get("on") is False, "JIT：默认是关的", str(jd.get("on")))
+
+            bad = await s.post(f"{BASE}/runners/jit/start", json={})
+            ck.check(bad.status == 400, "JIT：没填仓库就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/jit/start", json={"repo": "a/b/c"})
+            ck.check(bad.status == 400, "JIT：仓库格式错就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/jit/start",
+                               json={"repo": "a/b", "max_parallel": 99})
+            ck.check(bad.status == 400, "JIT：并发数越界就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/jit/start",
+                               json={"repo": "a/b", "max_parallel": "x"})
+            ck.check(bad.status == 400, "JIT：并发数不是数字就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/jit/start",
+                               json={"repo": "a/b", "machines": ["不存在的机器"]})
+            ck.check(bad.status == 400, "JIT：指定没凭据的机器就拒", str(bad.status))
+            bad = await s.post(f"{BASE}/runners/jit/start", json={"repo": "a/b"})
+            ck.check(bad.status == 400, "JIT：池子空时拒开", str(bad.status))
+            if bad.status == 400:
+                err = await bad.json()
+                ck.check("池子" in err.get("error", ""), "JIT：空池子给的是人话",
+                         err.get("error", "")[:60])
+
+            bad = await s.post(f"{BASE}/runners/jit/prepare", json={"name": "nope"})
+            ck.check(bad.status == 400, "JIT：准备目录要机器有凭据", str(bad.status))
+
+            stop = await s.post(f"{BASE}/runners/jit/stop")
+            ck.check(stop.status == 200, "JIT：能停下来", str(stop.status))
+            sd = await stop.json()
+            ck.check(sd.get("on") is False, "JIT：停完确实关了", str(sd.get("on")))
+
             # ── 7. 挂着 SSE 客户端时能否快速退出 ──
             # 回归点：不推哨兵的话 runner.cleanup() 会等活跃请求，最长 60 秒
             holder = asyncio.create_task(collect_sse(s, 30, []))

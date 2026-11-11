@@ -199,6 +199,40 @@ webhook: workflow_job (action=queued)
 | Windows | `Access to the path '.runner' is denied` | 复制过来的 `.runner` 是**隐藏 + 只读**，`Remove-Item` 不加 `-Force` 会静默失败 | `Get-Item -Force` 读属性、置 `IsReadOnly=$false` 再 `Remove-Item -Force` |
 | Windows | workflow 里 `shell: pwsh` 的步骤失败 | 该机器 pwsh 环境不完整 | 改用 `shell: cmd` + `ping -n 46 127.0.0.1 > nul` 当 sleep |
 
+### 6.3 接进产品之后（已实现）
+
+`relay.py` 里已经有这四个接口，页面上也有入口了：
+
+| 接口 | 干什么 |
+|---|---|
+| `GET /runners/jit` | 看当前状态：开没开、池子里有哪几台、在跑什么、累计接了多少 |
+| `POST /runners/jit/start` | `{repo, machines[], max_parallel}` 开始接活 |
+| `POST /runners/jit/stop` | 停下（已经不排队的 job 下次再来就不会接了） |
+| `POST /runners/jit/prepare` | `{name}` 给某台机器准备一份独立的 JIT 目录（从常驻那份复制二进制，不重新下载） |
+
+调度器主体是 `jit_loop()`：跟着事件总线走，只看 `workflow_job` 的 `queued` 和 `completed` 两种。
+
+**一条实测链路**（`example-org/demo-test`，真实机器）：
+
+```
++ 0s  触发 jit-probe.yml（runs-on: [self-hosted, jit-lab]）
++ 8s  JIT 接上了：probe → lab-linux-1-2
++16s  在跑（running=1）
++32s  跑完，running 清空，stats={picked:1, done:1}
+```
+
+GitHub 那边对应的是：run `completed/success`，job 落在
+`jit-lab-linux-1-2-464615` 上，跑完之后这个 runner 自己从列表里消失了。
+
+### 用之前得知道的三件事
+
+1. **仓库必须有 webhook**。调度器靠事件驱动，没配 webhook 的仓库永远不会有人给它发票。
+   实测在 `demo-a`（没 webhook）上触发，等了 48 秒一条事件都不到；换成 `demo-test` 立刻就好了。
+2. **机器凭据来自「添加一台机器」那次填的密码**，只在内存里活 30 分钟。过期了池子就是空的，
+   页面会直接说——它不会偷偷用旧凭据。
+3. **`prepare` 只做一次**。机器上得先有一份 `~/jitlab`，之后每次接活只是起进程；
+   不 prepare 也能接，但进程会因为找不到 `run.sh` 失败。
+
 ## 7. 什么时候该用这个模式
 
 **适合**：仓库多、任务少、机器少。比如我们这种「三台小机器服务一堆仓库」，常驻就是浪费，按需正合适。
@@ -215,6 +249,10 @@ webhook: workflow_job (action=queued)
 - [x] 验证并行/排队的实际行为（§4.1–4.4）
 - [x] 验证跨 5 台机器（Linux / 3×macOS / Windows）同时并发（§4.5）
 - [x] `relay.py` 支持组织级路径（填 `owner/repo` 走仓库级，只填组织名走组织级），行为对现有用法不变
-- [ ] 调度器尚未接进 relay（实验脚本见 `docs/examples/jit-scheduler.py`）
-- [ ] 并发上限、机器选择策略还没定
-- [ ] 常驻 + 弹性混合模式未做
+- [x] 调度器接进 relay：`/runners/jit` 四个接口 + `jit_loop()` 跟事件总线（§6.3）
+- [x] 前端 Runner 页加了「按需（JIT）」卡片：开关、仓库、并发数、机器多选、在跑的活、累计数
+- [x] 真实端到端验收：排队事件 → 自动发票 → SSH 起进程 → job success → 自动消失
+- [x] e2e 新增 13 条 JIT 用例，全量 78 项通过
+- [ ] 并发上限、机器选择策略还是简单版（按顺序挑第一台闲的）
+- [ ] 常驻 + 弹性混合模式未做（现在两者互不影响，但不共用名额）
+- [ ] 常驻那台的 `actions-runner` 和按需的 `jitlab` 两份二进制（约 1.4GB），可以只留一份

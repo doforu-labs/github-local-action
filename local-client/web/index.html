@@ -275,6 +275,14 @@
   .runner-query {
     display: flex; gap: 8px; align-items: center;
   }
+
+  /* 按需（JIT）的机器多选：一行摆不下就折行 */
+  .jit-machines { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .jit-mchk {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 13px; cursor: pointer; user-select: none;
+  }
+  .jit-mchk input { margin: 0; cursor: pointer; }
   .runner-query .input { flex: 1; min-width: 0; max-width: 320px; }
 
   .runner-row {
@@ -790,6 +798,46 @@
             <pre class="cmd cmd-log" id="sshLog"></pre>
           </div>
 
+        </div>
+
+        <div class="Box" style="margin-top:16px">
+          <div class="Box-header">
+            按需（JIT）
+            <div class="spacer"></div>
+            <span class="Label Label--secondary" id="jitState">关</span>
+          </div>
+
+          <div class="form-row">
+            <div class="label">有活才起，跑完就撤</div>
+            <div class="hint">收到 <code>workflow_job</code> 的排队事件时，才去机器上拉一个一次性 runner；
+              一个 job 一个进程，跑完自己从 GitHub 消失。不用把机器常驻注册到某个仓库，也用不到组织。</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+              <input class="input mono" id="jitRepo" type="text" spellcheck="false"
+                     placeholder="owner/name" aria-label="仓库" list="runnerRepoList"
+                     style="flex:1 1 200px">
+              <input class="input mono" id="jitParallel" type="text" inputmode="numeric"
+                     value="2" aria-label="并发上限" style="flex:0 0 88px"
+                     title="最多同时开几个 runner">
+            </div>
+            <div class="hint" style="margin-top:6px">左边填仓库，右边是同时最多开几个。</div>
+          </div>
+
+          <div class="form-row">
+            <div class="label">参与的机器</div>
+            <div id="jitMachines" class="jit-machines">
+              <span class="hint">池子是空的——先用上面的「连上去装」把机器连一遍，
+                密码还在有效期内的会列在这儿。</span>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn btn-primary" id="jitStart">开始接活</button>
+            <button class="btn" id="jitStop">停下</button>
+            <div class="spacer"></div>
+            <span class="hint" id="jitHint">没在接活</span>
+          </div>
+
+          <div id="jitBody"></div>
         </div>
 
         <div class="hint" style="margin-top:12px;line-height:1.7">
@@ -1633,6 +1681,99 @@ async function sshRemoveMachine(name, id) {
 }
 
 $('runnerRefresh').addEventListener('click', () => loadRunners(false));
+
+// ── 按需（JIT）──
+// 有活才起：收到排队事件时去机器上拉一次性 runner，跑完自己消失。
+function renderJit(d) {
+  const on = !!d.on;
+  const running = d.running || [];
+  $('jitState').textContent = on ? ('开着 ' + running.length + '/' + d.max_parallel) : '关';
+  $('jitState').style.color = on ? 'var(--fgColor-success, #1a7f37)' : '';
+  if (d.repo) $('jitRepo').value = d.repo;
+  if (d.max_parallel) $('jitParallel').value = d.max_parallel;
+
+  const avail = d.available || [];
+  const chosen = new Set((d.machines || []).map(m => m.name));
+  const box = $('jitMachines');
+  if (!avail.length) {
+    box.innerHTML = '<span class="hint">池子是空的——先用上面的「连上去装」把机器连一遍，' +
+      '密码还在有效期内的会列在这儿。</span>';
+  } else {
+    box.innerHTML = avail.map(n =>
+      '<label class="jit-mchk"><input type="checkbox" value="' + esc(n) + '"' +
+      (chosen.size ? (chosen.has(n) ? ' checked' : '') : ' checked') + '> ' +
+      esc(n) + '</label>').join('');
+  }
+
+  const rows = [];
+  if (running.length) {
+    rows.push('<div class="hint">正在跑：</div>');
+    running.forEach(r => rows.push(
+      '<div class="hint">· <b>' + esc(r.job) + '</b> — ' + esc(r.machine) +
+      '（' + esc(r.name) + '，' + r.seconds + 's）</div>'));
+  }
+  const hist = d.history || [];
+  if (hist.length) {
+    rows.push('<div class="hint" style="margin-top:8px">最近接的活：</div>');
+    hist.slice(0, 6).forEach(h => rows.push(
+      '<div class="hint">' + (h.kind === 'picked' ? '✓' : '✗') + ' ' +
+      esc(h.job || '') + ' → ' + esc(h.machine || '') +
+      (h.error ? ' · ' + esc(h.error) : '') + '</div>'));
+  }
+  const s = d.stats || {};
+  rows.push('<div class="hint" style="margin-top:8px">累计：接了 ' + (s.picked || 0) +
+    ' 个，完成 ' + (s.done || 0) + ' 个，失败 ' + (s.failed || 0) +
+    ' 个，跳过 ' + (s.skipped || 0) + ' 个</div>');
+  if (s.last_error) {
+    rows.push('<div class="hint">最近一次错误：' + esc(s.last_error) + '</div>');
+  }
+  $('jitBody').innerHTML = rows.join('');
+  $('jitHint').textContent = on ? ('仓库 ' + d.repo + ' · 池子 ' + avail.length + ' 台') : '没在接活';
+}
+
+async function loadJit() {
+  try {
+    const r = await fetch('/runners/jit');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    renderJit(d);
+  } catch (e) { /* 静默：不抢别的错误显示 */ }
+}
+
+$('jitStart').addEventListener('click', async () => {
+  const repo = ($('jitRepo').value || '').trim();
+  const machines = [...document.querySelectorAll('#jitMachines input[type=checkbox]:checked')]
+    .map(x => x.value);
+  const body = {
+    repo,
+    max_parallel: parseInt($('jitParallel').value, 10) || 2,
+    machines,
+  };
+  $('jitHint').textContent = '开启中…';
+  try {
+    const r = await fetch('/runners/jit/start', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    renderJit(d);
+    $('jitHint').textContent = '开始接活了';
+  } catch (e) {
+    $('jitHint').textContent = '没开成：' + e.message;
+  }
+});
+
+$('jitStop').addEventListener('click', async () => {
+  try {
+    const r = await fetch('/runners/jit/stop', { method: 'POST' });
+    const d = await r.json();
+    renderJit(d);
+    $('jitHint').textContent = '已停';
+  } catch (e) {
+    $('jitHint').textContent = '停不下来：' + e.message;
+  }
+});
 $('runnerRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRunners(false); });
 $('sshAdd').addEventListener('click', sshAddMachine);
 $('sshPass').addEventListener('keydown', (e) => {
@@ -1814,6 +1955,8 @@ pollHealth();
 pollStats();
 setInterval(pollHealth, 2000);
 setInterval(pollStats, 30000);
+loadJit();
+setInterval(loadJit, 4000);
 </script>
 </body>
 </html>
