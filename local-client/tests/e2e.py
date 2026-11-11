@@ -317,6 +317,44 @@ reconnect_max = 2
                                     "password": "p", "name": "n", "os": "bsd"})
             ck.check(r0.status == 400, "SSH 添加：未知系统被拒", str(r0.status))
 
+            # 机器不该被仓库绑住：仓库留空 = 纯按需机器，GitHub 那边一个字都不写。
+            # 用 127.0.0.1:1 是因为那里没人监听，能在连接阶段就失败，不留下任何机器。
+            r1 = await s.post(f"{BASE}/runners/ssh/add",
+                              json={"host": "127.0.0.1", "port": 1,
+                                    "user": "u", "password": "p"})
+            ck.check(r1.status == 200, "SSH 添加：不填仓库也能提交", str(r1.status))
+            if r1.status == 200:
+                jd = await r1.json()
+                st, lines = "running", []
+                for _ in range(24):
+                    await asyncio.sleep(0.5)
+                    q = await s.get(f"{BASE}/runners/ssh/job/{jd['job']}")
+                    if q.status != 200:
+                        break
+                    jb = await q.json()
+                    st = jb.get("status") or ""
+                    lines = jb.get("lines") or []
+                    if st != "running":
+                        break
+                joined = "\n".join(lines)
+                ck.check("纯按需" in joined, "SSH 添加：不填仓库走纯按需分支", joined[:120])
+                ck.check("注册令牌" not in joined, "SSH 添加：不填仓库不去要 GitHub 令牌",
+                         joined[:120])
+                ck.check(st == "failed", "SSH 添加：纯按需连不上时也明确失败", st)
+
+            # 机器清单：手上能连的机器，不按仓库分
+            mach = await s.get(f"{BASE}/runners")
+            md = await mach.json()
+            ck.check(mach.status == 200, "机器清单：接口可用", str(mach.status))
+            ck.check(isinstance(md.get("machines"), list), "机器清单：machines 是数组",
+                     str(md)[:100])
+            ck.check(md.get("count") == len(md.get("machines") or []),
+                     "机器清单：count 跟数组对得上", str(md.get("count")))
+            ck.check(md.get("ttl") == 1800, "机器清单：带凭据有效时长", str(md.get("ttl")))
+            ck.check(all(set("name os arch host port pure".split()) <= set(row)
+                         for row in (md.get("machines") or [])),
+                     "机器清单：每行字段齐全", str((md.get("machines") or [])[:1])[:120])
+
             # 页面现在只让填四样：地址/端口/用户/密码。机器名和目录都不传也得能交上去
             # （名字连上后读主机名，目录从 ~/actions-runner 顺延），所以不能报 400。
             r0 = await s.post(f"{BASE}/runners/ssh/add",

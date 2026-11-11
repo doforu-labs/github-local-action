@@ -625,7 +625,7 @@
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-list"/></svg>事件流
       </a>
       <a class="rail-item" href="#/runners" data-view="runners">
-        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-server"/></svg>Runner
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-server"/></svg>机器
       </a>
       <a class="rail-item" href="#/actions" data-view="actions">
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-workflow"/></svg>动作
@@ -790,24 +790,45 @@
       <section id="view-runners" hidden>
         <div id="runnerFlash" hidden></div>
 
+        <!-- 机器：我手上能连的那些，跟仓库无关 -->
         <div class="Box">
           <div class="Box-header">
-            Runner
+            机器
+            <div class="spacer"></div>
+            <span class="Label Label--secondary" id="machineCount">—</span>
+          </div>
+
+          <div id="machines">
+            <div class="empty">
+              <h3>还没有机器</h3>
+              <p>用下面的「添加一台机器」连过去；连上就能被按需模式调用，不用挂仓库。</p>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <span class="hint">这儿列的是「能连的机器」，不分仓库。
+              机器不往 GitHub 注册任何东西也能接活；密码只在内存里留 30 分钟，过期重连一次就行。</span>
+          </div>
+        </div>
+
+        <div class="Box" style="margin-top:16px">
+          <div class="Box-header">
+            某个仓库的常驻 runner
             <div class="spacer"></div>
             <span class="Label Label--secondary" id="runnerCount">—</span>
           </div>
 
           <div class="form-row runner-query">
             <input class="input mono" id="runnerRepo" type="text" spellcheck="false"
-                   placeholder="owner/name" aria-label="仓库" list="runnerRepoList">
+                   placeholder="owner/name（可选）" aria-label="仓库" list="runnerRepoList">
             <datalist id="runnerRepoList"></datalist>
             <button class="btn" id="runnerRefresh">刷新</button>
           </div>
 
           <div id="runners">
             <div class="empty">
-              <h3>还没查过</h3>
-              <p>上面填仓库名，点刷新。</p>
+              <h3>没填仓库</h3>
+              <p>这里只看「某个仓库上挂着的常驻 runner」。按需模式不用它。</p>
             </div>
           </div>
         </div>
@@ -821,10 +842,8 @@
 
           <div class="form-row">
             <div class="label">SSH 登录</div>
-            <div class="hint">连上之后会自己认系统（Linux / macOS / Windows）；
-              标签按实际系统拼成 <code>self-hosted,系统,X64</code>。
-              机器名用那台机器自己的主机名，目录默认 <code>~/actions-runner</code>，
-              那儿已经有一个就自动顺延——都不用填。</div>
+            <div class="hint">连上之后会自己认系统（Linux / macOS / Windows）和架构（x64 / arm64），
+              机器名用它自己的主机名——都不用填。</div>
             <div class="ssh-grid">
               <input class="input mono" id="sshHost" type="text" spellcheck="false"
                      placeholder="10.0.0.5" aria-label="地址">
@@ -837,8 +856,17 @@
             </div>
           </div>
 
+          <div class="form-row">
+            <div class="label">挂到哪个仓库（可不填）</div>
+            <div class="hint">留空就是纯按需：GitHub 上一个字也不写，机器上也不装常驻 runner，
+              有 job 排上了现签一张票、起一个用完就没的 runner。
+              填了才会装一台常驻的挂在那仓库上——只有“一直有活接”时才需要。</div>
+            <input class="input mono" id="sshRepo" type="text" spellcheck="false"
+                   placeholder="留空 = 不挂仓库（推荐）" aria-label="挂到哪个仓库" list="runnerRepoList">
+          </div>
+
           <div class="form-actions">
-            <button class="btn btn-primary" id="sshAdd">连上去装</button>
+            <button class="btn btn-primary" id="sshAdd">连上去</button>
             <div class="spacer"></div>
             <span class="hint" id="sshHint">密码只在内存里留 30 分钟，不落盘、不写日志；进程重启也会丢</span>
           </div>
@@ -1668,12 +1696,65 @@ function renderRunners(d) {
   box.innerHTML = d.runners.map(runnerRowHtml).join('');
 }
 
+/* 机器清单：不按仓库分，就是“我手上能连的那些” */
+function fmtLeft(sec) {
+  if (!sec || sec <= 0) return '凭据过期了';
+  const m = Math.floor(sec / 60);
+  if (m >= 60) return '凭据还有 ' + Math.floor(m / 60) + ' 小时';
+  return '凭据还有 ' + Math.max(1, m) + ' 分钟';
+}
+
+function machineRowHtml(m) {
+  const meta = [m.os, m.arch].filter(Boolean).join(' · ');
+  const tags = [];
+  if (m.pure) tags.push('按需');
+  else if (m.repo) tags.push('常驻 ' + m.repo);
+  const chips = tags.map((t) => '<span class="chip">' + esc(t) + '</span>').join('') +
+    '<span class="chip">' + esc(m.user + '@' + m.host + ':' + m.port) + '</span>';
+  const left = (m.seconds_left > 0)
+    ? '<span class="Label Label--secondary">' + esc(fmtLeft(m.seconds_left)) + '</span>'
+    : '<span class="Label Label--attention">凭据过期了</span>';
+  return '<div class="runner-row">' +
+      '<span class="st st-ok" title="能连"><svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-check-circle"/></svg></span>' +
+      '<div class="runner-main">' +
+        '<div class="runner-name">' +
+          '<span class="runner-id">' + esc(m.name || '（无名）') + '</span>' +
+          (meta ? '<span class="tag">' + esc(meta) + '</span>' : '') +
+        '</div>' +
+        '<div class="runner-labels">' + chips + '</div>' +
+      '</div>' +
+      left +
+    '</div>';
+}
+
+async function loadMachines(quiet) {
+  try {
+    const r = await fetch('/runners');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    const list = d.machines || [];
+    $('machineCount').textContent = list.length ? (list.length + ' 台') : '0 台';
+    if (!list.length) {
+      $('machines').innerHTML = '<div class="empty"><h3>还没有机器</h3>' +
+        '<p>用下面的「添加一台机器」连过去；连上就能被按需模式调用，不用挂仓库。</p></div>';
+      return;
+    }
+    $('machines').innerHTML = list.map(machineRowHtml).join('');
+  } catch (e) {
+    if (!quiet) {
+      $('machineCount').textContent = '—';
+      $('machines').innerHTML = '<div class="empty"><h3>读取失败</h3><p>' +
+        esc(e.message) + '</p></div>';
+    }
+  }
+}
+
 async function loadRunners(quiet) {
   const repo = ($('runnerRepo').value || '').trim();
   if (!repo) {
     renderRunners(null);
-    $('runners').innerHTML = '<div class="empty"><h3>先填一个仓库</h3>' +
-      '<p>runner 是挂在仓库上的，得知道看哪个。</p></div>';
+    $('runners').innerHTML = '<div class="empty"><h3>没填仓库</h3>' +
+      '<p>这里只看「某个仓库上挂着的常驻 runner」。按需模式不用它。</p></div>';
     return;
   }
   localStorage.setItem('ghr.repo', repo);
@@ -1717,7 +1798,7 @@ async function ensureRunnerRepo() {
 function startRunnerPoll() {
   if (runnerTimer) return;
   runnerTimer = setInterval(() => {
-    if (currentView() === 'runners') loadRunners(true);
+    if (currentView() === 'runners') { loadMachines(true); loadRunners(true); }
   }, 8000);
 }
 
@@ -1785,12 +1866,12 @@ function watchSshJob(id, onDone) {
 }
 
 async function sshAddMachine() {
-  const repo = ($('runnerRepo').value || '').trim();
+  const repo = ($('sshRepo').value || '').trim();
   const host = ($('sshHost').value || '').trim();
   const port = ($('sshPort').value || '22').trim();
   const user = ($('sshUser').value || '').trim();
   const password = $('sshPass').value || '';
-  if (!repo) { flashRunner('error', '先在上面填仓库'); $('runnerRepo').focus(); return; }
+  // 仓库可以不填：不填 = 纯按需，GitHub 那边一个字都不写
   if (!host || !user || !password) {
     flashRunner('error', '地址、用户、密码要填齐');
     return;
@@ -1808,8 +1889,8 @@ async function sshAddMachine() {
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     // 密码只交出去这一次，留在输入框里没意义
     $('sshPass').value = '';
-    $('sshHint').textContent = '装起来了，日志在下面走';
-    watchSshJob(d.job, () => { loadRunners(true); });
+    $('sshHint').textContent = '接进来了，日志在下面走';
+    watchSshJob(d.job, () => { loadMachines(true); loadRunners(true); });
   } catch (e) {
     $('sshAdd').disabled = false;
     $('sshHint').textContent = '';
@@ -2016,7 +2097,7 @@ const VIEWS = {
   events: ['事件流', '实时推送的事件，最新的在最上面'],
   actions: ['动作', '工作流运行记录，来自 workflow_run 事件'],
   repos: ['仓库', '账号下的全部仓库，最近提交的在前；开了按需接管的排最上面'],
-  runners: ['Runner', '自建 runner 的在线状态与接入命令'],
+  runners: ['机器', '能连的机器，以及某个仓库上挂着的常驻 runner'],
   settings: ['设置', '中继连接与本地服务参数']
 };
 
@@ -2042,6 +2123,7 @@ function route() {
   if (view === 'actions') loadActions();
   if (view === 'runners') {
     startRunnerPoll();
+    loadMachines(true);
     ensureRunnerRepo().then(() => loadRunners(true));
   }
 }

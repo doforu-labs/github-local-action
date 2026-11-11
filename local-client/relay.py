@@ -1293,8 +1293,8 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
     except (TypeError, ValueError):
         return {}, "端口要写成数字"
 
-    if not _REPO_RE.match(repo):
-        return {}, "填 owner/name 走仓库级，只填组织名走组织级"
+    if repo and not _REPO_RE.match(repo):
+        return {}, "填 owner/name 走仓库级，只填组织名走组织级；留空就是纯按需机器，不注册到任何仓库"
     if not host:
         return {}, "要填机器地址"
     if not user:
@@ -1888,6 +1888,138 @@ def _ssh_precheck(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
         box.close()
 
 
+def _ssh_precheck_pure(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
+    """纯按需机器的预检：只认三件事——什么系统、什么架构、机器叫什么。
+
+    跟装常驻那份的区别：不碰 ~/actions-runner（那台机器上可能一台常驻都没有），
+    也不去 GitHub 申请注册令牌。这台机器从头到尾不会在 GitHub 上留下任何记录。
+    """
+    box = _box_for(p, job)
+    try:
+        _ssh_log(job, f"连接 {p['user']}@{p['host']}:{p['port']} …")
+        box.connect()
+        _ssh_log(job, "连上了，看看是什么系统")
+        found = _detect_os(box, job)
+        if not found:
+            return False, "认不出这台机器是什么系统（uname 和 PowerShell 都没应答）"
+        if found != p["os"]:
+            _ssh_log(job, f"实际是 {found}，按这个来")
+            p["os"] = found
+
+        p["arch"] = _detect_arch(box, p["os"])
+        _ssh_log(job, f"架构 {p['arch']}（{_RUNNER_ARCH_LABEL[p['arch']]}）")
+
+        if not p.get("name"):
+            guess = _remote_hostname(box, p["os"])
+            if guess:
+                p["name"] = guess
+                _ssh_log(job, f"机器名自动取成 {guess}（读的是它自己的主机名）")
+            else:
+                fallback = _clean_runner_name(f"{p['user']}-{p['host'].replace('.', '-')}")
+                p["name"] = fallback or f"runner-{p['port']}"
+                _ssh_log(job, f"主机名没读到，机器名用 {p['name']} 顶着")
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        box.close()
+
+
+def _runner_pkg_name(os_name: str, arch: str) -> str:
+    """这台机器该用哪个安装包（不含版本号的模板已经填好）。"""
+    packs = _RUNNER_ARCHIVE.get(os_name) or _RUNNER_ARCHIVE["linux"]
+    return (packs.get(arch) or packs["x64"]).format(v=RUNNER_VERSION)
+
+
+def _posix_jit_bootstrap(directory: str, pkg: str, url: str) -> str:
+    """让一台 POSIX 机器有一份能用的 JIT 目录。三种来源，优先不联网的那种。"""
+    return f"""set -e
+D={directory}
+if [ -x "$D/run.sh" ]; then echo "已经有一份能用的，不用动"; exit 0; fi
+SRC="$HOME/actions-runner"
+if [ -x "$SRC/run.sh" ]; then
+  echo "从机器上那份常驻 runner 复制（不联网）"
+  rm -rf "$D"; mkdir -p "$D"
+  tar -C "$SRC" --exclude=_work --exclude=_diag --exclude=.runner \\
+      --exclude=.credentials --exclude=.credentials_rsaparams --exclude=.service \\
+      -cf - . 2>/dev/null | tar -C "$D" -xf -
+  test -x "$D/run.sh" && echo "复制完成" && exit 0
+fi
+PKG="$HOME/.cache/gh-relay/{pkg}"
+mkdir -p "$HOME/.cache/gh-relay"
+if tar -tzf "$PKG" >/dev/null 2>&1; then
+  echo "用机器上已经存着的安装包"
+else
+  echo "机器上没有安装包，得下一份（这一步看它连 GitHub 快不快）"
+  rm -f "$PKG.part"
+  curl -fsSL --max-time 3600 -o "$PKG.part" {url}
+  mv "$PKG.part" "$PKG"
+  echo "下载完成"
+fi
+rm -rf "$D"; mkdir -p "$D"
+tar xzf "$PKG" -C "$D"
+test -x "$D/run.sh" && echo "解包完成"
+"""
+
+
+def _win_jit_bootstrap(directory: str, url: str) -> str:
+    """Windows 版本：有常驻就本地复制，没有就下 zip 解开。"""
+    return f"""$ErrorActionPreference='Stop'
+$D='{directory}'
+if (Test-Path (Join-Path $D 'bin\\Runner.Listener.exe')) {{ '已经有一份能用的，不用动'; exit 0 }}
+$SRC="$env:USERPROFILE\\actions-runner"
+if (Test-Path (Join-Path $SRC 'bin\\Runner.Listener.exe')) {{
+  '从机器上那份常驻 runner 复制（不联网）'
+  Remove-Item $D -Recurse -Force -ErrorAction SilentlyContinue
+  Copy-Item $SRC $D -Recurse -Force
+  foreach($n in @('_work','_diag')) {{ Remove-Item (Join-Path $D $n) -Recurse -Force -ErrorAction SilentlyContinue }}
+  foreach($n in @('.runner','.credentials','.credentials_rsaparams','.service')) {{
+    $p=Join-Path $D $n
+    if (Test-Path -LiteralPath $p) {{ (Get-Item -LiteralPath $p -Force).IsReadOnly=$false; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }}
+  }}
+  '复制完成'
+  exit 0
+}}
+$CACHE="$env:USERPROFILE\\.cache\\gh-relay"
+New-Item -ItemType Directory -Force -Path $CACHE | Out-Null
+$ZIP=Join-Path $CACHE 'runner.zip'
+'机器上没有安装包，得下一份'
+Invoke-WebRequest -Uri '{url}' -OutFile $ZIP -UseBasicParsing
+Remove-Item $D -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -Path $ZIP -DestinationPath $D -Force
+'解包完成'
+"""
+
+
+def _jit_bootstrap_blocking(job: dict[str, Any], machine: dict[str, Any]) -> tuple[bool, str]:
+    """让这台机器有一份能用的 JIT 目录，不用人再点一次「准备目录」。
+
+    顺序：已经就绪就不动 → 有常驻 runner 就本地复制（最快）→ 机器上有旧包就解
+    → 都没有才下载。所以「机器连 GitHub 慢」只在最后一档才会咬人。
+    """
+    directory = _jit_home_dir(machine)
+    pkg = _runner_pkg_name(_jit_os(machine), _jit_arch(machine))
+    url = (f"https://github.com/actions/runner/releases/download/v{RUNNER_VERSION}/{pkg}")
+    box = SshBox(machine["host"], int(machine["port"]), machine["user"],
+                 machine["password"], lambda t: _ssh_log(job, t))
+    try:
+        box.connect()
+        if _jit_os(machine) == "windows":
+            script = _win_jit_bootstrap(directory, url)
+            rc, out = box.run(_ps(script), None, 3600, True)
+        else:
+            script = _posix_jit_bootstrap(directory, pkg, url)
+            rc, out = box.run(f"bash -c {shlex.quote(script)}", None, 3600, True)
+        tail = "\n".join([x for x in (out or "").strip().splitlines() if x.strip()][-3:])
+        if rc != 0:
+            return False, f"准备目录失败（退出码 {rc}）：{tail[:300]}"
+        return True, tail[:300]
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        box.close()
+
+
 def _ssh_install_blocking(job: dict[str, Any], p: dict[str, Any], token: str) -> tuple[bool, str]:
     """装。预检已经确认过系统和目录，这里只管下、解、注册、起服务。"""
     box = _box_for(p, job)
@@ -1929,8 +2061,54 @@ def _ssh_install_blocking(job: dict[str, Any], p: dict[str, Any], token: str) ->
         box.close()
 
 
+async def _ssh_add_pure(job: dict[str, Any], p: dict[str, Any]) -> None:
+    """不挂任何仓库地把一台机器接进来。"""
+    ok, err = await asyncio.to_thread(_ssh_precheck_pure, job, p)
+    if not ok:
+        job.update(status="failed", error=err)
+        _ssh_log(job, f"失败：{err}")
+        return
+
+    # 纯按需模式没有 GitHub 帮忙查重，同名得在本地避掉（两台都叫 Mac 很常见）
+    base = p["name"]
+    name = base
+    for i in range(2, 10):
+        if name not in SSH_MACHINES:
+            break
+        name = f"{base}-{i}"[:63]
+    if name != base:
+        _ssh_log(job, f"已经有一台叫 {base} 的，这台记成 {name}")
+    p["name"] = name
+
+    machine = {
+        "host": p["host"], "port": p["port"], "user": p["user"],
+        "password": p["password"], "os": p["os"], "arch": p.get("arch") or "x64",
+        "dir": "", "repo": "", "pure": True, "at": time.time(),
+    }
+    SSH_MACHINES[name] = machine
+    _ssh_log(job, "不挂任何仓库：GitHub 上不会多出记录，机器上也不留常驻 runner")
+
+    ok, info = await asyncio.to_thread(_jit_bootstrap_blocking, job, machine)
+    if not ok:
+        # 凭据留着：机器已经连上了，只是目录没备好，下次直接重试就行
+        job.update(status="failed", error=info)
+        _ssh_log(job, f"失败：{info}")
+        return
+    _ssh_log(job, f"按需目录好了：{_jit_home_dir(machine)}")
+    job.update(status="done", result={
+        "name": name, "os": p["os"], "arch": p.get("arch") or "x64",
+        "status": "ready", "pure": True,
+    })
+
+
 async def _run_ssh_add(job: dict[str, Any], p: dict[str, Any]) -> None:
     try:
+        # 没填仓库 = 纯按需机器：GitHub 那边一个字都不写，机器上也不装常驻 runner。
+        # 只确认能连、能跑，把按需目录备好，真排上 job 了再按仓库现签一张票。
+        if not p.get("repo"):
+            await _ssh_add_pure(job, p)
+            return
+
         ok, err = await asyncio.to_thread(_ssh_precheck, job, p)
         if not ok:
             job.update(status="failed", error=err)
@@ -2064,6 +2242,35 @@ async def _run_ssh_remove(job: dict[str, Any], p: dict[str, Any], runner_id: Opt
         _ssh_log(job, f"意外出错：{exc}")
 
 
+async def handle_machines(request: web.Request) -> web.Response:
+    """手上这几台机器：不按仓库分，就是“我能连的那些”。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    live = _machines_live()
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    for name, m in live.items():
+        at = float(m.get("at") or now)
+        rows.append({
+            "name": name,
+            "os": m.get("os") or "",
+            "arch": m.get("arch") or "x64",
+            "host": m.get("host") or "",
+            "port": m.get("port") or 22,
+            "user": m.get("user") or "",
+            "repo": m.get("repo") or "",
+            "pure": bool(m.get("pure")),
+            "dir": m.get("dir") or "",
+            "jit_dir": _jit_home_dir(m),
+            "seconds_left": max(0, int(SSH_MACHINE_TTL - (now - at))),
+        })
+    rows.sort(key=lambda x: str(x["name"]).lower())
+    return web.json_response({
+        "machines": rows, "count": len(rows), "ttl": SSH_MACHINE_TTL,
+    })
+
+
 async def handle_runner_ssh_add(request: web.Request) -> web.Response:
     """通过 SSH 把一台机器接进来：下载 runner、注册、装服务、等它上线。"""
     blocked = _local_only(request)
@@ -2082,8 +2289,11 @@ async def handle_runner_ssh_add(request: web.Request) -> web.Response:
     if err:
         return web.json_response({"error": err}, status=400)
     job = _ssh_new_job("add", f"装机器 @ {p['host']}:{p['port']}")
-    _ssh_log(job, f"目标仓库 {p['repo']}，机器名和目录连上去自己定"
-                   if not p["name"] else f"目标仓库 {p['repo']}，机器名 {p['name']}")
+    if p["repo"]:
+        _ssh_log(job, f"目标仓库 {p['repo']}，机器名和目录连上去自己定"
+                 if not p["name"] else f"目标仓库 {p['repo']}，机器名 {p['name']}")
+    else:
+        _ssh_log(job, "没填仓库，按纯按需机器接进来（不往 GitHub 注册任何东西）")
     job["_task"] = asyncio.create_task(_run_ssh_add(job, p))
     return web.json_response({"job": job["id"], "name": p["name"]})
 
@@ -2899,6 +3109,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/repos", handle_github_repos)
     app.router.add_get("/github/runners", handle_github_runners)
     app.router.add_post("/github/runners/remove", handle_github_runner_remove)
+    app.router.add_get("/runners", handle_machines)
     app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
     app.router.add_post("/runners/ssh/remove", handle_runner_ssh_remove)
     app.router.add_get("/runners/ssh/job/{job}", handle_runner_ssh_job)
