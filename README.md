@@ -85,6 +85,49 @@ gh auth status        # 确认已登录，scope 里要有 repo（私有仓库）
 
 日志仍然要单独下：`/logs` 返回的是 zip，体积大、不适合放进这个中转，暂时没做。
 
+### 让它跑在自己的机器上（self-hosted runner）
+
+默认的 `runs-on: ubuntu-latest` 是 GitHub 托管的机器，跑在微软的云上。想让 job 落在自己 LAN 里的机器上，装一个 runner 就行：不需要公网 IP，是 runner 主动连出去（轮询 + 长连接），跟中继的方向相反。
+
+```bash
+# 1) 拿注册令牌（1 小时有效）
+gh api -X POST /repos/<owner>/<repo>/actions/runners/registration-token --jq .token
+
+# 2) 在被控机器上装
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -fL -o runner.tar.gz \
+  https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz
+tar xzf runner.tar.gz
+./config.sh --url https://github.com/<owner>/<repo> --token <token> \
+  --name linux-22 --labels self-hosted,linux,x64 --work _work --unattended
+
+# 3) 装成系统服务，开机自启
+sudo ./svc.sh install $USER && sudo ./svc.sh start
+```
+
+然后用标签挑机器：
+
+```yaml
+jobs:
+  smoke:
+    runs-on: [self-hosted, linux, x64]
+```
+
+几点实测结论：
+
+- **私有仓库才适合自建 runner**。公开仓库 + self-hosted 意味着任何人的 PR 都能在你的机器上执行代码，GitHub 自己也会警告。
+- **runner 只是执行器，不是特权**：它以普通用户跑，`sudo` 要自己在机器上配；job 拿到的是仓库代码，不是你的登录态。
+- **结果两条路都能看**：GitHub 自己存一份日志；机器本地也留一份，`~/actions-runner/_diag/Worker_*.log` 是每次 job 的完整执行记录，断网时照样能翻。
+- **不要再改 workflow 文件时要 `workflow` scope**。我们本机的 gh 令牌只有 `repo / read:org / gist / delete_repo`，写 `.github/workflows/*` 会被 API 以 404 拒绝（写普通文件正常）。绕法是走 SSH 推送——SSH 密钥不受 OAuth scope 限制。
+
+这台 LAN 里三台机器的实测配置和可行性：
+
+| 机器 | 系统 | 配置 | 能不能跑 |
+|---|---|---|---|
+| `:22` dev | Ubuntu 24.04 | 6 核 / 31G（已用 25G）/ 146G 空闲 / 有 docker | ✅ 推荐，Linux 构建和测试都行 |
+| `:2222` dev | macOS 15.8（**Intel**） | 3 核 / 6G / 只有 CommandLineTools | ⚠️ 能跑测试和 x64 构建，但 `macos-14` 是 arm64，签不了名 |
+| `:2223` Docker | Win11 LTSC | 3 核 / **3G** / 没 git 没 docker | ❌ Electron + NSIS 打包含在这 3G 里容易 OOM |
+
 ## 成本
 
 免费计划，实测模型见下方。20 个仓库、300 事件/天的量级，占用不到 4% 的免费额度，且不随时间增长（每天重置）。
@@ -100,5 +143,5 @@ gh auth status        # 确认已登录，scope 里要有 repo（私有仓库）
 
 ## 验收
 
-`local-client/tests/e2e.py` 起一个假 Hub，验证 17 项：连接 → 续传 → 去重 → 断线重连后不重复 → 状态页 → 优雅退出。不需要 Cloudflare 账号就能跑。
+`local-client/tests/e2e.py` 起一个假 Hub，验证 43 项：连接 → 续传 → 去重 → 断线重连后不重复 → 状态页 → 动作页 → 优雅退出。不需要 Cloudflare 账号就能跑。
 `remote-worker/tests/smoke.py` 对着 `wrangler dev` 验 10 项：验签、幂等、token、补发、心跳。

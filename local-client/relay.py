@@ -686,7 +686,21 @@ def _local_only(request: web.Request) -> Optional[web.Response]:
     )
 
 
-async def gh_run(args: list[str]) -> tuple[int, str, str]:
+# api.github.com 在有些网络里会时不时 TLS 直接断（Go 报 EOF / connection reset）。
+# 这类失败重试往往就过了，所以只读调用默认重试 3 次。
+_GH_TRANSIENT = (
+    "eof", "connection reset", "connection closed", "broken pipe",
+    "tls handshake", "i/o timeout", "temporarily unavailable",
+    "unexpected eof", "http/2 frame", "no such host",
+)
+
+
+def _gh_transient(err: str) -> bool:
+    low = (err or "").lower()
+    return any(k in low for k in _GH_TRANSIENT)
+
+
+async def _gh_once(args: list[str]) -> tuple[int, str, str]:
     """跑一条 gh 命令。用 asyncio 子进程，不堵事件循环。"""
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -702,6 +716,21 @@ async def gh_run(args: list[str]) -> tuple[int, str, str]:
         proc.kill()
         return 124, "", f"gh 超过 {GH_TIMEOUT:.0f}s 没返回"
     return proc.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
+async def gh_run(args: list[str], attempts: int = 3) -> tuple[int, str, str]:
+    """带重试的 gh。只给只读命令用——写操作重放会重复执行。"""
+    rc, out, err = 1, "", ""
+    for i in range(max(1, attempts)):
+        rc, out, err = await _gh_once(args)
+        if rc == 0 or not _gh_transient(err):
+            return rc, out, err
+        if i + 1 < attempts:
+            await asyncio.sleep(0.4 * (i + 1))
+    if _gh_transient(err):
+        err = err.strip() + "\n（尝试 " + str(attempts) + " 次都连不上 api.github.com；" \
+              "本机到 GitHub 的 TLS 连接被重置，可给 relay 进程设 HTTPS_PROXY 走代理）"
+    return rc, out, err
 
 
 async def github_auth(force: bool = False) -> dict[str, Any]:
