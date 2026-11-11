@@ -182,6 +182,19 @@ reconnect_max = 2
             ck.check(r.status == 200 and "text/html" in ctype, "状态页返回 HTML", ctype)
             ck.check("Local Action" in html and "EventSource" in html, "状态页内容完整", f"{len(html)} 字节")
 
+            # ── 6b. 给 Agent 那一页：本来只是个页面，但它承担「把 agent 接进来」这一步，
+            # 跑坏了用户会以为 MCP 不能用，所以这里钉死：入口在、复制块在、兜底在。
+            ck.check('href="#/agent"' in html and 'data-view="agent"' in html,
+                    "给 Agent 页：侧栏有入口", "")
+            ck.check(all(f'id="{i}"' in html for i in ("view-agent", "agentBrief", "agentMcp", "agentStdio", "agentDoc")),
+                    "给 Agent 页：四个块都在", "")
+            ck.check(all(f'data-copy="{i}"' in html for i in ("agentBrief", "agentMcp", "agentStdio", "agentDoc")),
+                    "给 Agent 页：每块都有复制按钮", "")
+            ck.check("navigator.clipboard" in html and "execCommand('copy')" in html,
+                    "给 Agent 页：clipboard 带非安全上下文兜底", "")
+            ck.check(all(f"{n}" in html for n in ("list_runs", "get_run_detail", "get_job_log", "list_machines")),
+                    "给 Agent 页：开场白带上了全部工具名", "")
+
             async with s.get(f"http://127.0.0.1:{RELAY_PORT}/stats") as r:
                 st = await r.json()
             ck.check(len(st.get("hourly", [])) == 24, "统计返回 24 个整点桶", str(len(st.get("hourly", []))))
@@ -257,6 +270,9 @@ reconnect_max = 2
             ck.check(conf.get("token_set") is True, "设置里报告已设置令牌", str(conf.get("token_set")))
             ck.check(TOKEN not in raw, "设置接口不回传令牌明文", raw[:120])
             ck.check("ws_url" in (conf.get("hot_fields") or []), "标记出可热改字段", str(conf.get("hot_fields")))
+            # stdio 那条 MCP 配置要绝对路径，页面靠这个字段推（config_path 可能是相对路径）
+            ck.check(bool(conf.get("service_dir")) and "mcp_server.py" not in str(conf.get("service_dir")),
+                     "设置里带上了装在哪（给 stdio 拼绝对路径）", str(conf.get("service_dir")))
 
             bad = await s.post(f"{BASE}/config", json={"ws_url": "http://example.com"})
             ck.check(bad.status == 400, "非法地址被拒绝", str(bad.status))

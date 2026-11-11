@@ -495,6 +495,28 @@
     max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   }
   .btn-sm { height: 26px; padding: 2px 10px; font-size: 12px; }
+  /* 给 Agent：整块都能点着复制，按钮只是给个明确的落点 */
+  .copy-block {
+    margin: 0; padding: 12px 16px; background: #f6f8fa;
+    border-top: 1px solid var(--border-muted); cursor: copy;
+    font: 12px/1.62 var(--mono); color: var(--fg);
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 420px; overflow: auto;
+  }
+  .copy-block:hover { background: #f0f3f6; }
+  .copy-block.doc { max-height: 520px; }
+  .copy-actions {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; border-top: 1px solid var(--border-muted);
+  }
+  .copy-actions .spacer { flex: 1; }
+  .toast {
+    position: fixed; right: 24px; bottom: 24px; z-index: 60; pointer-events: none;
+    padding: 8px 14px; border-radius: 6px; background: #1f2328; color: #fff;
+    font: 12.5px/18px var(--font); opacity: 0; transform: translateY(6px);
+    transition: opacity .16s ease, transform .16s ease;
+  }
+  .toast.on { opacity: 1; transform: none; }
   /* 等 GitHub 的那点时间只转圈，不写文字：字出来一闪就没了，反而碍眼 */
   .spin {
     display: inline-block; width: 15px; height: 15px; border-radius: 50%;
@@ -565,6 +587,7 @@
     border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--bg-muted); color: #25292e;
     font: 500 14px/20px var(--font); cursor: pointer;
+    white-space: nowrap; flex: none;
   }
   .btn:hover { background: #eef1f4; }
   .btn-primary {
@@ -639,6 +662,7 @@
   <symbol id="i-branch" viewBox="0 0 16 16"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></symbol>
   <symbol id="i-external" viewBox="0 0 16 16"><path d="M4.53 4.75A.75.75 0 0 1 5.28 4h6.01a.75.75 0 0 1 .75.75v6.01a.75.75 0 0 1-1.5 0v-4.2l-5.26 5.261a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L9.48 5.5h-4.2a.75.75 0 0 1-.75-.75Z"/></symbol>
   <symbol id="i-dot" viewBox="0 0 16 16"><path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/></symbol>
+  <symbol id="i-robot" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8 1.75a1 1 0 0 1 1 1V4h2.5A2.5 2.5 0 0 1 14 6.5v5A2.5 2.5 0 0 1 11.5 14h-7A2.5 2.5 0 0 1 2 11.5v-5A2.5 2.5 0 0 1 4.5 4H7V2.75a1 1 0 0 1 1-1ZM4.5 5.5A1.5 1.5 0 0 0 3 7v4.5A1.5 1.5 0 0 0 4.5 13h7a1.5 1.5 0 0 0 1.5-1.5V7a1.5 1.5 0 0 0-1.5-1.5h-7Zm1.25 2.15a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2Zm4.5 0a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2Z"/></symbol>
   <symbol id="i-server" viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v3.5C0 7.216.784 8 1.75 8h12.5A1.75 1.75 0 0 0 16 6.25v-3.5A1.75 1.75 0 0 0 14.25 1Zm0 1.5h12.5a.25.25 0 0 1 .25.25v3.5a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25v-3.5a.25.25 0 0 1 .25-.25ZM.75 2.75a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Zm2.5 0a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Zm-1.5 5.5A1.75 1.75 0 0 0 0 10v3.25c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0 0 16 13.25V10a1.75 1.75 0 0 0-1.75-1.75Zm0 1.5h12.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25V10a.25.25 0 0 1 .25-.25ZM.75 10.75a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Zm2.5 0a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0Z"/></symbol>
 </svg>
 
@@ -667,6 +691,9 @@
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-list"/></svg>事件流
       </a>
       <div class="rail-head">配置</div>
+      <a class="rail-item" href="#/agent" data-view="agent">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-robot"/></svg>给 Agent
+      </a>
       <a class="rail-item" href="#/settings" data-view="settings">
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-gear"/></svg>设置
       </a>
@@ -869,6 +896,65 @@
       </section>
 
       <!-- 设置 -->
+      <!-- 给 Agent：一段能直接粘给 AI 的说明。点块或点按钮都复制 -->
+      <section id="view-agent" hidden>
+        <div class="Box">
+          <div class="Box-header">
+            给 agent 的开场白
+            <div class="spacer"></div>
+            <span class="hint">粘给任何一个 agent，它就知道这个系统怎么用</span>
+          </div>
+          <pre class="copy-block" id="agentBrief">正在生成…</pre>
+          <div class="copy-actions">
+            <button class="btn btn-primary btn-sm" data-copy="agentBrief">复制这段话</button>
+            <span class="hint">整块也能点，点了就复制</span>
+          </div>
+        </div>
+
+        <div class="Box" style="margin-top:16px">
+          <div class="Box-header">
+            MCP 接法：HTTP
+            <div class="spacer"></div>
+            <span class="hint">客户端支持远程 MCP 时首选，不用另起进程</span>
+          </div>
+          <pre class="copy-block" id="agentMcp">正在生成…</pre>
+          <div class="copy-actions">
+            <button class="btn btn-sm" data-copy="agentMcp">复制这段配置</button>
+            <div class="spacer"></div>
+            <span class="hint" id="agentMcpCmd"></span>
+          </div>
+        </div>
+
+        <div class="Box" style="margin-top:16px">
+          <div class="Box-header">
+            MCP 接法：stdio
+            <div class="spacer"></div>
+            <span class="hint">客户端只会拉子进程时用</span>
+          </div>
+          <pre class="copy-block" id="agentStdio">正在生成…</pre>
+          <div class="copy-actions">
+            <button class="btn btn-sm" data-copy="agentStdio">复制这段配置</button>
+            <div class="spacer"></div>
+            <span class="hint">路径要绝对路径，下面这份是照本机推出来的</span>
+          </div>
+        </div>
+
+        <div class="Box" style="margin-top:16px">
+          <div class="Box-header">
+            完整说明书
+            <div class="spacer"></div>
+            <span class="hint" id="agentDocHint">正在读取…</span>
+          </div>
+          <pre class="copy-block doc" id="agentDoc">正在读取…</pre>
+          <div class="copy-actions">
+            <button class="btn btn-sm" data-copy="agentDoc">复制全文</button>
+            <div class="spacer"></div>
+            <a class="btn btn-sm" href="/agent.md" target="_blank" rel="noreferrer"
+               style="text-decoration:none;display:inline-flex;align-items:center">在新标签页打开</a>
+          </div>
+        </div>
+      </section>
+
       <section id="view-settings" hidden>
         <div id="cfgFlash" hidden></div>
 
@@ -1144,7 +1230,25 @@ const I18N_EN = {
   "加载历史失败": "Failed to load history",
   "还没设置令牌": "No token set",
   "运行任务": "Run job",
-  "刷新列表": "Refresh list"
+  "刷新列表": "Refresh list",
+  "给 Agent": "For agents",
+  "把这段复制给 AI，它就知道怎么用这个系统": "Copy this to an AI; it explains how the system works",
+  "给 agent 的开场白": "Opening brief for an agent",
+  "粘给任何一个 agent，它就知道这个系统怎么用": "Paste it to any agent and it knows how to use this system",
+  "复制这段话": "Copy this brief",
+  "整块也能点，点了就复制": "The whole block is clickable too",
+  "MCP 接法：HTTP": "MCP via HTTP",
+  "MCP 接法：stdio": "MCP via stdio",
+  "客户端支持远程 MCP 时首选，不用另起进程": "Preferred when the client speaks remote MCP; no extra process",
+  "客户端只会拉子进程时用": "For clients that can only spawn a subprocess",
+  "复制这段配置": "Copy this config",
+  "路径要绝对路径，下面这份是照本机推出来的": "Path must be absolute; the one below was derived from this machine",
+  "完整说明书": "Full manual",
+  "复制全文": "Copy everything",
+  "在新标签页打开": "Open in a new tab",
+  "正在生成…": "generating…",
+  "正在读取…": "loading…",
+  "AGENT.md 没找到": "AGENT.md not found"
 };
 const HAS_CJK = (s) => /[\u4e00-\u9fff]/.test(String(s || ''));
 let LANG = localStorage.getItem('ghr.lang') === 'en' ? 'en' : 'zh';
@@ -2331,6 +2435,7 @@ const VIEWS = {
   runners: ['机器', '添加机器，有任务时自动运行'],
   repos: ['仓库', '账号下的全部仓库，最近提交的在前；开了按需接管的排最上面'],
   events: ['事件流', '实时推送的事件，最新的在最上面'],
+  agent: ['给 Agent', '把这段复制给 AI，它就知道怎么用这个系统'],
   settings: ['设置', '中继连接与本地服务参数']
 };
 
@@ -2353,11 +2458,217 @@ function route() {
   $('viewTitle').textContent = VIEWS[view][0];
   $('viewSub').textContent = VIEWS[view][1];
   if (view === 'settings') loadConfig();
+  if (view === 'agent') loadAgentView();
   if (view === 'actions') loadActions();
   if (view === 'runners') {
     startRunnerPoll();
     loadMachines(true);
   }
+}
+
+/* ─────────── 给 Agent ─────────── */
+// 端口跟页面一致（页面开在哪个端口，服务就在哪个端口），agent 一律认回环。
+function agentBase() {
+  return 'http://127.0.0.1:' + (location.port || '18091');
+}
+
+function agentMcpUrl() {
+  return agentBase() + '/mcp';
+}
+
+// 开头那段：不是介绍产品，是告诉 agent「你能让它干什么、别碰哪些地方」。
+function agentBriefText() {
+  const B = agentBase();
+  const zh = [
+    '你在一台装了「GitHub Local Action」的机器上干活。',
+    '',
+    '它能干什么：把 GitHub 账户下所有仓库的 workflow 事件实时收进本地库，',
+    '还能把 job 派到本机或局域网的机器上跑（常驻 runner 或按需临时 runner）。',
+    '服务地址：' + B,
+    '',
+    '先读说明书 —— 全部接口、返回结构、能直接跑的 curl 配方都在里面：',
+    '  curl -s ' + B + '/agent.md',
+    '',
+    '如果我能给你挂 MCP 工具（服务器名 github-local-action），优先用工具，别自己拼 curl。',
+    '7 个工具，全是只读：',
+    '  health          服务在不在、跟云端的链路通不通',
+    '  get_stats       今日/累计的事件数与运行数',
+    '  list_runs       最近的运行（本地库，不花 GitHub 配额）',
+    '  get_run_detail  一次运行的 job 和每一步状态，可带日志尾巴',
+    '  get_job_log     单个 job 的完整日志',
+    '  recent_events   最近的事件（after 当游标，可续读）',
+    '  list_machines   纳管的机器清单（不含密码）',
+    '',
+    '几条硬规矩，请照做：',
+    '1. 只读优先。GET 随便打；改配置、装卸 runner、开关按需池子会动别人的机器，先问我。',
+    '2. 不要把令牌、SSH 密码打进回复或日志。',
+    '3. /github/* 花的是我这个 gh 账号的配额（未登录 60 次/小时）。看列表用 /actions（本地库），',
+    '   只有要 job、步骤、日志时才碰 /github/*。',
+    '4. 不要高频轮询，运行中的 job 每 5 秒一次是上限。',
+    '5. 判断「跑完没有」看 status，判断「成没成」看 conclusion。',
+    '',
+    '权限：/github/*、/runners*、/webhook/*、/config、/mcp 只对本机开放；',
+    '从局域网访问只能读页面、/events、/stats、/actions、/stream。'
+  ];
+  const en = [
+    'You are working on a machine that runs "GitHub Local Action".',
+    '',
+    'What it does: it receives workflow events from every repo on this GitHub account in real',
+    'time into a local database, and can dispatch jobs to machines on this LAN',
+    '(permanent runners, or on-demand temporary ones).',
+    'Service address: ' + B,
+    '',
+    'Read the manual first -- every endpoint, response shape and a ready-to-run curl recipe:',
+    '  curl -s ' + B + '/agent.md',
+    '',
+    'If you can attach MCP tools (server name github-local-action), prefer them over hand-written curl.',
+    'Seven tools, all read-only:',
+    '  health          is the service up, is the relay link alive',
+    '  get_stats       today / total event and run counts',
+    '  list_runs       recent runs (local database, costs no GitHub quota)',
+    '  get_run_detail  jobs and per-step status for one run, optionally with log tails',
+    '  get_job_log     full log of a single job',
+    '  recent_events   recent events (pass after= as a cursor to page through)',
+    '  list_machines   managed machines (never returns passwords)',
+    '',
+    'Hard rules, please follow:',
+    '1. Read-only first. GET is free; changing config, installing or removing runners and',
+    '   toggling on-demand pools touches other people machines -- ask me first.',
+    '2. Never put tokens or SSH passwords into replies or logs.',
+    '3. /github/* spends this gh account API quota (60/hour unauthenticated). Use /actions',
+    '   (local database) for listings; touch /github/* only for jobs, steps or logs.',
+    '4. Do not poll in a tight loop; once every 5 seconds per running job is the ceiling.',
+    '5. "Is it finished" is status; "did it pass" is conclusion.',
+    '',
+    'Access: /github/*, /runners*, /webhook/*, /config and /mcp are localhost-only; from the',
+    'LAN you can read the page, /events, /stats, /actions and /stream.'
+  ];
+  return L(zh.join('\n'), en.join('\n'));
+}
+
+// stdio 那条必须有绝对路径：从 /config 的配置文件位置推，推不出来就留占位符。
+let agentServerPath = '';
+
+function agentStdioText() {
+  const script = agentServerPath || '/绝对路径/local-client/mcp_server.py';
+  return JSON.stringify({
+    mcpServers: {
+      'github-local-action': {
+        command: 'python3',
+        args: [script],
+        env: { LOCAL_ACTION_URL: agentBase() }
+      }
+    }
+  }, null, 2);
+}
+
+function agentMcpText() {
+  return JSON.stringify({
+    mcpServers: { 'github-local-action': { type: 'http', url: agentMcpUrl() } }
+  }, null, 2);
+}
+
+let agentLoaded = false;
+
+function loadAgentView() {
+  $('agentBrief').textContent = agentBriefText();
+  $('agentMcp').textContent = agentMcpText();
+  $('agentMcpCmd').textContent = L(
+    '命令行：claude mcp add --transport http github-local-action ' + agentMcpUrl(),
+    'CLI: claude mcp add --transport http github-local-action ' + agentMcpUrl());
+  $('agentStdio').textContent = agentStdioText();
+  if (agentLoaded) return;
+  agentLoaded = true;
+  (async () => {
+    try {
+      const c = await fetch('/config').then((r) => (r.ok ? r.json() : null));
+      // service_dir 是后端给的绝对路径；拿不到就试 config_path（可能是相对路径，那就不认）
+      const dir = c && c.service_dir
+        ? c.service_dir
+        : (c && c.config_path && c.config_path.indexOf('/') > 0
+            ? c.config_path.replace(/[\\/][^\\/]*$/, '') : '');
+      if (dir) {
+        agentServerPath = dir.replace(/[\\/]+$/, '') + '/mcp_server.py';
+        $('agentStdio').textContent = agentStdioText();
+      }
+    } catch (e) { /* 局域网打开时 /config 是 403，占位符就占位符 */ }
+    try {
+      const r = await fetch('/agent.md');
+      const txt = r.ok ? await r.text() : '';
+      $('agentDoc').textContent = txt || t('AGENT.md 没找到');
+      $('agentDocHint').textContent = txt
+        ? L('AGENT.md 原文，' + txt.length + ' 字', 'AGENT.md, ' + txt.length + ' chars')
+        : t('AGENT.md 没找到');
+    } catch (e) {
+      $('agentDoc').textContent = L('没取到 AGENT.md：' + e.message, 'Could not load AGENT.md: ' + e.message);
+      $('agentDocHint').textContent = t('AGENT.md 没找到');
+    }
+  })();
+}
+
+// 局域网用 IP 打开时不是安全上下文，navigator.clipboard 不存在，得走老路。
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+async function copyText(text) {
+  if (!text) return false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) { /* Safari 有时要手势才算数，落到下面 */ }
+  }
+  return fallbackCopy(text);
+}
+
+let toastTimer = 0;
+function toast(msg) {
+  let el = document.getElementById('copyToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'copyToast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('on'), 1600);
+}
+
+async function copyById(id, btn) {
+  const el = $(id);
+  const text = el ? el.textContent : '';
+  const ok = await copyText(text);
+  const done = L('已复制 ' + text.length + ' 字', 'Copied ' + text.length + ' chars');
+  toast(ok ? done : L('复制失败，手动选一下再按 ⌘C', 'Copy failed; select the text and press Ctrl+C'));
+  if (btn) {
+    const was = btn.dataset.label || btn.textContent;
+    btn.dataset.label = was;
+    btn.textContent = ok ? L('已复制 ✓', 'Copied ✓') : L('复制失败', 'Failed');
+    setTimeout(() => { btn.textContent = btn.dataset.label; }, 1600);
+  }
+}
+
+if ($('view-agent')) {
+  $('view-agent').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-copy]');
+    if (btn) { copyById(btn.dataset.copy, btn); return; }
+    // 整块也能点：不想找按钮就直接点正文
+    const block = e.target.closest('.copy-block');
+    if (block) copyById(block.id, null);
+  });
 }
 
 /* ─────────── 设置 ─────────── */

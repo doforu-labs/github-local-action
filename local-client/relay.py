@@ -2866,6 +2866,8 @@ def config_public(cfg: Config) -> dict[str, Any]:
         "token_set": bool(cfg.token),
         "token_hint": mask_token(cfg.token),
         "config_path": str(cfg.path) if cfg.path else "",
+        # 装在哪：stdio 那条 MCP 配置要绝对路径，前端从相对路径推不出来
+        "service_dir": str(Path(__file__).resolve().parent),
         "hot_fields": list(HOT_FIELDS),
         "cold_fields": list(COLD_FIELDS),
     }
