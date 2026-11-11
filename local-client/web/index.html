@@ -287,7 +287,15 @@
   .runner-row:hover { background: #f6f8fa80; }
   .runner-row .st { display: flex; align-items: center; }
   .runner-main { min-width: 0; }
-  .runner-name { font-weight: 600; font-size: 14px; }
+  .runner-name {
+    display: flex; align-items: baseline; gap: 6px; min-width: 0;
+    font-weight: 600; font-size: 14px;
+  }
+  /* 主机名可能很长（lab-linux-1），省略号收尾，别把右边的徽章挤走 */
+  .runner-name .runner-id {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .runner-name .tag { flex: none; }
   .runner-name .tag {
     font: 400 12px/1.4 var(--mono); color: var(--fg-muted); margin-left: 6px;
   }
@@ -530,7 +538,7 @@
     .rail-head { display: none; }
     .rail-item { white-space: nowrap; }
     .rail-foot { margin: 0 0 0 auto; padding-top: 0; border-top: 0; flex-wrap: nowrap; }
-    .main { padding: 16px 16px 40px; }
+    .main { padding: 16px 16px 40px; width: 100%; }
   }
   @media (max-width: 600px) {
     .rail-foot .Label.account { display: none; }
@@ -1468,7 +1476,8 @@ function runnerRowHtml(r) {
   return '<div class="runner-row">' +
       icon +
       '<div class="runner-main">' +
-        '<div class="runner-name">' + esc(r.name || '（无名）') +
+        '<div class="runner-name">' +
+          '<span class="runner-id" title="' + esc(r.name || '') + '">' + esc(r.name || '（无名）') + '</span>' +
           (meta ? '<span class="tag">' + esc(meta) + '</span>' : '') +
         '</div>' +
         '<div class="runner-labels">' + chips + '</div>' +

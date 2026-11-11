@@ -1116,8 +1116,13 @@ class SshBox:
                 pass
             self.client = None
 
-    def run(self, cmd: str, stdin_text: Optional[str] = None, timeout: float = 1800) -> tuple[int, str]:
-        """跑一条命令，边跑边把输出按行喂给 log。返回 (退出码, 全部输出)。"""
+    def run(self, cmd: str, stdin_text: Optional[str] = None, timeout: float = 1800,
+            quiet: bool = False) -> tuple[int, str]:
+        """跑一条命令，边跑边把输出按行喂给 log。返回 (退出码, 全部输出)。
+
+        quiet=True 用于探测类命令（uname / hostname / 看目录）：它们的输出
+        已经被上层另起一行讲清楚了，再原样打一遗只会让日志看着很乱。
+        """
         if self.client is None:
             raise RuntimeError("SSH 还没连上")
         chan = self.client.get_transport().open_session()
@@ -1139,7 +1144,7 @@ class SshBox:
                         line, buf = buf.split(b"\n", 1)
                         text = line.decode("utf-8", "replace").replace("\r", "")
                         chunks.append(text)
-                        if text.strip():
+                        if text.strip() and not quiet:
                             self.log(text)
                 continue
             if chan.exit_status_ready():
@@ -1154,7 +1159,8 @@ class SshBox:
         if buf.strip():
             text = buf.decode("utf-8", "replace").replace("\r", "")
             chunks.append(text)
-            self.log(text)
+            if not quiet:
+                self.log(text)
         return chan.recv_exit_status(), "\n".join(chunks)
 
 
@@ -1232,7 +1238,7 @@ def _remote_hostname(box: SshBox, plat: str) -> str:
     cmd = ('powershell -NoProfile -Command "$env:COMPUTERNAME"'
            if plat == "windows" else "hostname -s 2>/dev/null || hostname")
     try:
-        rc, out = box.run(cmd, timeout=30)
+        rc, out = box.run(cmd, timeout=30, quiet=True)
     except Exception:
         return ""
     if rc != 0:
@@ -1452,7 +1458,7 @@ def _dir_state(box: SshBox, p: dict[str, Any]) -> str:
                'elif [ -f "$DIR/config.sh" ]; then echo STALE; '
                'elif [ -d "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then echo DIRTY; '
                'else echo FRESH; fi')
-    _, out = box.run(cmd, timeout=60)
+    _, out = box.run(cmd, timeout=60, quiet=True)
     # 只看最后几行、且要求整行等于标记：MOTD 里随便出现一个 FRESH
     # 就会让判断走错路，而这条判断后面跟着的是 rm -rf。
     tokens = ("CONFIGURED", "STALE", "DIRTY", "FRESH")
@@ -1530,13 +1536,13 @@ def _detect_os(box: SshBox, job: dict[str, Any]) -> str:
     探针本身会报错，反而分不清。
     """
     try:
-        rc, out = box.run("uname -s", timeout=30)
+        rc, out = box.run("uname -s", timeout=30, quiet=True)
         name = (out or "").strip().splitlines()[-1].strip() if (out or "").strip() else ""
         if rc == 0 and name in ("Linux", "Darwin"):
             return "macos" if name == "Darwin" else "linux"
     except Exception:
         pass
-    rc, out = box.run('powershell -NoProfile -Command "$env:OS"', timeout=60)
+    rc, out = box.run('powershell -NoProfile -Command "$env:OS"', timeout=60, quiet=True)
     if "Windows" in (out or ""):
         return "windows"
     return ""
