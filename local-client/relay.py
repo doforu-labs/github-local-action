@@ -1765,7 +1765,7 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
     }, ""
 
 
-def _posix_env_lines() -> list[str]:
+def _posix_env_lines(dirvar: str = "DIR") -> list[str]:
     """把机器上已有的工具链写进 runner 目录的 .env。
 
     为什么必须有这一步：runner 服务是 launchd / systemd 拉起来的，它继承到的 PATH
@@ -1799,15 +1799,15 @@ def _posix_env_lines() -> list[str]:
         '    *) ENVPATH="${ENVPATH:+$ENVPATH:}$s";;',
         '  esac',
         'done',
-        'touch "$DIR/.env"',
-        'grep -v "^PATH=" "$DIR/.env" > "$DIR/.env.tmp" || true',
-        'printf "PATH=%s\\n" "$ENVPATH" >> "$DIR/.env.tmp"',
-        'mv "$DIR/.env.tmp" "$DIR/.env"',
-        'echo "  PATH 已写入 $DIR/.env"',
+        'touch "$' + dirvar + '/.env"',
+        'grep -v "^PATH=" "$' + dirvar + '/.env" > "$' + dirvar + '/.env.tmp" || true',
+        'printf "PATH=%s\\n" "$ENVPATH" >> "$' + dirvar + '/.env.tmp"',
+        'mv "$' + dirvar + '/.env.tmp" "$' + dirvar + '/.env"',
+        'echo "  PATH 已写入 $' + dirvar + '/.env"',
     ]
 
 
-def _win_env_parts() -> list[str]:
+def _win_env_parts(dirvar: str = "dir") -> list[str]:
     """Windows 同理，但 PATH 用分号，而且要合并机器级和用户级两份。
 
     Windows 服务账户（LocalSystem / NetworkService）拿不到用户的 PATH，
@@ -1820,7 +1820,7 @@ def _win_env_parts() -> list[str]:
         '$seen=@{}; $keep=@()',
         "foreach ($x in ((@($mp,$up) -join ';') -split ';')) { "
         "if ($x -and -not $seen.ContainsKey($x.ToLower())) { $seen[$x.ToLower()]=1; $keep+=$x } }",
-        "$envPath=Join-Path $dir '.env'",
+        "$envPath=Join-Path $" + dirvar + " '.env'",
         "$old=@(); if (Test-Path $envPath) { "
         "$old=@(Get-Content $envPath | Where-Object { $_ -notmatch '^PATH=' }) }",
         "(@($old)+@('PATH=' + ($keep -join ';'))) | Set-Content -Path $envPath -Encoding ASCII",
@@ -2444,11 +2444,27 @@ def _runner_pkg_name(os_name: str, arch: str) -> str:
     return (packs.get(arch) or packs["x64"]).format(v=RUNNER_VERSION)
 
 
+def _jit_env_fn_posix() -> str:
+    """给 JIT 脚本用的 ensure_env：目录可能还没建，先 mkdir。"""
+    body = "\n".join("  " + line for line in _posix_env_lines("D"))
+    return 'ensure_env() {\n  mkdir -p "$D"\n' + body + "\n}"
+
+
+def _jit_env_fn_win() -> str:
+    body = "\n".join(_win_env_parts("$D"))
+    return "function Ensure-Env {\n" + body + "\n}"
+
+
 def _posix_jit_bootstrap(directory: str, pkg: str, url: str) -> str:
-    """让一台 POSIX 机器有一份能用的 JIT 目录。三种来源，优先不联网的那种。"""
+    """让一台 POSIX 机器有一份能用的 JIT 目录。三种来源，优先不联网的那种。
+
+    每条出口都顺手写一次 .env：按需 runner 也是从 $D 起 listener，同样读
+    $D/.env。不写的话，纯按需的机器上 job 里照样看不到 node / nvm。
+    """
     return f"""set -e
 D={directory}
-if [ -x "$D/run.sh" ]; then echo "已经有一份能用的，不用动"; exit 0; fi
+{_jit_env_fn_posix()}
+if [ -x "$D/run.sh" ]; then ensure_env; echo "已经有一份能用的，不用动"; exit 0; fi
 SRC="$HOME/actions-runner"
 if [ -x "$SRC/run.sh" ]; then
   echo "从机器上那份常驻 runner 复制（不联网）"
@@ -2456,7 +2472,7 @@ if [ -x "$SRC/run.sh" ]; then
   tar -C "$SRC" --exclude=_work --exclude=_diag --exclude=.runner \\
       --exclude=.credentials --exclude=.credentials_rsaparams --exclude=.service \\
       -cf - . 2>/dev/null | tar -C "$D" -xf -
-  test -x "$D/run.sh" && echo "复制完成" && exit 0
+  test -x "$D/run.sh" && {{ ensure_env; echo "复制完成"; exit 0; }}
 fi
 PKG="$HOME/.cache/github-local-action/{pkg}"
 mkdir -p "$HOME/.cache/github-local-action"
@@ -2471,15 +2487,17 @@ else
 fi
 rm -rf "$D"; mkdir -p "$D"
 tar xzf "$PKG" -C "$D"
+ensure_env
 test -x "$D/run.sh" && echo "解包完成"
 """
 
 
 def _win_jit_bootstrap(directory: str, url: str) -> str:
-    """Windows 版本：有常驻就本地复制，没有就下 zip 解开。"""
+    """Windows 版本：有常驻就本地复制，没有就下 zip 解开。同样写 .env。"""
     return f"""$ErrorActionPreference='Stop'
 $D='{directory}'
-if (Test-Path (Join-Path $D 'bin\\Runner.Listener.exe')) {{ '已经有一份能用的，不用动'; exit 0 }}
+{_jit_env_fn_win()}
+if (Test-Path (Join-Path $D 'bin\\Runner.Listener.exe')) {{ '已经有一份能用的，不用动'; Ensure-Env; exit 0 }}
 $SRC="$env:USERPROFILE\\actions-runner"
 if (Test-Path (Join-Path $SRC 'bin\\Runner.Listener.exe')) {{
   '从机器上那份常驻 runner 复制（不联网）'
@@ -2491,6 +2509,7 @@ if (Test-Path (Join-Path $SRC 'bin\\Runner.Listener.exe')) {{
     if (Test-Path -LiteralPath $p) {{ (Get-Item -LiteralPath $p -Force).IsReadOnly=$false; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }}
   }}
   '复制完成'
+  Ensure-Env
   exit 0
 }}
 $CACHE="$env:USERPROFILE\\.cache\\github-local-action"
@@ -2500,6 +2519,7 @@ $ZIP=Join-Path $CACHE 'runner.zip'
 Invoke-WebRequest -Uri '{url}' -OutFile $ZIP -UseBasicParsing
 Remove-Item $D -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive -Path $ZIP -DestinationPath $D -Force
+Ensure-Env
 '解包完成'
 """
 
