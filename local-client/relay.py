@@ -3021,33 +3021,38 @@ async def handle_config_save(request: web.Request) -> web.Response:
 
 # 给 agent 的说明书：仓库根放一份 AGENT.md，服务自己也吐一份。
 # 网址比文件好使——把 agent 指向 http://127.0.0.1:18091/agent.md 就行。
-_AGENT_DOCS = (
-    Path(__file__).resolve().parent / "AGENT.md",
-    Path(__file__).resolve().parent.parent / "AGENT.md",
-)
-_agent_doc_cache: dict[str, Any] = {"mtime": 0.0, "text": ""}
+# 英文版是 AGENT.en.md，走 /agent.en.md；网页切到 English 时拉的就是它。
+_AGENT_NAMES = {"zh": "AGENT.md", "en": "AGENT.en.md"}
+_agent_doc_cache: dict[str, dict[str, Any]] = {"zh": {"mtime": 0.0, "text": ""},
+                                             "en": {"mtime": 0.0, "text": ""}}
 
 
-def agent_doc() -> str:
-    for path in _AGENT_DOCS:
-        try:
-            stamp = path.stat().st_mtime
-        except OSError:
-            continue
-        if _agent_doc_cache["mtime"] != stamp:
+def agent_doc(lang: str = "zh") -> str:
+    """读仓库里那份说明书。英文版没写/丢了就退回中文——总比空白强。"""
+    for want in ([lang, "zh"] if lang != "zh" else ["zh"]):
+        name = _AGENT_NAMES.get(want, "AGENT.md")
+        cache = _agent_doc_cache.setdefault(want, {"mtime": 0.0, "text": ""})
+        for root in (Path(__file__).resolve().parent, Path(__file__).resolve().parent.parent):
+            path = root / name
             try:
-                _agent_doc_cache["text"] = path.read_text(encoding="utf-8")
-                _agent_doc_cache["mtime"] = stamp
+                stamp = path.stat().st_mtime
             except OSError:
                 continue
-        if _agent_doc_cache["text"]:
-            return _agent_doc_cache["text"]
+            if cache["mtime"] != stamp:
+                try:
+                    cache["text"] = path.read_text(encoding="utf-8")
+                    cache["mtime"] = stamp
+                except OSError:
+                    continue
+            if cache["text"]:
+                return cache["text"]
     return ""
 
 
 async def handle_agent_doc(request: web.Request) -> web.Response:
-    """`/agent.md` 和 `/llms.txt` 都指这里。"""
-    text = agent_doc()
+    """`/agent.md`、`/agent.en.md` 和 `/llms.txt` 都指这里。"""
+    lang = "en" if request.path.endswith(".en.md") else "zh"
+    text = agent_doc(lang)
     if not text:
         return web.Response(
             text="AGENT.md 没找到；仓库根目录应该有一份。\n",
@@ -3777,6 +3782,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_delete("/mcp", handle_mcp_other)
     app.router.add_route("OPTIONS", "/mcp", handle_mcp_other)
     app.router.add_get("/agent.md", handle_agent_doc)
+    app.router.add_get("/agent.en.md", handle_agent_doc)
     app.router.add_get("/llms.txt", handle_agent_doc)
     app.router.add_get("/stream", handle_stream)
     app.router.add_get("/events", handle_events)

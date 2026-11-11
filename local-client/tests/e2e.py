@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -192,6 +193,8 @@ reconnect_max = 2
                     "给 Agent 页：每块都有复制按钮", "")
             ck.check("navigator.clipboard" in html and "execCommand('copy')" in html,
                     "给 Agent 页：clipboard 带非安全上下文兜底", "")
+            ck.check("/agent.en.md" in html and "agentDocPath" in html,
+                    "给 Agent 页：说明书跟着界面语言换", "")
             ck.check(all(f"{n}" in html for n in ("list_runs", "get_run_detail", "get_job_log", "list_machines")),
                     "给 Agent 页：开场白带上了全部工具名", "")
 
@@ -209,6 +212,20 @@ reconnect_max = 2
             async with s.get(f"http://127.0.0.1:{RELAY_PORT}/llms.txt") as r2:
                 ck.check(r2.status == 200 and (await r2.text()) == doc, "/llms.txt 与 agent.md 同内容", "")
             ck.check(TOKEN not in doc, "agent.md 不带令牌明文", "")
+
+            # 英文版：页面切 English 时拉的这份。少一行、没翻完、还是中文，都算没做完。
+            async with s.get(f"http://127.0.0.1:{RELAY_PORT}/agent.en.md") as r:
+                en = await r.text()
+                ect = r.headers.get("Content-Type", "")
+            ck.check(r.status == 200 and "markdown" in ect, "agent.en.md 以 markdown 返回", ect)
+            ck.check("18091" in en and "/github/joblog" in en and "token_hint" in en,
+                     "agent.en.md 带上了地址和关键接口", f"{len(en)} 字节")
+            ck.check(not re.search(r"[\u4e00-\u9fff]", en), "agent.en.md 里没有漏翻的中文",
+                     str(re.findall(r"[\u4e00-\u9fff]+", en)[:5]))
+            ck.check(len(en) > len(doc) // 2, "agent.en.md 不是空壳", f"{len(en)} vs {len(doc)}")
+            ck.check(TOKEN not in en, "agent.en.md 不带令牌明文", "")
+            async with s.get(f"http://127.0.0.1:{RELAY_PORT}/llms.txt") as r3:
+                ck.check(r3.status == 200 and (await r3.text()) == doc, "llms.txt 仍跟中文版同内容", "")
 
             # ── 6a2. MCP over HTTP（Streamable HTTP）──
             MCP = f"http://127.0.0.1:{RELAY_PORT}/mcp"

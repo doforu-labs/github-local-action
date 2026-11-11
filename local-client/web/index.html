@@ -949,7 +949,7 @@
           <div class="copy-actions">
             <button class="btn btn-sm" data-copy="agentDoc">复制全文</button>
             <div class="spacer"></div>
-            <a class="btn btn-sm" href="/agent.md" target="_blank" rel="noreferrer"
+            <a class="btn btn-sm" href="/agent.md" id="agentDocOpen" target="_blank" rel="noreferrer"
                style="text-decoration:none;display:inline-flex;align-items:center">在新标签页打开</a>
           </div>
         </div>
@@ -2476,6 +2476,11 @@ function agentMcpUrl() {
   return agentBase() + '/mcp';
 }
 
+// 说明书有两份：中文 AGENT.md、英文 AGENT.en.md。别指望后端替我们挑，跟着界面语言走。
+function agentDocPath() {
+  return LANG === 'en' ? '/agent.en.md' : '/agent.md';
+}
+
 // 开头那段：不是介绍产品，是告诉 agent「你能让它干什么、别碰哪些地方」。
 function agentBriefText() {
   const B = agentBase();
@@ -2519,7 +2524,7 @@ function agentBriefText() {
     'Service address: ' + B,
     '',
     'Read the manual first -- every endpoint, response shape and a ready-to-run curl recipe:',
-    '  curl -s ' + B + '/agent.md',
+    '  curl -s ' + B + '/agent.en.md',
     '',
     'If you can attach MCP tools (server name github-local-action), prefer them over hand-written curl.',
     'Seven tools, all read-only:',
@@ -2593,12 +2598,14 @@ function loadAgentView() {
       }
     } catch (e) { /* 局域网打开时 /config 是 403，占位符就占位符 */ }
     try {
-      const r = await fetch('/agent.md');
+      const r = await fetch(agentDocPath());
       const txt = r.ok ? await r.text() : '';
       $('agentDoc').textContent = txt || t('AGENT.md 没找到');
       $('agentDocHint').textContent = txt
-        ? L('AGENT.md 原文，' + txt.length + ' 字', 'AGENT.md, ' + txt.length + ' chars')
+        ? L('AGENT.md 原文，' + txt.length + ' 字', 'AGENT.en.md, ' + txt.length + ' chars')
         : t('AGENT.md 没找到');
+      const openLink = $('agentDocOpen');
+      if (openLink) openLink.setAttribute('href', agentDocPath());
     } catch (e) {
       $('agentDoc').textContent = L('没取到 AGENT.md：' + e.message, 'Could not load AGENT.md: ' + e.message);
       $('agentDocHint').textContent = t('AGENT.md 没找到');
