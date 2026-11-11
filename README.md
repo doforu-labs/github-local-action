@@ -146,8 +146,8 @@ jobs:
 1. **先探，不动 GitHub**：连上 → `uname -s` 认系统（Windows 没有 uname，退回去问 `$env:OS`）→ 读主机名定机器名 → 看目录里是什么
 2. 目录分四种：`FRESH` 空、`STALE` 上次没配完的残留（清掉重来）、`CONFIGURED` 已经有个配好的 runner、`DIRTY` 有别的文件。后两种在「自己顺延」模式下不算错，直接试下一个目录名；只有调用方明确指定了目录才拒。**目录不可用的时候一个令牌都不会去要**——早期版本先要令牌再检查，目录不可用时白造一堆令牌
 3. **重名先避**：装之前拿一次仓库里的 runner 名单，撞名就换成 `-2`、`-3`（`config.sh` 的同名注册会互相顶掉，所以不再用 `--replace`）
-3. 要注册令牌 → 下载（**先看 `~/.cache/gh-relay` 里有没有包**，有就不下）→ 解包 → `config.sh` 注册 → 装服务 → 启服务
-4. 轮询 GitHub 等它变成 `online`（最多 90 秒），拿到 id 才算完
+4. 要注册令牌 → 下载（**先看 `~/.cache/gh-relay` 里有没有包**，有就不下）→ 解包 → `config.sh` 注册 → 装服务 → 启服务
+5. 轮询 GitHub 等它变成 `online`（最多 90 秒），拿到 id 才算完
 
 几个实现上的取舍：
 
@@ -158,14 +158,18 @@ jobs:
 - **下载有进度心跳**：217MB 的包在弱网下能下十几分钟，`curl` 在后台跑、每 10 秒报一次已下载大小，否则看起来像卡死。
 - **同机装第二个 runner 不用管目录**：`config.sh` 不允许一个目录配两次，所以第一个占了 `~/actions-runner` 之后，第二个自动落到 `~/actions-runner-2`，名字也会从 `主机名` 变成 `主机名-2`。实测同一台 Linux 上跑通了：自动定名 `lab-linux-1`、自动落到 `~/actions-runner-2`，10 秒上线，卸载后目录和注册都清干净。
 - **Windows 走 `-EncodedCommand`**：PowerShell 脚本转 UTF-16LE + base64 传过去，避开 cmd.exe 那层吃引号；参数本身用单引号包，`'` 靠写两遍转义。
+- **macOS 的 `svc.sh` 不能加 sudo**：它装的是用户自己的 LaunchAgent，脚本开头就看 EUID，root 一律 `Must not run with sudo` 退出。所以 macOS 那一支的 `svc.sh install/start` 和删目录都是裸跑。（这是真机上撞到的，Linux 那支必须 sudo，两边不一样。）
+- **Windows 上 `√` 会变 `�`**：`config.cmd` 输出 UTF-8，PowerShell 默认按控制台代码页解。脚本开头加 `[Console]::OutputEncoding` 与 `$OutputEncoding` 两句 UTF8 就好了（实测对子进程也生效）。
 
 实测（2026-11-11）：
 
-| 平台 | 做到哪一步 |
-|---|---|
-| Linux `:22` | **全流程跑通**：装 → GitHub 变 online → 页面点「卸载」→ 服务停了、目录删了、注册没了；固存的 `linux-22` 全程没被碰 |
-| Windows `:2223` | 连通 + 认系统（`Windows_NT`）+ 目录探测正常；装包那一段未在真机跑过 |
-| macOS `:2222` | 连通 + 认成 `Darwin` + 目录探测正常；同上 |
+| 平台 | 机器名（自动取的） | 做到哪一步 |
+|---|---|---|
+| Linux `:22` | `lab-linux-1` | **全流程跑通**：装 → online → 页面点「卸载」→ 服务停、目录删、注册删；同机装第二个自动落到 `~/actions-runner-2` |
+| macOS `:2222`（iMac Pro） | `lab-mac-1` | **全流程跑通**：下包 → 解包 → 注册 → LaunchAgent 装好并启动 → 38 秒 online |
+| Windows `:2223`（3 核 3G） | `lab-win-1` | **全流程跑通**：下包 → 注册 → WMI 拉起 `run.cmd` → 49 秒 online（Windows 的 runner 包里没有 `svc.cmd`，起不了服务，只能靠进程守着） |
+
+三个平台都是同一个表单、只填地址/端口/用户/密码。
 
 弱网实测：同一台机器第一次装 64 秒（下 217MB），第二次命中缓存后 **15 秒**装完。
 

@@ -953,60 +953,6 @@ async def handle_github_runners(request: web.Request) -> web.Response:
     })
 
 
-async def handle_github_runner_token(request: web.Request) -> web.Response:
-    """要一个注册令牌，连同装机器要用的参数一起返回。
-
-    令牌一小时有效，且是写 GitHub 的动作，所以 attempts=1 不重试——
-    重试会多造一个令牌，虽然不致命但没必要。
-    """
-    blocked = _local_only(request)
-    if blocked:
-        return blocked
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}
-    repo = str(body.get("repo") or "").strip()
-    plat = str(body.get("platform") or "linux").strip().lower()
-    name = str(body.get("name") or "").strip()
-    if not _REPO_RE.match(repo):
-        return web.json_response({"error": "repo 要写成 owner/name"}, status=400)
-    if plat not in _RUNNER_ARCHIVE:
-        return web.json_response({"error": "platform 只支持 linux / macos / windows"}, status=400)
-
-    auth = await github_auth()
-    if not auth["logged_in"]:
-        return web.json_response({"error": auth["error"] or "gh 未登录"}, status=409)
-
-    rc, out, err = await gh_run([
-        "api", "-X", "POST", f"repos/{repo}/actions/runners/registration-token",
-        "--jq", "{token: .token, expires_at: .expires_at}",
-    ], attempts=1)
-    if rc != 0:
-        return web.json_response({"error": (err or out).strip()[:300]}, status=502)
-    try:
-        data = json.loads(out or "{}")
-    except ValueError:
-        return web.json_response({"error": "gh 返回的不是 JSON"}, status=502)
-    if not data.get("token"):
-        return web.json_response({"error": "GitHub 没给令牌"}, status=502)
-
-    return web.json_response({
-        "repo": repo,
-        "platform": plat,
-        "name": name,
-        "version": RUNNER_VERSION,
-        "url": f"https://github.com/{repo}",
-        "archive": ("https://github.com/actions/runner/releases/download/v{v}/"
-                    + _RUNNER_ARCHIVE[plat]).format(v=RUNNER_VERSION),
-        "labels": f"self-hosted,{_RUNNER_OS_LABEL[plat]},X64",
-        "token": data["token"],
-        "expires_at": data.get("expires_at") or "",
-    })
-
-
 async def handle_github_runner_remove(request: web.Request) -> web.Response:
     """从仓库里删掉一个 runner 注册（机器上那份文件不会自动清）。"""
     blocked = _local_only(request)
@@ -1263,6 +1209,7 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
     password = str(body.get("password") or "")
     name = str(body.get("name") or "").strip()
     plat = str(body.get("os") or "linux").strip().lower()
+    given_os = bool(str(body.get("os") or "").strip())
     given_dir = str(body.get("dir") or "").strip()
     directory = given_dir or DEFAULT_RUNNER_DIR
     try:
@@ -1290,7 +1237,7 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return {
         "repo": repo, "host": host, "port": port, "user": user,
         "password": password, "name": name, "os": plat, "dir": directory,
-        "auto_name": not name, "auto_dir": not given_dir,
+        "auto_name": not name, "auto_dir": not given_dir, "auto_os": not given_os,
     }, ""
 
 
@@ -1342,10 +1289,13 @@ def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: s
         'echo "[4/4] 装成服务并启动"',
     ]
     if p["os"] == "macos":
+        # macOS 的 svc.sh 装的是 LaunchAgent（装在用户自己的 ~/Library），
+        # 它开头就检查 EUID，看见 root 直接喊 "Must not run with sudo" 退出。
+        # 这一支绝不能加 sudo，也不要 sudo 密码。
         lines += [
-            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh install',
-            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh start',
-            'printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh status || true',
+            './svc.sh install',
+            './svc.sh start',
+            './svc.sh status || true',
         ]
     else:
         lines += [
@@ -1360,19 +1310,21 @@ def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: s
 
 def _posix_uninstall_script(p: dict[str, Any]) -> str:
     d = p["dir"].replace("~", "$HOME")
+    # 同上：macOS 的 svc.sh 一看见 root 就退出，删目录也不需要 root
+    sudo = "" if p["os"] == "macos" else 'printf "%s\\n" "$SUDOPW" | sudo -S '
     return "\n".join([
         "set +e",
         'read -r SUDOPW',
         f'DIR="{d}"',
         'if [ -d "$DIR" ]; then cd "$DIR"; fi',
         'if [ -x ./svc.sh ]; then',
-        '  printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh stop',
-        '  printf "%s\\n" "$SUDOPW" | sudo -S ./svc.sh uninstall',
+        f'  {sudo}./svc.sh stop',
+        f'  {sudo}./svc.sh uninstall',
         'fi',
         # 只删确实长得像 runner 的目录
         'if [ -f "$DIR/config.sh" ] || [ -f "$DIR/.runner" ] || [ -f "$DIR/runsvc.sh" ]; then',
         '  echo "删掉 $DIR"',
-        '  printf "%s\\n" "$SUDOPW" | sudo -S rm -rf "$DIR"',
+        f'  {sudo}rm -rf "$DIR"',
         'else',
         '  echo "$DIR 里看不到 runner 的痕迹，不动它"; exit 5',
         'fi',
@@ -1392,6 +1344,10 @@ def _win_install_script(p: dict[str, Any], token: str, archive: str, labels: str
     # 走 Windows PowerShell 5.1：只用 ASCII，脚本里一点中文都不能有（会按代码页拆坏）
     parts = [
         "$ErrorActionPreference='Stop'",
+        # config.cmd 打印的 √ 是 UTF-8，PS 默认按控制台代码页解就成了 �。
+        # 实测这两句能让子进程的 UTF-8 输出原样回来。
+        '[Console]::OutputEncoding=[Text.Encoding]::UTF8',
+        '$OutputEncoding=[Text.Encoding]::UTF8',
         f'$dir=\"{d}\"',
         'if (Test-Path \"$dir\\.runner\") { Write-Output \'dir already configured\'; exit 3 }',
         '$cache=\"$env:USERPROFILE\\.cache\\gh-relay\"',
@@ -1569,7 +1525,11 @@ def _ssh_precheck(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
         if not found:
             return False, "认不出这台机器是什么系统（uname 和 PowerShell 都没应答）"
         if found != p["os"]:
-            _ssh_log(job, f"你选的是 {p['os']}，实际上是 {found}，按实际的来")
+            # 页面已经不让人选系统了，os 默认值是内部分底，别说成「你选的」
+            if p.get("auto_os"):
+                _ssh_log(job, f"实际是 {found}，按这个来")
+            else:
+                _ssh_log(job, f"你选的是 {p['os']}，实际上是 {found}，按实际的来")
             p["os"] = found
 
         # 名字：机器自己叫什么就叫什么，不用人填
@@ -2096,7 +2056,6 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/github/runs", handle_github_runs)
     app.router.add_get("/github/jobs", handle_github_jobs)
     app.router.add_get("/github/runners", handle_github_runners)
-    app.router.add_post("/github/runner-token", handle_github_runner_token)
     app.router.add_post("/github/runners/remove", handle_github_runner_remove)
     app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
     app.router.add_post("/runners/ssh/remove", handle_runner_ssh_remove)

@@ -342,17 +342,6 @@
   .cmd-log .lg-ok { color: var(--success); }
   .cmd-log .lg-bad { color: var(--danger); }
 
-  .more {
-    margin-top: 14px; border-top: 1px solid var(--border-muted);
-    padding: 12px 16px 0;
-  }
-  .more > summary {
-    cursor: pointer; color: var(--fg-muted); font-size: 13px;
-    list-style: none; padding: 4px 0;
-  }
-  .more > summary::-webkit-details-marker { display: none; }
-  .more > summary:hover { color: var(--accent); }
-
   /* ---------- 动作（工作流运行） ---------- */
   .select {
     height: 28px; padding: 0 28px 0 8px;
@@ -801,35 +790,6 @@
             <pre class="cmd cmd-log" id="sshLog"></pre>
           </div>
 
-          <details class="more">
-            <summary>不想把密码给这个页面？只生成命令，自己到机器上敲</summary>
-
-            <div class="form-row">
-              <div class="label">系统</div>
-              <div class="hint">这条路的标签得你自己选对。</div>
-              <select class="select" id="runnerOs" aria-label="系统">
-                <option value="linux">Linux x64</option>
-                <option value="macos">macOS x64</option>
-                <option value="windows">Windows x64</option>
-              </select>
-            </div>
-
-            <div class="form-actions">
-              <button class="btn" id="runnerMake">生成注册令牌</button>
-              <div class="spacer"></div>
-              <span class="hint" id="runnerMakeHint"></span>
-            </div>
-
-            <div class="form-row" id="runnerCmdBox" hidden>
-              <div class="label">在被控机器上执行</div>
-              <div class="hint" id="runnerCmdHint"></div>
-              <pre class="cmd" id="runnerCmd"></pre>
-              <div class="cmd-foot">
-                <button class="btn" id="runnerCopy">复制命令</button>
-                <span class="hint">令牌只当文本拷走，这个页面不存。</span>
-              </div>
-            </div>
-          </details>
         </div>
 
         <div class="hint" style="margin-top:12px;line-height:1.7">
@@ -1525,63 +1485,6 @@ async function loadRunners(quiet) {
   }
 }
 
-function runnerCommands(d) {
-  // 名字也不用选：在目标机器上让它自己取主机名
-  const name = d.name || (d.platform === 'windows' ? '$env:COMPUTERNAME' : '"$(hostname -s)"');
-  if (d.platform === 'windows') {
-    return [
-      'mkdir C:\\actions-runner',
-      'cd C:\\actions-runner',
-      'Invoke-WebRequest -Uri ' + d.archive + ' -OutFile runner.zip',
-      'Expand-Archive runner.zip -DestinationPath . ; Remove-Item runner.zip',
-      '.\\config.cmd --url ' + d.url + ' --token ' + d.token +
-        ' --name ' + name + ' --labels "' + d.labels + '" --work _work --unattended',
-      '.\\run.cmd'
-    ].join('\n');
-  }
-  return [
-    'mkdir -p ~/actions-runner && cd ~/actions-runner',
-    'curl -fL -o runner.tar.gz ' + d.archive,
-    'tar xzf runner.tar.gz',
-    './config.sh --url ' + d.url + ' --token ' + d.token +
-      ' --name ' + name + ' --labels ' + d.labels + ' --work _work --unattended',
-    'sudo ./svc.sh install $USER && sudo ./svc.sh start'
-  ].join('\n');
-}
-
-async function makeRunnerToken() {
-  const repo = ($('runnerRepo').value || '').trim();
-  const platform = $('runnerOs').value;
-  const hint = $('runnerMakeHint');
-  if (!repo) { hint.textContent = '先在上面填仓库'; $('runnerRepo').focus(); return; }
-  hint.textContent = '正在要令牌…';
-  $('runnerMake').disabled = true;
-  try {
-    const r = await fetch('/github/runner-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo: repo, platform: platform })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    const exp = d.expires_at ? new Date(d.expires_at) : null;
-    hint.textContent = exp ? ('令牌到 ' + fmtTime(exp.getTime()) + ' 失效') : '令牌已生成';
-    $('runnerCmdHint').textContent =
-      '仓库 ' + d.repo + ' · runner v' + d.version + ' · 标签 ' + d.labels +
-      (exp ? ' · 令牌 ' + fmtTime(exp.getTime()) + ' 前有效' : '');
-    $('runnerCmd').textContent = runnerCommands(d);
-    $('runnerCmdBox').hidden = false;
-    localStorage.setItem('ghr.repo', repo);
-  } catch (e) {
-    hint.textContent = '';
-    $('runnerCmd').textContent = '';
-    $('runnerCmdBox').hidden = true;
-    flashRunner('error', e.message);
-  } finally {
-    $('runnerMake').disabled = false;
-  }
-}
-
 function flashRunner(kind, text) {
   const box = $('runnerFlash');
   if (!box) return;
@@ -1731,24 +1634,9 @@ async function sshRemoveMachine(name, id) {
 
 $('runnerRefresh').addEventListener('click', () => loadRunners(false));
 $('runnerRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRunners(false); });
-$('runnerMake').addEventListener('click', makeRunnerToken);
 $('sshAdd').addEventListener('click', sshAddMachine);
 $('sshPass').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !$('sshAdd').disabled) sshAddMachine();   // 别和点按钮叠成两次
-});
-$('runnerCopy').addEventListener('click', async () => {
-  const text = $('runnerCmd').textContent || '';
-  try {
-    await navigator.clipboard.writeText(text);
-    $('runnerCopy').textContent = '已复制';
-  } catch (e) {
-    const r = document.createRange();
-    r.selectNodeContents($('runnerCmd'));
-    const sel = window.getSelection();
-    sel.removeAllRanges(); sel.addRange(r);
-    $('runnerCopy').textContent = '已选中，按 Cmd+C';
-  }
-  setTimeout(() => { $('runnerCopy').textContent = '复制命令'; }, 2500);
 });
 $('view-runners').addEventListener('click', async (e) => {
   const un = e.target.closest('[data-uninstall]');

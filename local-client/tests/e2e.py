@@ -259,12 +259,10 @@ reconnect_max = 2
             # ── 6f. 自建 runner 的接入页 ──
             bad = await s.get(f"{BASE}/github/runners?repo=not-a-repo")
             ck.check(bad.status == 400, "runner 列表校验 repo 格式", str(bad.status))
-            bad = await s.post(f"{BASE}/github/runner-token",
-                               json={"repo": "nope", "platform": "linux"})
-            ck.check(bad.status == 400, "runner 令牌校验 repo 格式", str(bad.status))
-            bad = await s.post(f"{BASE}/github/runner-token",
-                               json={"repo": "a/b", "platform": "bsd"})
-            ck.check(bad.status == 400, "runner 令牌拒绝未知平台", str(bad.status))
+            # 「只生成命令」那条路已经删掉了，接口不能还留着
+            gone = await s.post(f"{BASE}/github/runner-token",
+                                json={"repo": "a/b", "platform": "linux"})
+            ck.check(gone.status == 404, "runner 令牌接口已下线", str(gone.status))
             bad = await s.post(f"{BASE}/github/runners/remove",
                                json={"repo": "a/b", "id": "abc"})
             ck.check(bad.status == 400, "runner 移除校验 id", str(bad.status))
