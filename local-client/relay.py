@@ -913,12 +913,33 @@ async def handle_github_jobs(request: web.Request) -> web.Response:
 # 安装包版本。写死比每次请求都去问 GitHub 稳——
 # 真要跟新时改这一行，前端从接口拿，不会各写一份。
 RUNNER_VERSION = "2.338.2"
+# 每个平台每个架构一个包。GitHub 官方发的就是这个命名，arm64 的机器要下 arm64 那份，
+# 拿 x64 包在 arm 上跑会直接 exec format error。
 _RUNNER_ARCHIVE = {
-    "linux": "actions-runner-linux-x64-{v}.tar.gz",
-    "macos": "actions-runner-osx-x64-{v}.tar.gz",
-    "windows": "actions-runner-win-x64-{v}.zip",
+    "linux": {
+        "x64": "actions-runner-linux-x64-{v}.tar.gz",
+        "arm64": "actions-runner-linux-arm64-{v}.tar.gz",
+        "arm": "actions-runner-linux-arm-{v}.tar.gz",
+    },
+    "macos": {
+        "x64": "actions-runner-osx-x64-{v}.tar.gz",
+        "arm64": "actions-runner-osx-arm64-{v}.tar.gz",
+    },
+    "windows": {
+        "x64": "actions-runner-win-x64-{v}.zip",
+        "arm64": "actions-runner-win-arm64-{v}.zip",
+    },
 }
 _RUNNER_OS_LABEL = {"linux": "Linux", "macos": "macOS", "windows": "Windows"}
+# GitHub 给 runner 打的架构标签，大写那个。自建 runner 默认只带 self-hosted/系统/X64，
+# arm 机器以前会被硬写成 X64，job 里写 runs-on: [self-hosted, ARM64] 永远匹配不到。
+_RUNNER_ARCH_LABEL = {"x64": "X64", "arm64": "ARM64", "arm": "ARM"}
+# uname -m 和 PROCESSOR_ARCHITECTURE 的各种写法，归到三种
+_ARCH_ALIAS = {
+    "x86_64": "x64", "amd64": "x64", "x64": "x64",
+    "aarch64": "arm64", "arm64": "arm64", "arm64ec": "arm64",
+    "armv7l": "arm", "armv6l": "arm", "arm": "arm",
+}
 
 
 def _runner_row(raw: dict[str, Any]) -> dict[str, Any]:
@@ -1761,6 +1782,26 @@ def _detect_os(box: SshBox, job: dict[str, Any]) -> str:
     return ""
 
 
+def _detect_arch(box: SshBox, os_name: str) -> str:
+    """看这台机器是 x64 还是 arm64。认不出来就当 x64——
+    绝大多数机器都是，猜错的话装完会立刻在解包/执行那步报出来，不会静静装错。
+    """
+    raw = ""
+    try:
+        if os_name == "windows":
+            rc, out = box.run(
+                'powershell -NoProfile -Command "$env:PROCESSOR_ARCHITECTURE"',
+                timeout=30, quiet=True)
+        else:
+            rc, out = box.run("uname -m", timeout=30, quiet=True)
+        if rc == 0:
+            lines = [x.strip() for x in (out or "").splitlines() if x.strip()]
+            raw = lines[-1].lower() if lines else ""
+    except Exception:  # noqa: BLE001
+        pass
+    return _ARCH_ALIAS.get(raw, "x64")
+
+
 def _box_for(p: dict[str, Any], job: dict[str, Any]) -> SshBox:
     return SshBox(p["host"], p["port"], p["user"], p["password"],
                   lambda line: _ssh_log(job, line))
@@ -1788,6 +1829,10 @@ def _ssh_precheck(job: dict[str, Any], p: dict[str, Any]) -> tuple[bool, str]:
             else:
                 _ssh_log(job, f"你选的是 {p['os']}，实际上是 {found}，按实际的来")
             p["os"] = found
+
+        # 架构：arm 机器得下 arm 包，标签也得是 ARM64
+        p["arch"] = _detect_arch(box, p["os"])
+        _ssh_log(job, f"架构 {p['arch']}（{_RUNNER_ARCH_LABEL[p['arch']]}），标签会带上它")
 
         # 名字：机器自己叫什么就叫什么，不用人填
         if not p.get("name"):
@@ -1848,9 +1893,16 @@ def _ssh_install_blocking(job: dict[str, Any], p: dict[str, Any], token: str) ->
     box = _box_for(p, job)
     try:
         box.connect()
+        # 架构在预检里已经探测过了；没探测到就按 x64 走
+        arch = str(p.get("arch") or "x64")
+        packs = _RUNNER_ARCHIVE[p["os"]]
+        pack = packs.get(arch) or packs["x64"]
+        if pack is not packs.get("x64"):
+            _ssh_log(job, f"下 {arch} 那份包（{pack}）")
         archive = ("https://github.com/actions/runner/releases/download/v{v}/"
-                   + _RUNNER_ARCHIVE[p["os"]]).format(v=RUNNER_VERSION)
-        labels = f"self-hosted,{_RUNNER_OS_LABEL[p['os']]},X64"
+                   + pack).format(v=RUNNER_VERSION)
+        labels = (f"self-hosted,{_RUNNER_OS_LABEL[p['os']]},"
+                  f"{_RUNNER_ARCH_LABEL.get(arch, 'X64')}")
         _ssh_log(job, f"runner v{RUNNER_VERSION} · 标签 {labels} · 目录 {p['dir']}")
         wipe = bool(p.get("_wipe"))
 
@@ -1924,6 +1976,7 @@ async def _run_ssh_add(job: dict[str, Any], p: dict[str, Any]) -> None:
         SSH_MACHINES[p["name"]] = {
             "host": p["host"], "port": p["port"], "user": p["user"],
             "password": p["password"], "os": p["os"], "dir": p["dir"],
+            "arch": p.get("arch") or "x64",
             "repo": p["repo"], "at": time.time(),
         }
         _ssh_log(job, "装完了，等 GitHub 把它标成在线（最多 90 秒）")
@@ -2342,10 +2395,14 @@ def _jit_home_dir(machine: dict[str, Any]) -> str:
     return f"~/{JIT_DIRNAME}"
 
 
+def _jit_arch(machine: dict[str, Any]) -> str:
+    return str(machine.get("arch") or "x64").lower()
+
+
 def _jit_can_run(machine: dict[str, Any], labels: list[str]) -> bool:
     """这台机器能不能接这个 job。
 
-    只看两件事：job 要 self-hosted，以及它点名的平台跟机器对得上。
+    看三件事：job 要 self-hosted、平台对得上、架构也对得上（arm 的活不能发到 x64）。
     自定义 label（比如 jit-lab）不用管——票是我们自己发的，带上就是了。
     """
     want = {str(x).lower() for x in labels}
@@ -2353,6 +2410,9 @@ def _jit_can_run(machine: dict[str, Any], labels: list[str]) -> bool:
         return False
     plat = want & {"linux", "macos", "windows"}
     if plat and _jit_os(machine) not in plat:
+        return False
+    arch = want & {"x64", "arm64", "arm"}
+    if arch and _jit_arch(machine) not in arch:
         return False
     return True
 
@@ -2555,6 +2615,7 @@ def _jit_view() -> dict[str, Any]:
         machines.append({
             "name": name,
             "os": _jit_os(machine),
+            "arch": _jit_arch(machine),
             "dir": _jit_home_dir(machine),
             "busy": busy,
         })
@@ -2566,6 +2627,11 @@ def _jit_view() -> dict[str, Any]:
         "max_parallel": JIT_POOL["max_parallel"],
         "machines": machines,
         "available": sorted(_machines_live().keys()),
+        # 带平台和架构的版本：页面上要看得出哪台是 arm、哪台是 x64
+        "available_info": [
+            {"name": n, "os": _jit_os(m), "arch": _jit_arch(m)}
+            for n, m in sorted(_machines_live().items())
+        ],
         "running": [
             {"job": r["job"], "machine": r["machine"], "name": r["name"],
              "seconds": round(now - float(r["at"]), 1)}

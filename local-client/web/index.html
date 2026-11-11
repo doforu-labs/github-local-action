@@ -1862,16 +1862,21 @@ function renderJit(d) {
   });
 
   const avail = d.available || [];
+  // available_info 带平台和架构，有就用它——arm 机器在列表里得看得出来
+  const info = new Map((d.available_info || []).map(m => [m.name, m]));
   const chosen = new Set((d.machines || []).map(m => m.name));
   const box = $('jitMachines');
   if (!avail.length) {
     box.innerHTML = '<span class="hint">池子是空的——先用上面的「连上去装」把机器连一遍，' +
       '密码还在有效期内的会列在这儿。</span>';
   } else {
-    box.innerHTML = avail.map(n =>
-      '<label class="jit-mchk"><input type="checkbox" value="' + esc(n) + '"' +
-      (chosen.size ? (chosen.has(n) ? ' checked' : '') : ' checked') + '> ' +
-      esc(n) + '</label>').join('');
+    box.innerHTML = avail.map(n => {
+      const m = info.get(n) || {};
+      const tag = m.os ? ' <span class="hint">' + esc(m.os) + '/' + esc(m.arch || 'x64') + '</span>' : '';
+      return '<label class="jit-mchk"><input type="checkbox" value="' + esc(n) + '"' +
+        (chosen.size ? (chosen.has(n) ? ' checked' : '') : ' checked') + '> ' +
+        esc(n) + tag + '</label>';
+    }).join('');
   }
 
   const rows = [];

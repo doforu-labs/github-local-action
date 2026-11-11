@@ -346,6 +346,8 @@ reconnect_max = 2
             need = {"on", "repos", "watching", "max_parallel", "machines", "available",
                     "running", "history", "stats"}
             ck.check(need <= set(jd), "JIT：状态结构完整", str(sorted(set(jd)))[:120])
+            ck.check(isinstance(jd.get("available_info"), list),
+                     "JIT：状态带架构清单", str(jd.get("available_info"))[:80])
             ck.check(jd.get("on") is False, "JIT：默认是关的", str(jd.get("on")))
 
             bad = await s.post(f"{BASE}/runners/jit/start", json={})
