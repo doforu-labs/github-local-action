@@ -572,9 +572,11 @@
     }
     .rail-brand { padding: 0 8px 0 0; flex-direction: row; align-items: baseline; gap: 6px; }
     .rail-brand span { display: none; }
-    .rail-nav { flex-direction: row; gap: 4px; }
+    /* 英文比中文长，品牌名再占一块就挤不下了——窄屏本来也不需要它 */
+    .rail-brand b { white-space: nowrap; font-size: 13px; }
+    .rail-nav { flex-direction: row; gap: 2px; }
     .rail-head { display: none; }
-    .rail-item { white-space: nowrap; }
+    .rail-item { white-space: nowrap; font-size: 13px; padding: 6px 7px; gap: 6px; }
     .rail-foot { margin: 0 0 0 auto; padding-top: 0; border-top: 0; flex-wrap: nowrap; }
     .main { padding: 16px 16px 40px; width: 100%; }
   }
@@ -831,6 +833,23 @@
 
         <div class="Box">
           <div class="Box-header">
+            界面语言
+            <div class="spacer"></div>
+            <span class="hint">改完立刻生效</span>
+          </div>
+
+          <div class="form-row">
+            <div class="label">语言</div>
+            <div class="hint">只换你看得见的文字，不改中继的任何行为。选择存在这个浏览器里，下次打开还是这个。</div>
+            <select class="input" id="cfgLang">
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="Box" style="margin-top:16px">
+          <div class="Box-header">
             连接
             <div class="spacer"></div>
             <span class="hint">改完立刻生效</span>
@@ -927,6 +946,234 @@
 </div>
 
 <script>
+/* ─────────── 界面语言 ───────────
+   用中文原文当 key：不用给每处另起一个英文名，漏翻的地方会原样显示中文，
+   开着英文看一眼就知道哪还没翻。切换时直接改文本节点，动态渲染的内容
+   由 MutationObserver 补上，所以不用每个渲染函数里都记得调一次。 */
+const I18N_EN = {
+  // 导航与页面标题
+  "工作台": "Workspace",
+  "配置": "Config",
+  "概览": "Overview",
+  "动作": "Runs",
+  "机器": "Machines",
+  "仓库": "Repos",
+  "事件流": "Events",
+  "设置": "Settings",
+  "本地接收端": "Local receiver",
+  "接收端运行状态": "Receiver status",
+  "工作流运行记录，来自 workflow_run 事件": "Workflow runs, from workflow_run events",
+  "实时推送的事件，最新的在最上面": "Live events, newest first",
+  "添加机器，有任务时自动运行": "Add machines; they run when there are tasks",
+  "中继连接与本地服务参数": "Relay connection and local service settings",
+  "账号下的全部仓库，最近提交的在前；开了按需接管的排最上面": "All repos in the account, newest commit first. Ones with on-demand enabled are pinned on top.",
+
+  // 概览
+  "今日事件": "Events today",
+  "总事件": "Total events",
+  "距上一条": "Since last event",
+  "最近 24 小时": "Last 24 hours",
+  "最近事件": "Recent events",
+  "全部事件": "All events",
+  "还没收到过事件": "No events received yet",
+  "还没有收到任何事件": "No events yet",
+  "把 webhook 指向这个接收端后，仓库会自动出现在这里。": "Point a webhook at this receiver and its repo will show up here.",
+  "触发一次 push 或 issue，几秒内就会出现在这里。": "Trigger a push or an issue and it lands here within seconds.",
+  "实时接收中": "Receiving live",
+
+  // 动作
+  "从 GitHub 获取运行记录": "Fetch runs from GitHub",
+  "拉取最近运行": "Fetch recent runs",
+  "全部仓库": "All repos",
+  "选择仓库": "Select repo",
+  "还没有工作流运行记录": "No workflow runs yet",
+  "GitHub 上没有任何运行": "No runs on GitHub",
+  "在 GitHub 的 webhook 设置里勾上「Workflow runs」事件，下次跑 CI 就会出现在这里。": "Tick the \"Workflow runs\" event in the repo's webhook settings and the next CI run shows up here.",
+  "查看历史运行记录，以及任务和步骤的执行结果。": "Past runs, with job and step results.",
+  "在 GitHub 上打开": "Open on GitHub",
+  "工作流文件": "Workflow file",
+  "运行号": "Run number",
+  "触发事件": "Trigger",
+  "发起人": "Actor",
+  "提交": "Commit",
+  "开始": "Started",
+  "用时": "Duration",
+  "运行": "Run",
+  "加载 job 与步骤": "Load jobs and steps",
+  "正在向 GitHub 读取 job…": "Reading jobs from GitHub…",
+  "这个运行里没有 job 记录": "This run has no job records",
+  "job 与步骤需要本机 gh 已登录才能看": "Jobs and steps need gh to be logged in on this machine",
+  "本机没装 gh": "gh is not installed here",
+  "gh 未登录": "gh is not logged in",
+  "复用本机 gh 的登录态": "Reuses this machine's gh login",
+  "GitHub 凭据": "GitHub credentials",
+  "上一页": "Previous",
+  "下一页": "Next",
+
+  // 仓库
+  "还没有任何仓库": "No repos yet",
+  "一个仓库都没有": "No repos at all",
+  "gh 没登录，或者这个账号下确实没有仓库。": "Either gh is not logged in, or this account really has no repos.",
+  "自动运行": "Auto-run",
+  "自动运行已开启": "Auto-run on",
+  "自动运行已关闭": "Auto-run off",
+
+  // 机器
+  "机器列表": "Machine list",
+  "添加一台机器": "Add a machine",
+  "正在读取机器…": "Loading machines…",
+  "还没有接入机器": "No machines yet",
+  "通过 SSH 接入，有任务时自动运行": "Added over SSH; runs when there are tasks",
+  "接入日志": "Setup log",
+  "SSH 登录": "SSH login",
+  "自动识别机器名称、系统和架构。": "Detects hostname, OS and architecture automatically.",
+  "连上去": "Connect",
+  "地址": "Host",
+  "用户名": "User",
+  "密码": "Password",
+  "删除": "Delete",
+  "删除机器": "Delete machine",
+  "取消": "Cancel",
+  "保存": "Save",
+  "刷新": "Refresh",
+  "已接入": "Added",
+  "重试": "Retry",
+
+  // 设置
+  "界面语言": "Language",
+  "语言": "Language",
+  "只换你看得见的文字，不改中继的任何行为。选择存在这个浏览器里，下次打开还是这个。": "Only changes the text you see, not how the relay behaves. The choice is stored in this browser.",
+  "连接": "Connection",
+  "改完立刻生效": "Applies immediately",
+  "中继地址": "Relay URL",
+  "Worker 的 WebSocket 地址，保存后会自动断开重连。": "The Worker's WebSocket URL. Saving reconnects automatically.",
+  "访问令牌": "Access token",
+  "留空表示不修改。": "Leave blank to keep unchanged.",
+  "留空则不修改": "Leave blank to keep unchanged",
+  "协议层心跳": "Protocol heartbeat",
+  "WebSocket ping 间隔，防止 NAT 或代理回收空闲连接。": "WebSocket ping interval. Keeps NAT and proxies from dropping idle connections.",
+  "应用层 ping": "App-level ping",
+  "由客户端定时发一条消息，顺带确认对端还活着。": "The client sends a message on a timer, which also confirms the peer is alive.",
+  "重连退避上限": "Reconnect backoff cap",
+  "连不上时按 1、2、4… 翻倍等待，最多等这么久。": "On failure it waits 1, 2, 4… doubling, up to this long.",
+  "本地服务": "Local service",
+  "改这些要重启进程": "These need a process restart",
+  "监听地址": "Listen address",
+  "局域网设备的访问地址；": "The address LAN devices use to reach it;",
+  "表示所有网卡。": "means all interfaces.",
+  "端口": "Port",
+  "默认 18091，避开本机其他服务。": "Default 18091, picked to stay clear of other local services.",
+  "事件库": "Event store",
+  "SQLite 文件，断线期间的事件会补进这里。": "SQLite file. Events received while offline are backfilled here.",
+  "配置文件": "Config file",
+  "保存时写回这个文件，改动前会留一份": "Written back on save; a copy is kept before changes",
+  "放弃更改": "Discard changes",
+  "连接信息已加密保存": "Connection details saved (encrypted)",
+
+  // 通用状态词
+  "可用": "Available",
+  "私有": "Private",
+  "未知": "Unknown",
+  "秒": "s",
+  "成功": "Success",
+  "失败": "Failed",
+  "超时": "Timed out",
+  "运行中": "Running",
+  "排队中": "Queued",
+  "待处理": "Pending",
+  "已取消": "Cancelled",
+  "已跳过": "Skipped",
+  "已归档": "Archived",
+  "完成": "Done",
+  "已连接": "Connected",
+  "未连接": "Disconnected",
+  "重新检测": "Re-check",
+  "还没有事件": "No events yet",
+  "先填 owner/name": "Enter owner/name first",
+  "读取中…": "Loading…",
+  "加载历史失败": "Failed to load history",
+  "还没设置令牌": "No token set",
+  "运行任务": "Run job",
+  "刷新列表": "Refresh list"
+};
+const HAS_CJK = (s) => /[\u4e00-\u9fff]/.test(String(s || ''));
+let LANG = localStorage.getItem('ghr.lang') === 'en' ? 'en' : 'zh';
+let translating = false;
+
+function t(zh) {
+  return LANG === 'en' ? (I18N_EN[zh] || zh) : zh;
+}
+
+// 带变量的句子没法用字典，就地给两版
+function L(zh, en) {
+  return LANG === 'en' ? en : zh;
+}
+
+function tr(raw) {
+  if (LANG !== 'en' || !HAS_CJK(raw)) return raw;
+  const key = raw.trim();
+  const hit = I18N_EN[key];
+  return hit ? raw.replace(key, hit) : raw;
+}
+
+const I18N_ATTRS = ['placeholder', 'title', 'aria-label'];
+
+function translateTree(root) {
+  if (!root || translating) return;
+  translating = true;
+  try {
+    if (root.nodeType === 3) root = root.parentNode;
+    if (!root || root.nodeType !== 1) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      const p = node.parentNode;
+      if (!p || p.nodeName === 'SCRIPT' || p.nodeName === 'STYLE') continue;
+      if (node.__zh === undefined) node.__zh = node.nodeValue;
+      node.nodeValue = LANG === 'en' ? tr(node.__zh) : node.__zh;
+    }
+    const els = [root, ...root.querySelectorAll('*')];
+    for (const el of els) {
+      if (el.nodeName === 'SCRIPT' || el.nodeName === 'STYLE') continue;
+      for (const attr of I18N_ATTRS) {
+        if (!el.hasAttribute || !el.hasAttribute(attr)) continue;
+        const slot = '__a_' + attr;
+        if (el[slot] === undefined) el[slot] = el.getAttribute(attr);
+        el.setAttribute(attr, LANG === 'en' ? tr(el[slot]) : el[slot]);
+      }
+    }
+  } finally {
+    translating = false;
+  }
+}
+
+function applyLang(lang) {
+  LANG = lang === 'en' ? 'en' : 'zh';
+  document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+  document.title = LANG === 'en' ? 'gh-relay · status' : 'gh-relay · 状态';
+  translateTree(document.body);
+  const sel = document.getElementById('cfgLang');
+  if (sel) sel.value = LANG;
+}
+
+function setLang(lang) {
+  localStorage.setItem('ghr.lang', lang === 'en' ? 'en' : 'zh');
+  // 刷新一下：不少句子是渲染时用 L() 拼的（带变量），只改文本节点改不动它们。
+  // 刷新后整页按新语言重新渲染，条条都对。
+  location.reload();
+}
+
+// 渲染出来的新节点自动跟上当前语言
+new MutationObserver((records) => {
+  if (LANG !== 'en' || translating) return;
+  for (const r of records) {
+    for (const n of r.addedNodes) {
+      if (n.nodeType === 1 || n.nodeType === 3) translateTree(n);
+    }
+  }
+}).observe(document.body, { childList: true, subtree: true });
+
 // 事件类型 → Primer Label 配色名，避免在每个标签上写死颜色
 const TONE = {
   push: 'accent',
@@ -1022,14 +1269,16 @@ function repoSortTime(r) {
 }
 
 function fmtPushed(iso) {
-  const t = Date.parse(iso || '');
-  if (!t) return '—';
-  const sec = Math.max(0, (Date.now() - t) / 1000);
-  if (sec < 3600) return Math.max(1, Math.floor(sec / 60)) + ' 分钟前';
-  if (sec < 86400) return Math.floor(sec / 3600) + ' 小时前';
-  if (sec < 86400 * 30) return Math.floor(sec / 86400) + ' 天前';
-  const d = new Date(t);
-  return (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
+  const ts = Date.parse(iso || '');
+  if (!ts) return '—';
+  const sec = Math.max(0, (Date.now() - ts) / 1000);
+  if (sec < 3600) return Math.max(1, Math.floor(sec / 60)) + L(' 分钟前', ' min ago');
+  if (sec < 86400) return Math.floor(sec / 3600) + L(' 小时前', ' h ago');
+  if (sec < 86400 * 30) return Math.floor(sec / 86400) + L(' 天前', ' d ago');
+  const d = new Date(ts);
+  return LANG === 'en'
+    ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
 }
 
 function mergeRepoRows() {
@@ -1100,9 +1349,10 @@ function renderRepos() {
   if (pages > 1) {
     pager.hidden = false;
     pager.innerHTML =
-      '<button data-page="prev"' + (repoPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
-      '<span>第 ' + repoPage + ' / ' + pages + ' 页 · 共 ' + rows.length + ' 个</span>' +
-      '<button data-page="next"' + (repoPage >= pages ? ' disabled' : '') + '>下一页</button>';
+      '<button data-page="prev"' + (repoPage <= 1 ? ' disabled' : '') + '>' + t('上一页') + '</button>' +
+      '<span>' + L('第 ' + repoPage + ' / ' + pages + ' 页 · 共 ' + rows.length + ' 个',
+                   'Page ' + repoPage + ' / ' + pages + ' · ' + rows.length + ' total') + '</span>' +
+      '<button data-page="next"' + (repoPage >= pages ? ' disabled' : '') + '>' + t('下一页') + '</button>';
   } else {
     pager.hidden = true;
     pager.innerHTML = '';
@@ -1178,7 +1428,9 @@ async function loadHistory() {
     $('eventsMini').innerHTML = '';
     seen.clear();
     for (const ev of evs) renderEvent(ev, false);
-    $('listSub').textContent = evs.length ? '最近 ' + evs.length + ' 条' : '还没有事件';
+    $('listSub').textContent = evs.length
+      ? L('最近 ' + evs.length + ' 条', 'Latest ' + evs.length)
+      : t('还没有事件');
   } catch (e) {
     $('listSub').textContent = '加载历史失败';
   }
@@ -1222,7 +1474,7 @@ async function pollHealth() {
       }
     } else {
       dot.classList.add('bad');
-      $('statusText').textContent = '未连接' + (d.last_error ? ' · ' + d.last_error : '');
+      $('statusText').textContent = t('未连接') + (d.last_error ? ' · ' + d.last_error : '');
       $('gapPill').hidden = true;
     }
 
@@ -1261,7 +1513,7 @@ async function pollStats() {
       axis.innerHTML = hours.map((h, i) =>
         '<span>' + (i % step === 0 ? esc(h.label) : '') + '</span>').join('');
     }
-    $('chartSub').textContent = '每小时事件数 · 峰值 ' + max;
+    $('chartSub').textContent = L('每小时事件数 · 峰值 ' + max, 'Events per hour · peak ' + max);
   } catch (e) { /* 下一轮再试 */ }
 }
 
@@ -1296,10 +1548,10 @@ function fmtDur(s) {
 function relTime(ms) {
   if (!ms) return '—';
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return '刚刚';
-  if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
-  if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
-  return Math.floor(s / 86400) + ' 天前';
+  if (s < 60) return L('刚刚', 'just now');
+  if (s < 3600) return Math.floor(s / 60) + L(' 分钟前', ' min ago');
+  if (s < 86400) return Math.floor(s / 3600) + L(' 小时前', ' h ago');
+  return Math.floor(s / 86400) + L(' 天前', ' d ago');
 }
 
 // 一条运行的 HTML：webhook 和 GitHub API 两种来源共用
@@ -1324,7 +1576,8 @@ function runRowHtml(r) {
     '</span><span class="v">' + v + '</span></div>';
   const detail =
     (r.path ? kv('工作流文件', esc(r.path)) : '') +
-    kv('运行号', '#' + (r.run_number ?? '—') + ' · 第 ' + (r.run_attempt || 1) + ' 次尝试') +
+    kv('运行号', '#' + (r.run_number ?? '—') + L(' · 第 ' + (r.run_attempt || 1) + ' 次尝试',
+                                               ' · attempt ' + (r.run_attempt || 1))) +
     kv('触发事件', esc(r.trigger || '—')) +
     (r.actor ? kv('发起人', esc(r.actor)) : '') +
     kv('提交', esc(r.sha || '—') + (r.author ? ' · ' + esc(r.author) : '')) +
@@ -1482,7 +1735,7 @@ async function loadGithubAuth(force) {
 
   const box = $('ghBox');
   if (box) box.hidden = !GH.logged_in;
-  if (GH.logged_in) $('ghWho').textContent = '本机 gh · ' + (GH.account || '');
+  if (GH.logged_in) $('ghWho').textContent = L('本机 gh · ', 'local gh · ') + (GH.account || '');
   // 刚探测完才知道能不能拉 job，正在看动作页就重绘一次
   if (currentView() === 'actions') loadActions();
   return GH;
@@ -1491,14 +1744,14 @@ async function loadGithubAuth(force) {
 async function pullFromGithub() {
   const repo = ($('ghRepo').value || '').trim();
   const out = $('ghRuns');
-  if (!repo) { $('ghHint').textContent = '先填 owner/name'; $('ghRepo').focus(); return; }
-  $('ghHint').textContent = '读取中…';
+  if (!repo) { $('ghHint').textContent = t('先填 owner/name'); $('ghRepo').focus(); return; }
+  $('ghHint').textContent = t('读取中…');
   out.innerHTML = '';
   try {
     const r = await fetch('/github/runs?repo=' + encodeURIComponent(repo) + '&limit=20');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    $('ghHint').textContent = d.total ? '共 ' + d.total + ' 条' : '';
+    $('ghHint').textContent = d.total ? L('共 ' + d.total + ' 条', d.total + ' total') : '';
     if (!d.runs.length) {
       out.innerHTML = '<div class="empty"><h3>GitHub 上没有任何运行</h3>' +
         '<p>' + esc(repo) + ' 的 workflow 一次都没跑过，先确认仓库里有 ' +
@@ -1548,7 +1801,9 @@ function groupMachines(machines) {
 
 function renderMachineInventory() {
   const groups = groupMachines(machineInventory);
-  $('machineCount').textContent = machineInventoryLoaded ? groups.length + ' 台' : '—';
+  $('machineCount').textContent = machineInventoryLoaded
+    ? L(groups.length + ' 台', groups.length + (groups.length === 1 ? ' machine' : ' machines'))
+    : '—';
   $('machines').innerHTML = groups.map(machineRowHtml).join('') ||
     '<div class="empty"><h3>' + (machineInventoryLoaded ? '还没有接入机器' : '正在读取机器…') +
     '</h3><p>添加机器后，有任务时自动运行。</p></div>';
@@ -1557,12 +1812,14 @@ function renderMachineInventory() {
 
 /* 机器清单：不按仓库分，就是“我手上能连的那些” */
 function fmtWhen(ts) {
-  if (!ts) return '刚接入';
+  if (!ts) return L('刚接入', 'just added');
   const d = new Date(ts * 1000);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   const hm = hh + ':' + mm;
-  if (d.toDateString() === new Date().toDateString()) return '今天 ' + hm + ' 接入';
+  const today = d.toDateString() === new Date().toDateString();
+  if (LANG === 'en') return (today ? 'added today ' : 'added ') + hm;
+  if (today) return '今天 ' + hm + ' 接入';
   return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm + ' 接入';
 }
 
@@ -1881,16 +2138,18 @@ function fillConfig(c) {
   $('cfg-reconnect').value = c.reconnect_max;
   $('cfg-token').value = '';
   $('cfg-token').placeholder = c.token_set
-    ? '已设置（' + c.token_hint + '），留空则不修改'
-    : '还没设置令牌';
+    ? L('已设置（' + c.token_hint + '），留空则不修改',
+        'already set (' + c.token_hint + '), leave blank to keep')
+    : t('还没设置令牌');
   $('tokenHint').textContent = c.token_set
-    ? '当前令牌 ' + c.token_hint + '，明文不会显示。留空表示不修改。'
-    : '还没设置令牌，中继大概率连不上。填一个再保存。';
+    ? L('当前令牌 ' + c.token_hint + '，明文不会显示。留空表示不修改。',
+        'Current token ' + c.token_hint + ', shown in masked form. Leave blank to keep unchanged.')
+    : t('还没设置令牌，中继大概率连不上。填一个再保存。');
   $('cfg-host').value = c.http_host;
   $('cfg-port').value = c.http_port;
   $('cfg-db').value = c.db_path;
   $('cfg-path').value = c.config_path || '（启动时没指定配置文件，改不了）';
-  $('cfgWhere').textContent = c.config_path ? '写入 ' + c.config_path : '';
+  $('cfgWhere').textContent = c.config_path ? L('写入 ' + c.config_path, 'writes to ' + c.config_path) : '';
   cfgLoaded = true;
 }
 
@@ -1956,6 +2215,8 @@ $('cfgReset').addEventListener('click', () => {
 
 window.addEventListener('hashchange', route);
 route();
+applyLang(LANG);   // 进页面就按上次选的语言渲染
+$('cfgLang').addEventListener('change', (e) => setLang(e.target.value));
 loadGithubAuth();   // 先知道 gh 能不能用，行里的「加载 job」入口靠它决定要不要显示
 loadHistory();
 connect();
