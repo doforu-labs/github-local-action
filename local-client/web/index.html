@@ -175,7 +175,7 @@
   /* ---------- 概览 ---------- */
   .stats {
     display: grid; gap: 1px; background: var(--border-muted);
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
   .stat { background: var(--bg); padding: 12px 16px; min-width: 0; }
   .stat .k { font-size: 12px; color: var(--fg-muted); line-height: 1.5; }
@@ -317,23 +317,6 @@
     display: flex; gap: 8px; align-items: center;
   }
 
-  /* 按需（JIT）的机器多选：一行摆不下就折行 */
-  .jit-machines { display: flex; flex-wrap: wrap; gap: 6px 16px; }
-  .jit-mchk {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: 13px; cursor: pointer; user-select: none;
-  }
-  .jit-mchk input { margin: 0; cursor: pointer; }
-  /* 只读展示：不用选，连上的机器本来就会全用上 */
-  .jit-mchk-ro {
-    cursor: default;
-    padding: 3px 9px;
-    border: 1px solid var(--border-muted);
-    border-radius: 999px;
-    background: var(--bgColor-muted, #f6f8fa);
-  }
-  .runner-query .input { flex: 1; min-width: 0; max-width: 320px; }
-
   .runner-row {
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr) auto auto auto auto;
@@ -369,6 +352,15 @@
     color: var(--fg-muted); font: 400 12px/1.5 var(--font); cursor: pointer;
   }
   .runner-row .rm:hover { background: #ffebe9; color: var(--danger); }
+
+  .machine-card { border-top: 1px solid var(--border-muted); }
+  .machine-card:first-child { border-top: 0; }
+  .machine-summary { display: flex; align-items: center; gap: 12px; padding: 18px 16px; }
+  .machine-card .runner-main { flex: 1; }
+  @media (max-width: 760px) {
+    .machine-summary { flex-wrap: wrap; }
+    .machine-card .runner-name { flex-wrap: wrap; }
+  }
 
   .cmd {
     margin: 10px 0 0; padding: 12px 14px;
@@ -552,15 +544,6 @@
   .flash .octicon { margin-top: 2px; color: var(--success); }
   .flash.error .octicon { color: var(--danger); }
 
-  /* ---------- 页脚 ---------- */
-  footer {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 12px 20px; flex-wrap: wrap;
-    margin-top: 24px; padding-top: 16px;
-    border-top: 1px solid var(--border);
-    font-size: 12px; color: var(--fg-muted);
-  }
-  footer .links { display: flex; gap: 16px; flex-wrap: wrap; }
   code {
     font: 400 11.5px/1.5 var(--mono);
     background: var(--neutral); border-radius: var(--radius-sm);
@@ -667,9 +650,6 @@
             <div class="stat"><div class="k">今日事件</div><div class="v" id="today">–</div></div>
             <div class="stat"><div class="k">总事件</div><div class="v" id="total">–</div></div>
             <div class="stat"><div class="k">距上一条</div><div class="v" id="since">–</div></div>
-            <div class="stat"><div class="k">游标位置</div><div class="v" id="cursor">–</div></div>
-            <div class="stat"><div class="k">重连次数</div><div class="v" id="connects">–</div></div>
-            <div class="stat"><div class="k">SSE 客户端</div><div class="v" id="clients">–</div></div>
           </div>
         </div>
 
@@ -734,28 +714,15 @@
           </div>
         </div>
 
-        <div class="note">
-          <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-alert"/></svg>
-          <div>
-            <b>这里的范围</b>：webhook 的 <code>workflow_run</code> 载荷只有运行级别的信息——
-            工作流名、分支、状态、结论、用时、提交。点开一行能看到这些细节和「在 GitHub 上打开」。
-            <br>
-            单个运行里的 <b>job</b>、每个<b>步骤</b>和<b>日志</b>不在 webhook 载荷里，
-            要调 GitHub REST API（<code>/actions/runs/{id}/jobs</code>、<code>/logs</code>）才拿得到：
-            公开仓库可以匿名读（每小时 60 次），私有仓库需要 PAT。
-          </div>
-        </div>
-
         <div class="Box" id="ghBox" hidden>
           <div class="Box-header">
-            直接问 GitHub
+            从 GitHub 获取运行记录
             <div class="spacer"></div>
             <span class="hint" id="ghWho">本机 gh</span>
           </div>
           <div class="form-row">
             <div class="hint" style="margin-bottom:8px">
-              不走 webhook，直接用本机的 gh 登录态去读——能看到历史运行，点开一行的
-              「加载 job 与步骤」也只有这条路能拿到。
+              查看历史运行记录，以及任务和步骤的执行结果。
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               <input class="input mono" id="ghRepo" placeholder="owner/name" style="max-width:280px">
@@ -790,60 +757,26 @@
       <section id="view-runners" hidden>
         <div id="runnerFlash" hidden></div>
 
-        <!-- 机器：我手上能连的那些，跟仓库无关 -->
         <div class="Box">
           <div class="Box-header">
-            机器
-            <div class="spacer"></div>
+            机器列表
             <span class="Label Label--secondary" id="machineCount">—</span>
-          </div>
-
-          <div id="machines">
-            <div class="empty">
-              <h3>还没有机器</h3>
-              <p>用下面的「添加一台机器」连过去；连上就能被按需模式调用，不用挂仓库。</p>
-            </div>
-          </div>
-
-          <div class="form-row">
-            <span class="hint">这儿列的是「能连的机器」，不分仓库。
-              机器不往 GitHub 注册任何东西也能接活；凭据加密后存本地数据库，重启、过夜都还在。</span>
-          </div>
-        </div>
-
-        <div class="Box" style="margin-top:16px">
-          <div class="Box-header">
-            某个仓库的常驻 runner
             <div class="spacer"></div>
-            <span class="Label Label--secondary" id="runnerCount">—</span>
-          </div>
-
-          <div class="form-row runner-query">
-            <input class="input mono" id="runnerRepo" type="text" spellcheck="false"
-                   placeholder="owner/name（可选）" aria-label="仓库" list="runnerRepoList">
-            <datalist id="runnerRepoList"></datalist>
             <button class="btn" id="runnerRefresh">刷新</button>
           </div>
-
-          <div id="runners">
-            <div class="empty">
-              <h3>没填仓库</h3>
-              <p>这里只看「某个仓库上挂着的常驻 runner」。按需模式不用它。</p>
-            </div>
-          </div>
+          <div id="machines"><div class="empty"><h3>正在读取机器…</h3></div></div>
         </div>
 
         <div class="Box" style="margin-top:16px">
           <div class="Box-header">
             添加一台机器
             <div class="spacer"></div>
-            <span class="hint">走 SSH 直接装，不用你拷贝命令</span>
+            <span class="hint">通过 SSH 接入，有任务时自动运行</span>
           </div>
 
           <div class="form-row">
             <div class="label">SSH 登录</div>
-            <div class="hint">连上之后会自己认系统（Linux / macOS / Windows）和架构（x64 / arm64），
-              机器名用它自己的主机名——都不用填。</div>
+            <div class="hint">自动识别机器名称、系统和架构。</div>
             <div class="ssh-grid">
               <input class="input mono" id="sshHost" type="text" spellcheck="false"
                      placeholder="10.0.0.5" aria-label="地址">
@@ -856,65 +789,20 @@
             </div>
           </div>
 
-          <div class="form-row">
-            <div class="label">挂到哪个仓库（可不填）</div>
-            <div class="hint">留空就是纯按需：GitHub 上一个字也不写，机器上也不装常驻 runner，
-              有 job 排上了现签一张票、起一个用完就没的 runner。
-              填了才会装一台常驻的挂在那仓库上——只有“一直有活接”时才需要。</div>
-            <input class="input mono" id="sshRepo" type="text" spellcheck="false"
-                   placeholder="留空 = 不挂仓库（推荐）" aria-label="挂到哪个仓库" list="runnerRepoList">
-          </div>
-
           <div class="form-actions">
             <button class="btn btn-primary" id="sshAdd">连上去</button>
             <div class="spacer"></div>
-            <span class="hint" id="sshHint">密码加密后存本地数据库（密钥单独一个文件），重启、过夜都还在</span>
+            <span class="hint" id="sshHint">连接信息已加密保存</span>
           </div>
 
           <div class="form-row" id="sshLogBox" hidden>
-            <div class="label" id="sshJobTitle">安装日志</div>
+            <div class="label" id="sshJobTitle">接入日志</div>
             <div class="hint" id="sshJobState"></div>
             <pre class="cmd cmd-log" id="sshLog"></pre>
           </div>
 
         </div>
 
-        <div class="Box" style="margin-top:16px">
-          <div class="Box-header">
-            按需（JIT）
-            <div class="spacer"></div>
-            <span class="Label Label--secondary" id="jitState">关</span>
-          </div>
-
-          <div class="form-row">
-            <div class="label">有活才起，跑完就撤</div>
-            <div class="hint">收到 <code>workflow_job</code> 的排队事件时，才去机器上拉一个一次性 runner；
-              一个 job 一个进程，跑完自己从 GitHub 消失。不用把机器常驻注册到某个仓库，也用不到组织。</div>
-            <div class="hint" style="margin-top:6px">不用配池子：能连上的机器全在里面，一台机器一次接一个 job。
-              想让哪个仓库的活被接走，去「仓库」页把那一行的开关打开就行。</div>
-          </div>
-
-          <div class="form-row">
-            <div class="label">现在能调的机器</div>
-            <div id="jitMachines" class="jit-machines">
-              <span class="hint">还没连过机器——上面「添加一台机器」连一台，凭据会落到本地数据库里。</span>
-            </div>
-          </div>
-
-          <div class="form-actions">
-            <button class="btn" id="jitStop">全部停下</button>
-            <div class="spacer"></div>
-            <span class="hint" id="jitHint">没在接活</span>
-          </div>
-
-          <div id="jitBody"></div>
-        </div>
-
-        <div class="hint" style="margin-top:12px;line-height:1.7">
-          runner 是主动往外连的，放在 NAT 后面不用端口映射，也不用公网 IP。
-          这一页的接口只接受本机请求，局域网设备访问会拿到 403——
-          他们拿不到你的 GitHub 凭据。
-        </div>
       </section>
 
       <!-- 设置 -->
@@ -1012,15 +900,7 @@
         </div>
       </section>
 
-      <footer>
-        <div class="links">
-          <span>SSE <code>/stream</code></span>
-          <span>历史 <code>/events?after=N</code></span>
-          <span>健康 <code>/health</code></span>
-          <span>配置 <code>/config</code></span>
-        </div>
-        <span id="upd"></span>
-      </footer>
+
 
     </div>
   </main>
@@ -1106,9 +986,9 @@ const jitSwitchState = new Map();
 function repoSwitchHtml(repo) {
   const on = !!jitSwitchState.get(repo);
   return '<label class="jit-sw" title="' +
-    (on ? '开着：这个仓库有活就临时起一个 runner' : '关着：这个仓库的活得靠常驻 runner') +
+    (on ? '自动运行已开启' : '自动运行已关闭') +
     '"><input type="checkbox" data-jit-repo="' + esc(repo) + '"' + (on ? ' checked' : '') +
-    ' aria-label="按需接管 ' + esc(repo) + '"><span class="jit-sw-track"></span></label>';
+    ' aria-label="自动运行 ' + esc(repo) + '"><span class="jit-sw-track"></span></label>';
 }
 
 let lastRepos = [];      // 事件统计（收到过多少、什么类型）
@@ -1295,7 +1175,7 @@ function connect() {
     scheduleStats();
   });
   es.onopen = () => $('listSub').textContent = '实时接收中';
-  es.onerror = () => $('listSub').textContent = 'SSE 断开，浏览器会自动重连…';
+  es.onerror = () => $('listSub').textContent = '连接断开，正在自动重连…';
 }
 
 let statsTimer = 0;
@@ -1326,12 +1206,8 @@ async function pollHealth() {
       $('gapPill').hidden = true;
     }
 
-    $('cursor').textContent = d.cursor ?? '–';
-    $('connects').textContent = d.connects ?? '–';
-    $('clients').textContent = d.sse_clients ?? '–';
     $('since').innerHTML = rel(d.seconds_since_last_event) +
       (d.seconds_since_last_event != null ? '<small>前</small>' : '');
-    $('upd').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch (e) {
     $('dot').className = 'dot bad';
     $('statusText').textContent = '连不上本地服务';
@@ -1511,7 +1387,7 @@ function renderActions(d) {
     '<option value="' + esc(r.repo) + '">' + esc(r.repo) + '（' + r.runs + '）</option>').join('');
   if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
 
-  // 「直接问 GitHub」那块默认填一个已知仓库，省得手打
+  // 「从 GitHub 获取运行记录」那块默认填一个已知仓库，省得手打
   const repoInput = $('ghRepo');
   if (!repoInput.value && (d.repos || []).length) repoInput.value = d.repos[0].repo;
 
@@ -1520,7 +1396,7 @@ function renderActions(d) {
   if (!(d.runs || []).length) {
     box.innerHTML = '<div class="empty"><h3>还没有工作流运行记录</h3>' +
       '<p>在 GitHub 的 webhook 设置里勾上「Workflow runs」事件，下次跑 CI 就会出现在这里。' +
-      (GH.logged_in ? '也可以先用下面的「直接问 GitHub」看一眼。' : '') + '</p></div>';
+      (GH.logged_in ? '也可以先用下面的「从 GitHub 获取运行记录」看一眼。' : '') + '</p></div>';
     return;
   }
   box.innerHTML = d.runs.map(runRowHtml).join('');
@@ -1560,21 +1436,12 @@ function renderGithubAuth() {
       '</div>' +
       '<button class="btn" id="ghRecheck">重新检测</button>';
   } else {
-    const scopes = (GH.scopes || []).map((s) => '<code>' + esc(s) + '</code>').join(' ') || '（读不到）';
     box.innerHTML =
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
         '<span class="Label Label--success">可用</span>' +
-        '<span>gh ' + esc(GH.version || '') + ' · ' + esc(GH.account || '') + '</span>' +
+        '<span>' + esc(GH.account || '') + '</span>' +
       '</div>' +
-      '<div class="hint">令牌权限：' + scopes + '</div>' +
-      '<div class="hint" style="margin:6px 0 10px">' +
-        '私有仓库要 <code>repo</code>；这个 scope 也够用它建 webhook。' +
-      '</div>' +
-      '<button class="btn" id="ghRecheck">重新检测</button>' +
-      '<div class="hint" style="margin-top:10px">' +
-        '令牌由 gh 自己保管（keyring），本服务不读、不写、不落盘；' +
-        '相关的 <code>/github/*</code> 接口只接受本机请求，局域网设备访问会拿到 403。' +
-      '</div>';
+      '<button class="btn" id="ghRecheck">重新检测</button>';
   }
   const btn = $('ghRecheck');
   if (btn) btn.addEventListener('click', () => loadGithubAuth(true));
@@ -1645,55 +1512,27 @@ $('view-actions').addEventListener('click', (e) => {
 /* ─────────── Runner ─────────── */
 let runnerTimer = null;
 
-function runnerRowHtml(r) {
-  const online = r.status === 'online';
-  const icon = online
-    ? '<span class="st st-ok" title="在线"><svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-check-circle"/></svg></span>'
-    : '<span class="st st-idle" title="离线"><svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-x-circle"/></svg></span>';
-  const status = online
-    ? '<span class="Label Label--success">在线</span>'
-    : '<span class="Label Label--secondary">离线</span>';
-  const busy = r.busy
-    ? '<span class="Label Label--attention">跑着活</span>'
-    : '<span class="Label Label--secondary">空闲</span>';
-  const meta = [r.os, r.arch].filter(Boolean).join(' · ');
-  // 系统和架构已经在名字后面写了一遍，标签里就不再重复，只显示自定义标签
-  const skip = new Set([(r.os || '').toLowerCase(), (r.arch || '').toLowerCase()]);
-  const chips = (r.labels || [])
-    .filter((l) => !skip.has(String(l).toLowerCase()))
-    .map((l) => '<span class="chip">' + esc(l) + '</span>').join('');
-  // 只有「这台机器的密码还在内存里」时才能连过去卸，否则只能删注册
-  const full = sshReadyNames.has(r.name)
-    ? '<button class="rm" data-uninstall="' + esc(r.name) + '" title="连机器上的服务一起停掉、删目录">卸载</button>'
-    : '';
-  return '<div class="runner-row">' +
-      icon +
-      '<div class="runner-main">' +
-        '<div class="runner-name">' +
-          '<span class="runner-id" title="' + esc(r.name || '') + '">' + esc(r.name || '（无名）') + '</span>' +
-          (meta ? '<span class="tag">' + esc(meta) + '</span>' : '') +
-        '</div>' +
-        '<div class="runner-labels">' + chips + '</div>' +
-      '</div>' +
-      status + busy + full +
-      '<button class="rm" data-rm="' + esc(String(r.id)) + '" title="只删 GitHub 上的注册，机器上那份不管">移除注册</button>' +
-    '</div>';
+let machineInventory = [];
+let machineInventoryLoaded = false;
+let machineLoadError = '';
+
+// 多条接入记录使用同一个 SSH 地址时，在列表中只显示一台。
+function groupMachines(machines) {
+  const groups = new Map();
+  for (const m of machines) {
+    const key = JSON.stringify([m.host.toLowerCase(), String(m.port || 22)]);
+    if (!groups.has(key)) groups.set(key, { key, machine: m });
+  }
+  return [...groups.values()];
 }
 
-let sshReadyNames = new Set();   // 密码还在内存里的机器名，能“连机器一起卸”
-
-function renderRunners(d) {
-  const box = $('runners');
-  const cnt = $('runnerCount');
-  if (!d) { cnt.textContent = '—'; return; }
-  cnt.textContent = d.online + ' / ' + d.total + ' 在线';
-  sshReadyNames = new Set(d.ssh_ready || []);
-  if (!d.runners.length) {
-    box.innerHTML = '<div class="empty"><h3>这个仓库还没有 runner</h3>' +
-      '<p>用下面的「添加一台机器」连过去装一台。</p></div>';
-    return;
-  }
-  box.innerHTML = d.runners.map(runnerRowHtml).join('');
+function renderMachineInventory() {
+  const groups = groupMachines(machineInventory);
+  $('machineCount').textContent = machineInventoryLoaded ? groups.length + ' 台' : '—';
+  $('machines').innerHTML = groups.map(machineRowHtml).join('') ||
+    '<div class="empty"><h3>' + (machineInventoryLoaded ? '还没有接入机器' : '正在读取机器…') +
+    '</h3><p>添加机器后，有任务时自动运行。</p></div>';
+  if (machineLoadError) $('machines').insertAdjacentHTML('afterbegin', '<div class="form-row hint">机器读取失败：' + esc(machineLoadError) + '</div>');
 }
 
 /* 机器清单：不按仓库分，就是“我手上能连的那些” */
@@ -1707,25 +1546,14 @@ function fmtWhen(ts) {
   return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm + ' 接入';
 }
 
-function machineRowHtml(m) {
+function machineRowHtml(group) {
+  const m = group.machine;
   const meta = [m.os, m.arch].filter(Boolean).join(' · ');
-  const tags = [];
-  if (m.pure) tags.push('按需');
-  else if (m.repo) tags.push('常驻 ' + m.repo);
-  const chips = tags.map((t) => '<span class="chip">' + esc(t) + '</span>').join('') +
-    '<span class="chip">' + esc(m.user + '@' + m.host + ':' + m.port) + '</span>';
-  const left = '<span class="Label Label--secondary">' + esc(fmtWhen(m.added_at || m.last_ok)) + '</span>';
-  return '<div class="runner-row">' +
-      '<span class="st st-ok" title="能连"><svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-check-circle"/></svg></span>' +
-      '<div class="runner-main">' +
-        '<div class="runner-name">' +
-          '<span class="runner-id">' + esc(m.name || '（无名）') + '</span>' +
-          (meta ? '<span class="tag">' + esc(meta) + '</span>' : '') +
-        '</div>' +
-        '<div class="runner-labels">' + chips + '</div>' +
-      '</div>' +
-      left +
-    '</div>';
+  return '<div class="machine-card"><div class="machine-summary"><div class="runner-main">' +
+    '<div class="runner-name"><span class="runner-id">' + esc(m.name || m.host) +
+    '</span><span class="tag">' + esc(meta) + '</span></div><div class="runner-labels"><span class="chip">' +
+    esc(m.user + '@' + m.host + ':' + m.port) + '</span><span class="hint">' + esc(fmtWhen(m.added_at || m.last_ok)) +
+    '</span></div></div><span class="Label Label--secondary">已接入</span></div></div>';
 }
 
 async function loadMachines(quiet) {
@@ -1733,43 +1561,13 @@ async function loadMachines(quiet) {
     const r = await fetch('/runners');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    const list = d.machines || [];
-    $('machineCount').textContent = list.length ? (list.length + ' 台') : '0 台';
-    if (!list.length) {
-      $('machines').innerHTML = '<div class="empty"><h3>还没有机器</h3>' +
-        '<p>用下面的「添加一台机器」连过去；连上就能被按需模式调用，不用挂仓库。</p></div>';
-      return;
-    }
-    $('machines').innerHTML = list.map(machineRowHtml).join('');
+    machineInventory = d.machines || [];
+    machineInventoryLoaded = true;
+    machineLoadError = '';
   } catch (e) {
-    if (!quiet) {
-      $('machineCount').textContent = '—';
-      $('machines').innerHTML = '<div class="empty"><h3>读取失败</h3><p>' +
-        esc(e.message) + '</p></div>';
-    }
+    machineLoadError = e.message;
   }
-}
-
-async function loadRunners(quiet) {
-  const repo = ($('runnerRepo').value || '').trim();
-  if (!repo) {
-    renderRunners(null);
-    $('runners').innerHTML = '<div class="empty"><h3>没填仓库</h3>' +
-      '<p>这里只看「某个仓库上挂着的常驻 runner」。按需模式不用它。</p></div>';
-    return;
-  }
-  localStorage.setItem('ghr.repo', repo);
-  if (!quiet) $('runners').innerHTML = '<div class="empty"><h3>读取中…</h3><p></p></div>';
-  try {
-    const r = await fetch('/github/runners?repo=' + encodeURIComponent(repo));
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    renderRunners(d);
-  } catch (e) {
-    $('runnerCount').textContent = '—';
-    $('runners').innerHTML = '<div class="empty"><h3>读取失败</h3><p>' +
-      esc(e.message) + '</p></div>';
-  }
+  renderMachineInventory();
 }
 
 function flashRunner(kind, text) {
@@ -1783,27 +1581,14 @@ function flashRunner(kind, text) {
   setTimeout(() => { box.hidden = true; }, 6000);
 }
 
-async function ensureRunnerRepo() {
-  const el = $('runnerRepo');
-  if (el.value.trim()) return el.value.trim();
-  const saved = localStorage.getItem('ghr.repo');
-  if (saved) { el.value = saved; return saved; }
-  try {
-    const d = await (await fetch('/stats')).json();
-    const first = (d.repos || [])[0];
-    if (first && first.repo) { el.value = first.repo; return first.repo; }
-  } catch (e) { /* 没事件就拉不到，不算错 */ }
-  return '';
-}
-
 function startRunnerPoll() {
   if (runnerTimer) return;
   runnerTimer = setInterval(() => {
-    if (currentView() === 'runners') { loadMachines(true); loadRunners(true); }
+    if (currentView() === 'runners') { loadMachines(true); }
   }, 8000);
 }
 
-/* ─────────── 通过 SSH 装 / 卸 ─────────── */
+/* ─────────── 通过 SSH 接入机器 ─────────── */
 let sshPollTimer = null;
 
 function sshShowLog(title) {
@@ -1853,7 +1638,7 @@ function watchSshJob(id, onDone) {
       return;
     }    sshPollTimer = null;
     $('sshAdd').disabled = false;
-    $('sshHint').textContent = '密码加密后存本地数据库，重启、过夜都还在';
+    $('sshHint').textContent = '连接信息已加密保存';
     if (d.status === 'done') {
       $('sshJobState').textContent = '完成';
       flashRunner('ok', d.title + ' —— 完成');
@@ -1867,31 +1652,30 @@ function watchSshJob(id, onDone) {
 }
 
 async function sshAddMachine() {
-  const repo = ($('sshRepo').value || '').trim();
   const host = ($('sshHost').value || '').trim();
   const port = ($('sshPort').value || '22').trim();
   const user = ($('sshUser').value || '').trim();
   const password = $('sshPass').value || '';
-  // 仓库可以不填：不填 = 纯按需，GitHub 那边一个字都不写
+  // 新增机器统一按需接入，不提交仓库，也不创建常驻注册。
   if (!host || !user || !password) {
     flashRunner('error', '地址、用户、密码要填齐');
     return;
   }
   $('sshAdd').disabled = true;
   $('sshHint').textContent = '正在连 ' + host + '…';
-  sshShowLog('装机器 @ ' + host + ':' + port);
+  sshShowLog('接入机器 @ ' + host + ':' + port);
   try {
     const r = await fetch('/runners/ssh/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo: repo, host: host, port: port, user: user, password: password })
+      body: JSON.stringify({ host: host, port: port, user: user, password: password })
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     // 密码只交出去这一次，留在输入框里没意义
     $('sshPass').value = '';
     $('sshHint').textContent = '接进来了，日志在下面走';
-    watchSshJob(d.job, () => { loadMachines(true); loadRunners(true); });
+    watchSshJob(d.job, () => { loadMachines(true); });
   } catch (e) {
     $('sshAdd').disabled = false;
     $('sshHint').textContent = '';
@@ -1900,36 +1684,11 @@ async function sshAddMachine() {
   }
 }
 
-async function sshRemoveMachine(name, id) {
-  const repo = ($('runnerRepo').value || '').trim();
-  if (!repo) { flashRunner('error', '先填仓库'); return; }
-  sshShowLog('卸 ' + name);
-  try {
-    const r = await fetch('/runners/ssh/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo: repo, name: name, id: id })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    watchSshJob(d.job, () => { loadRunners(true); });
-  } catch (e) {
-    $('sshJobState').textContent = '没开始：' + e.message;
-    flashRunner('error', e.message);
-  }
-}
-
-$('runnerRefresh').addEventListener('click', () => loadRunners(false));
+$('runnerRefresh').addEventListener('click', () => loadMachines(false));
 
 // ── 按需（JIT）──
 // 有活才起：收到排队事件时去机器上拉一次性 runner，跑完自己消失。
 function renderJit(d) {
-  const on = !!d.on;
-  const running = d.running || [];
-  const watching = d.watching || [];
-  $('jitState').textContent = on ? ('接 ' + watching.length + ' 个仓 · ' + running.length + ' 个在跑') : '关';
-  $('jitState').style.color = on ? 'var(--fgColor-success, #1a7f37)' : '';
-
   // 仓库页的开关跟着一起更新
   jitSwitchState.clear();
   Object.entries(d.repos || {}).forEach(([k, v]) => jitSwitchState.set(k, !!v));
@@ -1938,54 +1697,11 @@ function renderJit(d) {
     const label = cb.closest('label');
     if (label) {
       label.title = cb.checked
-        ? '开着：这个仓库有活就临时起一个 runner'
-        : '关着：这个仓库的活得靠常驻 runner';
+        ? '自动运行已开启'
+        : '自动运行已关闭';
     }
   });
 
-  const avail = d.available || [];
-  // available_info 带平台和架构，有就用它——arm 机器在列表里得看得出来
-  const info = new Map((d.available_info || []).map(m => [m.name, m]));
-  const box = $('jitMachines');
-  if (!avail.length) {
-    box.innerHTML = '<span class="hint">还没连过机器——用左边的「连上去装」把机器连一遍，' +
-      '密码还在有效期内的会列在这儿。</span>';
-  } else {
-    // 只是展示，不用选：能连上的机器本来就会全用上
-    box.innerHTML = avail.map(n => {
-      const m = info.get(n) || {};
-      const tag = m.os ? ' <span class="hint">' + esc(m.os) + '/' + esc(m.arch || 'x64') + '</span>' : '';
-      return '<span class="jit-mchk jit-mchk-ro">' + esc(n) + tag + '</span>';
-    }).join('');
-  }
-
-  const rows = [];
-  if (running.length) {
-    rows.push('<div class="hint">正在跑：</div>');
-    running.forEach(r => rows.push(
-      '<div class="hint">· <b>' + esc(r.job) + '</b> — ' + esc(r.machine) +
-      '（' + esc(r.name) + '，' + r.seconds + 's）</div>'));
-  }
-  const hist = d.history || [];
-  if (hist.length) {
-    rows.push('<div class="hint" style="margin-top:8px">最近接的活：</div>');
-    hist.slice(0, 6).forEach(h => rows.push(
-      '<div class="hint">' + (h.kind === 'picked' ? '✓' : '✗') + ' ' +
-      esc(h.job || '') + ' → ' + esc(h.machine || '') +
-      (h.error ? ' · ' + esc(h.error) : '') + '</div>'));
-  }
-  const s = d.stats || {};
-  rows.push('<div class="hint" style="margin-top:8px">累计：接了 ' + (s.picked || 0) +
-    ' 个，完成 ' + (s.done || 0) + ' 个，失败 ' + (s.failed || 0) +
-    ' 个，跳过 ' + (s.skipped || 0) + ' 个</div>');
-  if (s.last_error) {
-    rows.push('<div class="hint">最近一次错误：' + esc(s.last_error) + '</div>');
-  }
-  $('jitBody').innerHTML = rows.join('');
-  const watching2 = d.watching || [];
-  $('jitHint').textContent = on
-    ? ('正在接 ' + watching2.length + ' 个仓库 · ' + avail.length + ' 台机器可用')
-    : '没在接活';
 }
 
 async function loadJit() {
@@ -1997,18 +1713,6 @@ async function loadJit() {
   } catch (e) { /* 静默：不抢别的错误显示 */ }
 }
 
-$('jitStop').addEventListener('click', async () => {
-  try {
-    const r = await fetch('/runners/jit/stop', { method: 'POST' });
-    const d = await r.json();
-    renderJit(d);
-    $('jitHint').textContent = '全部停了（仓库开关都复位）';
-    renderRepos();
-  } catch (e) {
-    $('jitHint').textContent = '停不下来：' + e.message;
-  }
-});
-
 // 仓库页那些开关：点一下就开/关这一个仓库，不动别的
 $('repos').addEventListener('change', async (e) => {
   const cb = e.target.closest('input[data-jit-repo]');
@@ -2019,7 +1723,7 @@ $('repos').addEventListener('change', async (e) => {
   try {
     // 打开之前先把 webhook 配好，否则开了也收不到事件
     if (on) {
-      $('repoHint').textContent = '正在配 webhook…';
+      $('repoHint').textContent = '正在开启自动运行…';
       const w = await fetch('/webhook/setup', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ repo }),
@@ -2039,8 +1743,8 @@ $('repos').addEventListener('change', async (e) => {
     renderRepos();
     const pool = (d.available || []).length;
     $('repoHint').textContent = on
-      ? (pool ? 'webhook 已配好，交给按需模式' : 'webhook 已配好，但手上没机器能连')
-      : '已关掉';
+      ? (pool ? '已开启自动运行' : '已开启，请先添加机器')
+      : '已关闭自动运行';
     setTimeout(() => { $('repoHint').textContent = ''; }, 5000);
   } catch (err) {
     cb.checked = !on;
@@ -2050,55 +1754,17 @@ $('repos').addEventListener('change', async (e) => {
     cb.disabled = false;
   }
 });
-$('runnerRepo').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRunners(false); });
 $('sshAdd').addEventListener('click', sshAddMachine);
 $('sshPass').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !$('sshAdd').disabled) sshAddMachine();   // 别和点按钮叠成两次
 });
-$('view-runners').addEventListener('click', async (e) => {
-  const un = e.target.closest('[data-uninstall]');
-  if (un) {
-    const name = un.dataset.uninstall;
-    if (!confirm('把 ' + name + ' 从机器上卸掉？\n\n' +
-                 '会：停服务 → 卸服务 → 删掉 runner 目录 → 删 GitHub 上的注册。\n' +
-                 '机器本身不动，其它东西不碰。')) return;
-    un.disabled = true;
-    await sshRemoveMachine(name, '');
-    return;
-  }
-
-  const rm = e.target.closest('[data-rm]');
-  if (!rm) return;
-  const repo = ($('runnerRepo').value || '').trim();
-  const id = rm.dataset.rm;
-  if (!repo || !id) return;
-  if (!confirm('只从 ' + repo + ' 里删掉这个注册？\n\n' +
-               '机器上那套文件和服务不会动，下次不用了得自己去清。\n' +
-               '想连机器一起清就用旁边的「卸载」。')) return;
-  rm.disabled = true;
-  try {
-    const r = await fetch('/github/runners/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo: repo, id: id })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    flashRunner('ok', '已从仓库里移除注册');
-    loadRunners(true);
-  } catch (err) {
-    rm.disabled = false;
-    flashRunner('error', err.message);
-  }
-});
-
 /* ─────────── 视图切换 ─────────── */
 const VIEWS = {
   overview: ['概览', '接收端运行状态'],
   events: ['事件流', '实时推送的事件，最新的在最上面'],
   actions: ['动作', '工作流运行记录，来自 workflow_run 事件'],
   repos: ['仓库', '账号下的全部仓库，最近提交的在前；开了按需接管的排最上面'],
-  runners: ['机器', '能连的机器，以及某个仓库上挂着的常驻 runner'],
+  runners: ['机器', '添加机器，有任务时自动运行'],
   settings: ['设置', '中继连接与本地服务参数']
 };
 
@@ -2125,7 +1791,6 @@ function route() {
   if (view === 'runners') {
     startRunnerPoll();
     loadMachines(true);
-    ensureRunnerRepo().then(() => loadRunners(true));
   }
 }
 
