@@ -609,21 +609,21 @@
       <b>gh-relay</b><span>本地接收端</span>
     </div>
     <nav class="rail-nav">
-      <div class="rail-head">接收端</div>
+      <div class="rail-head">工作台</div>
       <a class="rail-item" href="#/overview" data-view="overview">
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-graph"/></svg>概览
-      </a>
-      <a class="rail-item" href="#/events" data-view="events">
-        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-list"/></svg>事件流
-      </a>
-      <a class="rail-item" href="#/runners" data-view="runners">
-        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-server"/></svg>机器
       </a>
       <a class="rail-item" href="#/actions" data-view="actions">
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-workflow"/></svg>动作
       </a>
+      <a class="rail-item" href="#/runners" data-view="runners">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-server"/></svg>机器
+      </a>
       <a class="rail-item" href="#/repos" data-view="repos">
         <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-repo"/></svg>仓库
+      </a>
+      <a class="rail-item" href="#/events" data-view="events">
+        <svg class="octicon" width="16" height="16" aria-hidden="true"><use href="#i-list"/></svg>事件流
       </a>
       <div class="rail-head">配置</div>
       <a class="rail-item" href="#/settings" data-view="settings">
@@ -1827,10 +1827,10 @@ $('sshPass').addEventListener('keydown', (e) => {
 /* ─────────── 视图切换 ─────────── */
 const VIEWS = {
   overview: ['概览', '接收端运行状态'],
-  events: ['事件流', '实时推送的事件，最新的在最上面'],
   actions: ['动作', '工作流运行记录，来自 workflow_run 事件'],
-  repos: ['仓库', '账号下的全部仓库，最近提交的在前；开了按需接管的排最上面'],
   runners: ['机器', '添加机器，有任务时自动运行'],
+  repos: ['仓库', '账号下的全部仓库，最近提交的在前；开了按需接管的排最上面'],
+  events: ['事件流', '实时推送的事件，最新的在最上面'],
   settings: ['设置', '中继连接与本地服务参数']
 };
 
