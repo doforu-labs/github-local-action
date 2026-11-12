@@ -450,6 +450,15 @@
   }
   .run-sub .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .run-sub .sha { font-family: var(--mono); }
+  /* 这行里只有标题允许被压短（截成 …），其余一律保持一行：
+     否则窄窗口下发起人会被挤成两行、整张卡突然变高，看着像跳了一下。 */
+  .run-sub > span { flex: none; white-space: nowrap; }
+  .run-sub .t { flex: 0 1 auto; min-width: 0; }
+  /* 选「全部仓库」时多条仓库混在一起，卡片上得看得出这条属于哪个仓库；
+     已经按具体仓库筛过了就不再重复（那时候每条都一样，写了也是噪音）。 */
+  .run-sub .repo {
+    max-width: 40%; overflow: hidden; text-overflow: ellipsis; color: var(--fg);
+  }
   .run-side { display: flex; align-items: center; gap: 8px; justify-self: end; }
   .run-side .trigger { font: 400 12px/1.5 var(--mono); color: var(--fg-muted); }
   .run-time {
@@ -1737,8 +1746,11 @@ function runRowHtml(r) {
     ? '<span class="Label Label--secondary" style="height:18px;font-size:11px">API</span>'
     : '';
   const sub = [
+    // 全部仓库混排时先把仓库名放最前面，不然重名的工作流（JIT Parallel Probe 这种）
+    // 根本分不清是哪边的
+    (!actRepo && r.repo) ? '<span class="repo" title="' + esc(r.repo) + '">' + esc(r.repo) + '</span>' : '',
     // displayTitle 有时就是工作流名，重复了就不再显一次
-    (r.title && r.title !== r.name) ? '<span class="t">' + esc(r.title) + '</span>' : '',
+    (r.title && r.title !== r.name) ? '<span class="t" title="' + esc(r.title) + '">' + esc(r.title) + '</span>' : '',
     r.sha ? '<span class="sha">' + esc(r.sha) + '</span>' : '',
     r.actor ? '<span>' + esc(r.actor) + '</span>' : ''
   ].filter(Boolean).join('<span>·</span>');
@@ -1746,6 +1758,7 @@ function runRowHtml(r) {
   const kv = (k, v) => '<div class="kv"><span class="k">' + k +
     '</span><span class="v">' + v + '</span></div>';
   const detail =
+    kv(L('仓库', 'repo'), esc(r.repo || '—')) +
     (r.path ? kv('工作流文件', esc(r.path)) : '') +
     kv('运行号', '#' + (r.run_number ?? '—') + L(' · 第 ' + (r.run_attempt || 1) + ' 次尝试',
                                                ' · attempt ' + (r.run_attempt || 1))) +
