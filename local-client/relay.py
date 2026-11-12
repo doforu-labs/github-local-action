@@ -2199,6 +2199,10 @@ async def _gh_my_repos(force: bool = False) -> tuple[list[dict[str, Any]], str]:
     except ValueError:
         data = []
     data = [r for r in data if isinstance(r, dict) and r.get("repo")]
+    # 自己再排一次。GitHub 的 ?sort=pushed 在刚推完的几秒里，排序结果和 pushed_at
+    # 字段会短暂对不上（e2e 那条「按最近提交倒序」就这么闪红过一次，差 61 秒）。
+    # 按字段排最稳；没有时间的用空串，降序时自然排到最后。
+    data.sort(key=lambda r: str(r.get("pushed_at") or ""), reverse=True)
     _REPOS_CACHE.update(at=now, repos=data, error="")
     return data, ""
 
