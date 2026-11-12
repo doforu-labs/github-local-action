@@ -831,6 +831,9 @@ def build_actions(store: Store, repo: str = "", limit: int = 60) -> dict[str, An
             "title": (wr.get("display_title") or commit.get("message") or "").split("\n")[0],
             "sha": (wr.get("head_sha") or "")[:7],
             "author": ((commit.get("author") or {}).get("name") or ""),
+            # 提交本身的提交时间（≠ 运行开始时间）。workflow_dispatch / 重跑时
+            # 两者能差好几天，卡片上只写运行时间会让人以为提交是刚提的。
+            "commit_at": _iso_ms(commit.get("timestamp")),
             "actor": actor.get("login") or "",
             "actor_avatar": actor.get("avatar_url") or "",
             "pr": (prs[0] or {}).get("number") if prs else None,
@@ -1023,6 +1026,8 @@ def _api_row(repo: str, raw: dict[str, Any]) -> dict[str, Any]:
         "title": raw.get("displayTitle") or "",
         "sha": (raw.get("headSha") or "")[:7],
         "author": "",
+        # gh run list 不返回提交时间，API 拉回来的行就没有这个值（卡片上不显示）
+        "commit_at": 0,
         "actor": "",
         "actor_avatar": "",
         "pr": None,

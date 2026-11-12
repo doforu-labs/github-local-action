@@ -46,7 +46,7 @@ def ev(run_id: int, status: str, conclusion: str | None = None, updated: str | N
         "id": run_id, "name": name, "run_number": 1, "status": status,
         "conclusion": conclusion, "updated_at": updated,
         "created_at": started, "run_started_at": started,
-        "head_commit": {"message": "测试提交\n\n正文"}, "event": "push",
+        "head_commit": {"message": "测试提交\n\n正文", "timestamp": "2026-11-11T19:37:00Z"}, "event": "push",
         "html_url": f"https://example.invalid/{run_id}", "head_sha": "abcdef1234567",
     }
     return {"repo": "OWNER/demo", "action": status, "at": 1, "payload": json.dumps({"workflow_run": wr})}
@@ -138,6 +138,17 @@ def main() -> int:
     ]
     order = [r["id"] for r in relay.build_actions(FakeStore(rows))["runs"]]
     ck(order == [2, 1], "列表按开始时间倒序", repr(order))
+
+    # 9) 提交时间：从 head_commit.timestamp 取，而且不能跟运行开始时间搞混
+    #    （手动触发 / 重跑时，提交可能是几小时前写的）
+    rows = [ev(1, "completed", conclusion="success",
+               started="2026-11-11T19:38:00Z", updated="2026-11-11T19:39:00Z")]
+    run = relay.build_actions(FakeStore(rows))["runs"][0]
+    want = relay._iso_ms("2026-11-11T19:37:00Z")
+    ck(run.get("commit_at") == want, "commit_at 取自 head_commit.timestamp",
+       f'{run.get("commit_at")} vs {want}')
+    ck(run.get("commit_at") != run.get("started_at"), "提交时间不等于运行开始时间",
+       f'commit={run.get("commit_at")} started={run.get("started_at")}')
 
     print()
     for p in PASSES:

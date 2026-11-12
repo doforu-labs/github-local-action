@@ -450,15 +450,19 @@
   }
   .run-sub .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .run-sub .sha { font-family: var(--mono); }
-  /* 这行里只有标题允许被压短（截成 …），其余一律保持一行：
-     否则窄窗口下发起人会被挤成两行、整张卡突然变高，看着像跳了一下。 */
-  .run-sub > span { flex: none; white-space: nowrap; }
-  .run-sub .t { flex: 0 1 auto; min-width: 0; }
+  /* 这行里谁都不许换行（窄窗口下以前发起人会被挤成两行、整张卡突然变高）。
+     空间不够时按「标题优先」退让：标题有下限并吃掉剩余宽度，仓库名、提交时间、
+     发起人依次给省略号，不会再把标题压成 0。 */
+  .run-sub > span {
+    flex: 0 1 auto; min-width: 0; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .run-sub .t { flex: 1 1 auto; min-width: 3em; }
+  .run-sub .sha,
+  .run-sub .ct { flex: none; }   /* 短 sha 和提交时间要完整可读，不参与压缩 */
   /* 选「全部仓库」时多条仓库混在一起，卡片上得看得出这条属于哪个仓库；
      已经按具体仓库筛过了就不再重复（那时候每条都一样，写了也是噪音）。 */
-  .run-sub .repo {
-    max-width: 40%; overflow: hidden; text-overflow: ellipsis; color: var(--fg);
-  }
+  .run-sub .repo { flex: 0 1 auto; min-width: 5em; max-width: 40%; color: var(--fg); }
   .run-side { display: flex; align-items: center; gap: 8px; justify-self: end; }
   .run-side .trigger { font: 400 12px/1.5 var(--mono); color: var(--fg-muted); }
   .run-time {
@@ -560,6 +564,10 @@
     .run .run-side { display: none; }
     .run-time { min-width: 0; }
     .run-detail { padding-left: 16px; }
+    /* 窄屏这一行留给仓库名、标题、sha、提交时间；发起人墙上还有，详情里也有 */
+    .run-sub .who { display: none; }
+    /* 发起人藏了，它前面那个「·」也要跟着走，不然行尾挂个孤零零的点 */
+    .run-sub > span:has(+ .who) { display: none; }
   }
 
   /* ---------- 空状态（Primer blankslate） ---------- */
@@ -1734,6 +1742,15 @@ function relTime(ms) {
   return Math.floor(s / 86400) + L(' 天前', ' d ago');
 }
 
+// 提交时间：卡片上地方小，同年只给「11-11 20:55」，跨年才带年份。
+// 它和右边那个「9 小时前」（运行开始）不是一回事，手动触发/重跑时能差好几天。
+function fmtCommit(ms) {
+  if (!ms) return '';
+  const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
+  const md = (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  return d.getFullYear() === new Date().getFullYear() ? md : d.getFullYear() + '-' + md;
+}
+
 // 一条运行的 HTML：webhook 和 GitHub API 两种来源共用
 function runRowHtml(r) {
   const [icon, cls, label] = statusOf(r);
@@ -1752,7 +1769,11 @@ function runRowHtml(r) {
     // displayTitle 有时就是工作流名，重复了就不再显一次
     (r.title && r.title !== r.name) ? '<span class="t" title="' + esc(r.title) + '">' + esc(r.title) + '</span>' : '',
     r.sha ? '<span class="sha">' + esc(r.sha) + '</span>' : '',
-    r.actor ? '<span>' + esc(r.actor) + '</span>' : ''
+    // 提交时间（不是运行时间）：手动触发、重跑的时候，提交可能是几天前写的
+    r.commit_at ? '<span class="ct" title="' +
+      esc(L('提交于 ', 'committed ') + fmtFull(r.commit_at)) + '">' +
+      esc(fmtCommit(r.commit_at)) + '</span>' : '',
+    r.actor ? '<span class="who">' + esc(r.actor) + '</span>' : ''
   ].filter(Boolean).join('<span>·</span>');
 
   const kv = (k, v) => '<div class="kv"><span class="k">' + k +
@@ -1764,7 +1785,9 @@ function runRowHtml(r) {
                                                ' · attempt ' + (r.run_attempt || 1))) +
     kv('触发事件', esc(r.trigger || '—')) +
     (r.actor ? kv('发起人', esc(r.actor)) : '') +
-    kv('提交', esc(r.sha || '—') + (r.author ? ' · ' + esc(r.author) : '')) +
+    kv('提交', esc(r.sha || '—') + (r.author ? ' · ' + esc(r.author) : '') +
+      (r.commit_at ? '<span class="hint"> · ' + esc(L('提交于 ', 'committed ') +
+        fmtFull(r.commit_at)) + '</span>' : '')) +
     kv('开始', r.started_at ? esc(fmtFull(r.started_at)) : '—') +
     kv('用时', fmtDur(r.duration_s)) +
     jobsBox(r);

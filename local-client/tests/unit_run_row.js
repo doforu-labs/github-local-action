@@ -40,6 +40,7 @@ const run = {
   title: '探测', sha: '4a0953f', author: 'OWNER', actor: 'OWNER',
   trigger: 'workflow_dispatch', branch: 'main', path: '.github/workflows/probe.yml',
   url: 'https://github.com/x/y/actions/runs/1', started_at: 1762900000000,
+  commit_at: 1762898400000,      // 提交比运行早 26 分钟（手动触发就是这样）
   updated_at: 1762900060000, duration_s: 60, seen_at: 1762900000000,
 };
 
@@ -51,6 +52,22 @@ assert.match(out, /JIT Parallel Probe/);
 assert.match(out, /4a0953f/);
 // 窄面板里标题会被截成「Electro…」，鼠标悬停得能看到全文
 assert.match(out, /<span class="t" title="探测">探测<\/span>/, '标题带悬浮全文');
+
+// 6.5) 提交时间紧跟在 sha 后面——它和右边的「9 小时前」（运行开始）不是一回事，
+//      手动触发时两者能差半小时以上，得能分得出来
+assert.match(out, /class="ct"/, '卡片上有提交时间');
+const subHtml = out.match(/<div class="run-sub">([\s\S]*?)<\/div>/)[1];
+assert.ok(subHtml.indexOf('class="sha"') < subHtml.indexOf('class="ct"'),
+  '提交时间在 sha 后面');
+assert.match(subHtml, /class="ct" title="提交于 [^"]*">[^<]+<\/span>/, '时间带悬浮的完整时间');
+assert.match(subHtml, /\d{1,2}-\d{1,2} \d{2}:\d{2}/, '时间按「月-日 时:分」显示');
+// 详情里也要写清楚这是提交时间
+assert.match(out, /<span class="hint"> · 提交于 /, '详情里注明是提交时间');
+
+// 6.6) 没有提交时间（API 拉回来的行）就不显示，不留下空占位或多余的「·」
+let noCommit = context.runRowHtml({...run, commit_at: 0});
+assert.doesNotMatch(noCommit, /class="ct"/, '缺提交时间就不显示');
+assert.doesNotMatch(noCommit, /提交于 /, '详情里也不提');
 
 // 2) 仓库名在标题行下面那一行（run-sub），不能挤到右上角的标签区去——
 //    窄屏时 run-side 是 hide 的，放那儿等于又看不见了
