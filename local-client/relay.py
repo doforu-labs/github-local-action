@@ -248,6 +248,21 @@ class Store:
         )
         self.conn.commit()
 
+    # ── 杂项配置：重启以后还得记住的东西（按需池子开在哪些仓库上）──
+    def meta_get(self, key: str, default: str = "") -> str:
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return str(row["value"]) if row else default
+
+    def meta_set(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        self.conn.commit()
+
     def insert(self, ev: dict[str, Any]) -> bool:
         """返回 True 表示是新事件（False = 重复，直接丢掉）"""
         try:
@@ -3735,6 +3750,59 @@ def _jit_auto_pool() -> None:
     JIT_POOL["max_parallel"] = max(1, len(live))
 
 
+# 按需配置存在 meta 表里。之前只活在内存，重启一次「仓库」页的开关就全变回关闭——
+# 那不是「没开」，是「忘了」。开关是配置，得记住。
+JIT_META_KEY = "jit-on-demand"
+
+
+def _jit_save(store: Store) -> None:
+    """记下「哪些仓库开着」，下次启动接着用。
+
+    只存配置：仓库开关、机器池、并发数。running / history / stats 是此刻的运行时
+    状态，存下来重启后反而是错的（会出现一批早就不存在的「正在跑」）。
+    """
+    try:
+        body = {
+            "repos": sorted(r for r, v in JIT_POOL["repos"].items() if v),
+            "machines": list(JIT_POOL["machines"]),
+            "max_parallel": int(JIT_POOL["max_parallel"]),
+        }
+        store.meta_set(JIT_META_KEY, json.dumps(body, ensure_ascii=False))
+    except Exception as exc:                       # noqa: BLE001
+        # 存不下只是「下次要重新勾」，不影响这一轮接活，别把接口打挂
+        log.info("按需配置没存上（不影响接活）：%s", exc)
+
+
+def _jit_restore(store: Store) -> None:
+    """启动时把上次开着的仓库捡回来。
+
+    机器池不照抄存下来的清单：那台机器可能已经删了、密码也过期了，照抄会恢复出
+    一个点不亮的池子。改成拿「现在还能连的机器」重算一遍。
+
+    恢复只恢复「盯着哪些仓库」，不会在机器上起任何进程：按需是等 job 派上来才开票，
+    所以重启不会莫名冒出一堆 runner。
+    """
+    raw = store.meta_get(JIT_META_KEY, "")
+    if not raw:
+        return
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        log.info("按需配置读不出来，当没开过：%s", raw[:60])
+        return
+    if not isinstance(body, dict):
+        return
+    # 名字不像 owner/name 的直接丢掉：宁可少盯一个，也别拿脏数据去拼 API 路径
+    repos = [r for r in (body.get("repos") or [])
+             if isinstance(r, str) and _REPO_RE.match(r)]
+    if not repos:
+        return
+    JIT_POOL["repos"] = {r: True for r in repos}
+    _jit_auto_pool()
+    log.info("按需配置已恢复：接 %d 个仓库 %s，现在能连的机器 %d 台",
+             len(repos), repos, len(JIT_POOL["machines"]))
+
+
 def _jit_pick(labels: list[str]) -> Optional[dict[str, Any]]:
     """挑一台闲着又能跑这个 job 的机器。"""
     busy = {str(r.get("machine")) for r in JIT_POOL["running"].values()}
@@ -4032,6 +4100,7 @@ async def handle_runner_jit_start(request: web.Request) -> web.Response:
     JIT_POOL["stats"]["last_error"] = ""
     log.info("JIT 开启：接 %d 个仓库 %s，机器 %s，并发 %d",
              len(repos), repos, names, parallel)
+    _jit_save(request.app["store"])
     return web.json_response(_jit_view())
 
 
@@ -4041,6 +4110,7 @@ async def handle_runner_jit_stop(request: web.Request) -> web.Response:
         return blocked
     JIT_POOL["repos"] = {}
     log.info("JIT 关闭（所有仓库都停了）")
+    _jit_save(request.app["store"])
     return web.json_response(_jit_view())
 
 
@@ -4073,6 +4143,7 @@ async def handle_runner_jit_repo(request: web.Request) -> web.Response:
         if repo in JIT_POOL["repos"]:
             JIT_POOL["repos"][repo] = False
         log.info("JIT 放手：%s", repo)
+    _jit_save(request.app["store"])
     return web.json_response(_jit_view())
 
 
@@ -4238,6 +4309,9 @@ async def main_async(cfg: Config) -> None:
     db = Path(cfg.db_path)
     SSH_MACHINES = MachineStore(str(db), str(db.with_name(db.name + ".machines.key")))
     log.info("机器清单 %s 台（来自 %s）", len(SSH_MACHINES), cfg.db_path)
+    # 上一轮开着的「自动运行」仓库捡回来。必须在 MachineStore 建好之后：早一行
+    # SSH_MACHINES 还是空的，机器池会恢复成 0 台。
+    _jit_restore(store)
     bus = Bus()
     state = State()
     stop = asyncio.Event()
