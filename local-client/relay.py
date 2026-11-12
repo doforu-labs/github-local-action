@@ -762,6 +762,28 @@ def _iso_ms(text: Any) -> int:
         return 0
 
 
+_RUN_STATUS_RANK = {"queued": 1, "in_progress": 2, "completed": 3}
+
+
+def _newer_run_state(old: dict[str, Any], wr: dict[str, Any]) -> bool:
+    """同一个 run 来了第二条事件：哪条才是「更新的状态」？
+
+    不能按到达顺序算。GitHub 的投递会重试、会乱序，实测过这种：先到
+    completed/cancelled，后面又补了一条 in_progress，而且两条的 updated_at
+    一模一样（同一个时刻推了两遍，状态字段退回去了）。按到达顺序取，
+    这条运行就永远停在「进行中」。
+
+    所以先看载荷里 GitHub 自己盖的 updated_at；时间戳一样时再看状态谁更靠后——
+    completed 永远比 in_progress 可信，因为它不会自己倒退。
+    """
+    new_at = _iso_ms(wr.get("updated_at"))
+    old_at = int(old.get("updated_at") or 0)
+    if new_at != old_at:
+        return new_at > old_at
+    return _RUN_STATUS_RANK.get(str(wr.get("status") or ""), 0) >= \
+        _RUN_STATUS_RANK.get(str(old.get("status") or ""), 0)
+
+
 def build_actions(store: Store, repo: str = "", limit: int = 60) -> dict[str, Any]:
     """把库里的 workflow_run 事件还原成「一次运行一行」。
 
@@ -784,8 +806,11 @@ def build_actions(store: Store, repo: str = "", limit: int = 60) -> dict[str, An
             continue
         wr = payload.get("workflow_run") or {}
         run_id = wr.get("id")
-        if run_id is None or run_id in runs:
-            continue  # 已经拿到更新的状态了
+        if run_id is None:
+            continue
+        prev = runs.get(run_id)
+        if prev is not None and not _newer_run_state(prev, wr):
+            continue  # 迟到的旧快照，不能盖掉手上这份
 
         started = _iso_ms(wr.get("run_started_at") or wr.get("created_at"))
         updated = _iso_ms(wr.get("updated_at"))
