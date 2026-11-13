@@ -3973,10 +3973,29 @@ JIT_POOL: dict[str, Any] = {
     "max_parallel": 2,
     "running": {},              # job_id -> {job, machine, name, label, at}
     "history": [],              # 最近的接活记录，新的在前
-    "stats": {"picked": 0, "failed": 0, "done": 0, "skipped": 0, "last_error": ""},
+    "stats": {"picked": 0, "failed": 0, "done": 0, "skipped": 0,
+              "reconciled": 0, "released": 0, "last_error": ""},
 }
 
 _JIT_TASKS: set[asyncio.Task] = set()
+
+# ── 对账：GitHub 的队列才是真源，事件只是加速 ──────────────────────────
+# 只在 webhook 到达那一刻挑机器有个结构性缺口：那一刻机器全忙、或者事件压根没
+# 送到，这个 job 就没人管了（GitHub 那边一直排到 24 小时上限才判失败）。所以
+# 再定时问一次 GitHub「还有谁在排队」，把漏掉的补上，顺手收回泄漏的名额。
+JIT_RECONCILE_INTERVAL = 30.0      # 多久对一次账
+JIT_RECONCILE_GRACE = 20.0         # 排这么久的队还没人接才补，先给 webhook 那条路机会
+JIT_RECONCILE_MAX_TRIES = 6        # 同一个 job 最多补发几次
+JIT_RECONCILE_GAP = 45.0           # 两次补发之间至少隔这么久
+JIT_RECONCILE_FORGET = 1800.0      # 从队列里消失这么久之后忘掉它的补发次数
+JIT_RUNNING_CHECK_AFTER = 900.0    # running 里的条目挂这么久就去 GitHub 核一次
+JIT_RUNNING_CHECK_PER_PASS = 5     # 一轮最多核几条，别把 gh 配额吃光
+
+_JIT_RETRY: dict[str, dict[str, Any]] = {}      # job_id -> {tries, first, last, seen}
+_JIT_LAST_RECONCILE: dict[str, Any] = {}
+# 对账一轮要问 GitHub 好几个接口，串行问下来要十几秒，跟不上 30 秒的节拍。
+# 并发上限放在这里，别一口气fork出几十个 gh 进程。
+_JIT_GH_SLOTS = asyncio.Semaphore(6)
 
 
 def _jit_os(machine: dict[str, Any]) -> str:
@@ -4193,8 +4212,8 @@ async def _jit_launch(machine: dict[str, Any], cfg: str) -> tuple[bool, str]:
         box.close()
 
 
-async def _jit_take_job(item: dict[str, Any]) -> None:
-    """一个 job 排队了：挑机器、发票、起进程。"""
+async def _jit_take_job(item: dict[str, Any], via: str = "webhook") -> bool:
+    """一个 job 排队了：挑机器、发票、起进程。真起来了才算 True。"""
     payload = item.get("payload") or {}
     job = payload.get("workflow_job") or {}
     labels = [str(x) for x in (job.get("labels") or [])]
@@ -4205,12 +4224,14 @@ async def _jit_take_job(item: dict[str, Any]) -> None:
     await _machines_live_view()
     machine = _jit_pick(labels)
     if not machine:
-        JIT_POOL["stats"]["skipped"] += 1
-        return
+        if via == "webhook":
+            # 对账那一轮挑不到机器不算「漏」，它下一轮还会再看一眼
+            JIT_POOL["stats"]["skipped"] += 1
+        return False
     runner_name = f"jit-{machine['name']}-{jid[-6:]}" if jid else f"jit-{machine['name']}"
     key = jid or runner_name
     if key in JIT_POOL["running"]:
-        return
+        return True
     # 在第一个网络 await 之前占位，两个同时 queued 的 job 不能挑中同一台机器。
     JIT_POOL["running"][key] = {
         "job": jname, "machine": machine["name"], "name": runner_name,
@@ -4225,14 +4246,43 @@ async def _jit_take_job(item: dict[str, Any]) -> None:
         if not started:
             JIT_POOL["stats"]["failed"] += 1
             JIT_POOL["stats"]["last_error"] = err
-            _jit_record("failed", job=jname, machine=machine["name"], job_id=jid, error=err)
-            return
+            _jit_record("failed", job=jname, machine=machine["name"], job_id=jid, error=err,
+                        via=via)
+            return False
         JIT_POOL["stats"]["picked"] += 1
-        _jit_record("picked", job=jname, machine=machine["name"], runner=runner_name, job_id=jid)
-        log.info("JIT 接活：%s → %s（%s）", jname, machine["name"], runner_name)
+        _jit_record("picked", job=jname, machine=machine["name"], runner=runner_name,
+                    job_id=jid, via=via)
+        log.info("JIT 接活：%s → %s（%s）%s", jname, machine["name"], runner_name,
+                 "（对账补发）" if via == "reconcile" else "")
+        return True
     finally:
         if not started:
             JIT_POOL["running"].pop(key, None)
+
+
+def _jit_bind_runner(job: dict[str, Any], jid: str) -> None:
+    """runner 真正接住的 job 可能与它被发出去时对应的那个不同。
+
+    JIT runner 注册后由 GitHub 按 labels 派活：同一套 labels 里可能同时有多个
+    job 在排，谁先到先得。实测见过「给 windows-1 发的 runner 跑了 windows-2」。
+    不把这条记录改绑到真实 job 上，windows-1 就会被当成「还在飞」而对账跳过它，
+    白白等到 stale 清理才发现——那正是要修的那类卡死。
+    """
+    runner = str(job.get("runner_name") or "")
+    if not runner or not jid or jid in JIT_POOL["running"]:
+        return
+    for key, entry in list(JIT_POOL["running"].items()):
+        if str(entry.get("name") or "") != runner or key == jid:
+            continue
+        JIT_POOL["running"].pop(key, None)
+        entry["job"] = str(job.get("name") or entry.get("job") or "")
+        entry["job_id"] = jid
+        JIT_POOL["running"][jid] = entry
+        _jit_record("rebound", job=entry.get("job"), machine=entry.get("machine"),
+                    runner=runner, job_id=jid, repo=entry.get("repo"),
+                    error=f"同一个 runner 实际接的是这个 job（原先记的是 {key}）")
+        log.info("runner %s 实际接的 job 是 %s（原先记的 %s）", runner, jid, key)
+        return
 
 
 async def _jit_on_event(item: dict[str, Any]) -> None:
@@ -4245,6 +4295,10 @@ async def _jit_on_event(item: dict[str, Any]) -> None:
     payload = item.get("payload") or {}
     job = payload.get("workflow_job") or {}
     jid = str(job.get("id") or "")
+
+    if action in ("in_progress", "completed"):
+        # 先按 runner 名核对一下：接到的可能不是我们为它挑的那个 job
+        _jit_bind_runner(job, jid)
 
     if action == "completed":
         if JIT_POOL["running"].pop(jid, None) is not None:
@@ -4265,6 +4319,213 @@ async def _jit_on_event(item: dict[str, Any]) -> None:
     task = asyncio.create_task(_jit_take_job(item))
     _JIT_TASKS.add(task)
     task.add_done_callback(_JIT_TASKS.discard)
+
+
+async def _repo_queued_jobs(repo: str) -> tuple[list[dict[str, Any]], str]:
+    """GitHub 上「还排着队、一个 runner 都没分到」的 job。
+
+    查两种 run：整个 run 还没起来的（status=queued），和 run 已经在跑、但其中
+    某个 job 还在等的（status=in_progress）——后者正是「机器全忙那一刻被漏掉」
+    的那种 job，只看 run 级别的 queued 是找不到它的。
+
+    两条 run 查询和后面每个 run 的 job 查询都并发发出去，否则三个仓库串行问下来
+    一轮要十几秒，对账就跟不上了。
+    """
+    scope = _gh_scope(repo)
+
+    async def runs_with(status: str) -> tuple[list[dict[str, Any]], str]:
+        async with _JIT_GH_SLOTS:
+            rc, out, err = await gh_run(
+                ["api", f"{scope}/actions/runs?status={status}&per_page=10",
+                 "--jq", "[.workflow_runs[] | {id, name}]"], attempts=1)
+        if rc != 0:
+            return [], _gh_error_text(err or out, repo)
+        try:
+            data = json.loads(out or "[]")
+        except ValueError:
+            return [], "gh 返回的不是 JSON"
+        return [r for r in data if isinstance(r, dict)], ""
+
+    batches = await asyncio.gather(runs_with("queued"), runs_with("in_progress"))
+    runs: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    error = ""
+    for batch, err in batches:
+        error = error or err
+        for run in batch:
+            if run.get("id") in seen:
+                continue
+            seen.add(run.get("id"))
+            runs.append(run)
+
+    async def jobs_of(run: dict[str, Any]) -> list[dict[str, Any]]:
+        async with _JIT_GH_SLOTS:
+            rc, out, _ = await gh_run(
+                ["api", f"{scope}/actions/runs/{run['id']}/jobs", "--jq",
+                 '[.jobs[] | select(.status == "queued") | {id, name, labels, created_at}]'],
+                attempts=1)
+        if rc != 0:
+            return []
+        try:
+            jobs = json.loads(out or "[]")
+        except ValueError:
+            return []
+        return [{
+            "repo": repo,
+            "job_id": str(job.get("id") or ""),
+            "job": str(job.get("name") or ""),
+            "labels": [str(x) for x in (job.get("labels") or [])],
+            "created_at": job.get("created_at") or "",
+            "run_id": run.get("id"),
+            "run_name": str(run.get("name") or ""),
+        } for job in jobs]
+
+    found: list[dict[str, Any]] = []
+    for group in await asyncio.gather(*[jobs_of(r) for r in runs[:8]]):
+        found.extend(group)
+    return found, error
+
+
+async def _job_state(repo: str, job_id: str) -> tuple[str, str]:
+    """GitHub 上这个 job 现在什么状态：active / finished / unknown。"""
+    if not repo or not job_id.isdigit():
+        return "unknown", "没有仓库或 job 号"
+    rc, out, err = await gh_run(
+        ["api", f"{_gh_scope(repo)}/actions/jobs/{job_id}", "--jq", "{status, conclusion}"],
+        attempts=1)
+    if rc != 0:
+        low = (err or out).lower()
+        # 404/410：job 已经不在了（仓库改名、run 被清），当结束处理
+        if "not found" in low or "404" in low or "gone" in low or "410" in low:
+            return "finished", "GitHub 上已经查不到这个 job"
+        return "unknown", _gh_error_text(err or out, repo)
+    try:
+        data = json.loads(out or "{}")
+    except ValueError:
+        return "unknown", "gh 返回的不是 JSON"
+    status = str((data or {}).get("status") or "")
+    if status == "completed":
+        return "finished", ""
+    if status in ("queued", "in_progress", "waiting", "requested", "pending"):
+        return "active", ""
+    return "unknown", f"未知状态 {status}"
+
+
+def _jit_item_for_job(job: dict[str, Any]) -> dict[str, Any]:
+    """把对账查到的 job 拼成跟 webhook 一样的事件形状，复用同一条接活路径。"""
+    return {
+        "event": "workflow_job", "action": "queued", "repo": job.get("repo") or "",
+        "payload": {"workflow_job": {
+            "id": job.get("job_id"), "name": job.get("job"),
+            "labels": list(job.get("labels") or []), "run_id": job.get("run_id"),
+            "workflow_name": job.get("run_name"),
+        }},
+    }
+
+
+async def _jit_release_stale(now: float) -> list[str]:
+    """收回来被泄漏的并发名额：running 里挂了很久、GitHub 上其实早结束的。
+
+    completed 事件丢了就会这样——名额一直被占着，慢慢把 max_parallel 吃满。
+    """
+    released: list[str] = []
+    for key, entry in list(JIT_POOL["running"].items()):
+        if len(released) >= JIT_RUNNING_CHECK_PER_PASS:
+            break
+        if now - float(entry.get("at") or 0) < JIT_RUNNING_CHECK_AFTER:
+            continue
+        state, why = await _job_state(str(entry.get("repo") or ""), str(key))
+        if state != "finished":
+            continue
+        JIT_POOL["running"].pop(key, None)
+        JIT_POOL["stats"]["released"] = int(JIT_POOL["stats"].get("released") or 0) + 1
+        _jit_record("released", job=entry.get("job"), machine=entry.get("machine"),
+                    job_id=str(key), repo=entry.get("repo"),
+                    error=why or "GitHub 上已经结束了，名额收回来")
+        log.info("收回泄漏的并发名额：%s（%s）", entry.get("job"), key)
+        released.append(str(key))
+    return released
+
+
+async def _jit_reconcile_once() -> dict[str, Any]:
+    """对一轮账：把漏掉的 job 补上 runner，顺手收回泄漏的名额。"""
+    started = time.time()
+    repos = [r for r, on in JIT_POOL["repos"].items() if on]
+    summary: dict[str, Any] = {"at": started, "repos": repos, "queued": 0,
+                               "launched": [], "waiting": 0, "released": [], "error": ""}
+    if not repos:
+        return summary
+    # 挑机器要看探测结果，先把缓存热起来（TTL 内不会重复 SSH）
+    await _machines_live_view()
+    errors: list[str] = []
+    for repo, (jobs, err) in zip(repos, await asyncio.gather(*[_repo_queued_jobs(r) for r in repos])):
+        if err:
+            errors.append(f"{repo}: {err}")
+        for job in jobs:
+            summary["queued"] += 1
+            jid = str(job.get("job_id") or "")
+            if not jid or jid in JIT_POOL["running"]:
+                continue                      # 已经在飞，不重复派
+            labels = [str(x) for x in (job.get("labels") or [])]
+            if "self-hosted" not in {x.lower() for x in labels}:
+                continue                      # GitHub 托管 runner 的活，不归我们管
+            age = started - _iso_ms(job.get("created_at")) / 1000.0
+            if age < JIT_RECONCILE_GRACE:
+                continue                      # 刚排上，先让 webhook 那条路自己走
+            record = _JIT_RETRY.get(jid)
+            if record is None:
+                record = _JIT_RETRY[jid] = {"tries": 0, "first": started, "last": 0.0}
+            record["seen"] = started
+            if int(record.get("tries") or 0) >= JIT_RECONCILE_MAX_TRIES:
+                summary["waiting"] += 1        # 补够了还没接住，交给 GitHub 的 24 小时回收
+                continue
+            if started - float(record.get("last") or 0) < JIT_RECONCILE_GAP:
+                summary["waiting"] += 1
+                continue
+            if len(JIT_POOL["running"]) >= int(JIT_POOL["max_parallel"]):
+                summary["waiting"] += 1
+                continue
+            if _jit_pick(labels) is None:
+                summary["waiting"] += 1        # 此刻没有能接的同平台机器，下一轮再看
+                continue
+            record["tries"] = int(record.get("tries") or 0) + 1
+            record["last"] = time.time()
+            if await _jit_take_job(_jit_item_for_job(job), via="reconcile"):
+                JIT_POOL["stats"]["reconciled"] = int(JIT_POOL["stats"].get("reconciled") or 0) + 1
+                summary["launched"].append({
+                    "job": job.get("job"), "job_id": jid, "repo": job.get("repo"),
+                    "machine": (JIT_POOL["running"].get(jid) or {}).get("machine"),
+                })
+            else:
+                summary["waiting"] += 1
+    summary["released"] = await _jit_release_stale(started)
+    # 从队列里消失很久的记录可以忘了，不然这个表只涨不减
+    for jid in list(_JIT_RETRY):
+        gone_for = started - float(_JIT_RETRY[jid].get("seen") or started)
+        if gone_for > JIT_RECONCILE_FORGET:
+            _JIT_RETRY.pop(jid, None)
+    summary["error"] = "；".join(errors)[:300]
+    summary["took"] = round(time.time() - started, 2)
+    return summary
+
+
+async def jit_reconcile_loop() -> None:
+    """定时对账。事件丢了、机器当时全忙，只能靠这一层把 job 接回来。"""
+    while True:
+        await asyncio.sleep(JIT_RECONCILE_INTERVAL)
+        try:
+            summary = await _jit_reconcile_once()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("对账出错：%s", exc)
+            JIT_POOL["stats"]["last_error"] = str(exc)[:200]
+            continue
+        _JIT_LAST_RECONCILE.clear()
+        _JIT_LAST_RECONCILE.update(summary)
+        if summary.get("launched") or summary.get("released") or summary.get("error"):
+            log.info("对账：排队 %s，补发 %s，等机器 %s，收回 %s%s",
+                     summary["queued"], len(summary["launched"]), summary["waiting"],
+                     len(summary["released"]),
+                     f"，出错：{summary['error']}" if summary.get("error") else "")
 
 
 async def jit_loop(bus: Bus) -> None:
@@ -4321,8 +4582,20 @@ def _jit_view() -> dict[str, Any]:
         ],
         "history": JIT_POOL["history"][:12],
         "stats": dict(JIT_POOL["stats"]),
+        "reconcile": dict(_JIT_LAST_RECONCILE),
         "pool_size": len(_machine_groups()),
     }
+
+
+async def handle_runner_jit_reconcile(request: web.Request) -> web.Response:
+    """手动对一次账：排查「job 排着队没人接」时不用等下一个 30 秒。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    summary = await _jit_reconcile_once()
+    _JIT_LAST_RECONCILE.clear()
+    _JIT_LAST_RECONCILE.update(summary)
+    return web.json_response({"reconcile": summary, "stats": dict(JIT_POOL["stats"])})
 
 
 async def handle_runner_jit(request: web.Request) -> web.Response:
@@ -4591,6 +4864,7 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_post("/runners/jit/repo", handle_runner_jit_repo)
     app.router.add_post("/runners/jit/pool", handle_runner_jit_pool)
     app.router.add_post("/runners/jit/prepare", handle_runner_jit_prepare)
+    app.router.add_post("/runners/jit/reconcile", handle_runner_jit_reconcile)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)
@@ -4629,6 +4903,8 @@ async def main_async(cfg: Config) -> None:
 
     task = asyncio.create_task(ws_loop(cfg, store, bus, state, stop))
     jit_task = asyncio.create_task(jit_loop(bus))
+    # 对账：webhook 漏了或者当时机器全忙的 job，靠这条定时任务补回来
+    reconcile_task = asyncio.create_task(jit_reconcile_loop())
     # 机器状态提前问一次，等真有人打开页面时是热的（冷启动要 1~4 秒）
     prime_task = asyncio.create_task(_prime_machine_live(app))
     try:
@@ -4642,6 +4918,11 @@ async def main_async(cfg: Config) -> None:
         jit_task.cancel()
         try:
             await jit_task
+        except asyncio.CancelledError:
+            pass
+        reconcile_task.cancel()
+        try:
+            await reconcile_task
         except asyncio.CancelledError:
             pass
         prime_task.cancel()

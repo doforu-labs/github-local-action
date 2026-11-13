@@ -507,6 +507,8 @@ reconnect_max = 2
             ck.check(isinstance(jd.get("available_info"), list),
                      "JIT：状态带架构清单", str(jd.get("available_info"))[:80])
             ck.check(jd.get("on") is False, "JIT：默认是关的", str(jd.get("on")))
+            ck.check("reconcile" in jd and isinstance(jd.get("reconcile"), dict),
+                     "JIT：状态里带对账结果", str(jd.get("reconcile"))[:80])
 
             bad = await s.post(f"{BASE}/runners/jit/start", json={})
             ck.check(bad.status == 400, "JIT：没填仓库就拒", str(bad.status))
@@ -564,6 +566,16 @@ reconnect_max = 2
             sd = await stop.json()
             ck.check(sd.get("on") is False, "JIT：停完确实关了", str(sd.get("on")))
             ck.check(sd.get("repos") == {}, "JIT：停下会把仓库开关清空", str(sd.get("repos")))
+
+            # 对账：没开任何仓库时应该什么都不问就直接返回（不连 GitHub）
+            rec = await s.post(f"{BASE}/runners/jit/reconcile")
+            ck.check(rec.status == 200, "JIT：对账接口可用", str(rec.status))
+            rd0 = await rec.json()
+            rc0 = rd0.get("reconcile") or {}
+            ck.check(set(rc0) >= {"at", "repos", "queued", "launched", "waiting", "released"},
+                     "JIT：对账结果结构完整", str(sorted(rc0))[:120])
+            ck.check(rc0.get("repos") == [] and rc0.get("queued") == 0,
+                     "JIT：没开仓库时对账不查 GitHub", str(rc0.get("repos"))[:80])
 
             # ── 6i. 仓库全量清单（全部仓库 + 最近提交时间）──
             rl = await s.get(f"{BASE}/github/repos")
