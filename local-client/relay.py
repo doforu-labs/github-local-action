@@ -78,6 +78,9 @@ class Config:
     heartbeat: int = 30       # 协议层 ping：防 NAT / 代理回收空闲连接
     app_ping: int = 120       # 应用层 ping：顺带确认对端活着
     reconnect_max: int = 60   # 重连退避上限（秒）
+    # 装 runner 时要写进机器上 .env 的代理（空 = 直连）。自建机器常常连不上或极慢地
+    # 连 github.com，这里填一次，以后每台新机器装 runner 都自动带上，不用逐台手改。
+    proxy: str = ""
     path: Optional[Path] = None   # 配置文件位置，设置页保存时写回这里
 
     @classmethod
@@ -1870,6 +1873,83 @@ def _ssh_params(body: dict[str, Any]) -> tuple[dict[str, Any], str]:
     }, ""
 
 
+# 装 runner 时要写进机器上 .env 的代理；空字符串 = 不写（直连）。
+# 由 main() 从 config.toml 的 [relay] proxy 读入，设置页改完同步更新。
+PROXY_URL = ""
+
+# 走代理时不该绕路的地址：内网与本机，加上 runner 自己连的 broker / 制品域。
+# broker（*.actions.githubusercontent.com）走代理反而连不上（实测 .NET 报
+# HostUnreachable），它直连本来是好的，所以必须排除。
+DEFAULT_NO_PROXY = ("localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,.local,"
+                    ".actions.githubusercontent.com,.blob.core.windows.net,.azure.com,"
+                    # runner 自己（.NET HttpClient）经代理下载 action 包会报 No route to host，
+                    # 这条直连本来就通，所以排除掉；job 里的 git / electron 下载照旧走代理。
+                    ".codeload.github.com")
+
+# 生成 .env 代理行的模板。用占位符替换而不是拼引号，少一层转义少一个坑。
+_PROXY_POSIX_TMPL = [
+    'grep -v -E "^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)=" "@ENV@" > "@TMP@" || true',
+    'printf "HTTP_PROXY=%s\\nHTTPS_PROXY=%s\\nALL_PROXY=%s\\nNO_PROXY=%s\\n" '
+    '@URL@ @URL@ @URL@ @NO@ >> "@TMP@"',
+    'mv "@TMP@" "@ENV@"',
+    'echo "  代理已写入 .env：@URL@"',
+]
+
+
+def _proxy_reject_reason(value: str) -> str:
+    """代理地址能不能用。空字符串表示「直连」，也算合法。"""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if len(v) > 200:
+        return "代理地址太长了"
+    if not v.startswith(("http://", "https://", "socks5://", "socks5h://")):
+        return "代理要写成 http://主机:端口 或 socks5://主机:端口"
+    rest = v.split("://", 1)[1]
+    if "/" in rest:
+        return "只要 主机:端口，别带路径"
+    host, _, port = rest.rpartition(":")
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        return "代理地址要带端口，比如 http://127.0.0.1:7890"
+    return ""
+
+
+def _posix_proxy_env_lines(dirvar: str = "DIR") -> list[str]:
+    """把代理写进 .env（已有就覆盖）。
+
+    和 PATH 那几行同一个道理：runner 服务是 launchd / systemd 拉起来的，
+    继承不到登录 shell 里的变量，只能靠 .env。
+    """
+    if not PROXY_URL:
+        return []
+    subs = {"@ENV@": '$' + dirvar + '/.env',
+            "@TMP@": '$' + dirvar + '/.env.tmp',
+            "@URL@": shlex.quote(PROXY_URL),
+            "@NO@": shlex.quote(DEFAULT_NO_PROXY)}
+    out = []
+    for line in _PROXY_POSIX_TMPL:
+        for key, val in subs.items():
+            line = line.replace(key, val)
+        out.append(line)
+    return out
+
+
+def _win_proxy_env_lines(dirvar: str = "dir") -> list[str]:
+    """Windows 版本：同样覆盖写。PATH 那几行已经保证 .env 存在。"""
+    if not PROXY_URL:
+        return []
+    pairs = [f"HTTP_PROXY={PROXY_URL}", f"HTTPS_PROXY={PROXY_URL}",
+             f"ALL_PROXY={PROXY_URL}", f"NO_PROXY={DEFAULT_NO_PROXY}"]
+    joined = ",".join("'" + x + "'" for x in pairs)
+    return [
+        "$envPath=Join-Path $" + dirvar + " '.env'",
+        "$old=@(); if (Test-Path $envPath) { $old=@(Get-Content $envPath | Where-Object "
+        "{ $_ -notmatch '^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)=' }) }",
+        "(@($old)+@(" + joined + ")) | Set-Content -Path $envPath -Encoding ASCII",
+        "Write-Output ('[5/5] proxy -> .env: " + PROXY_URL + "')",
+    ]
+
+
 def _posix_env_lines(dirvar: str = "DIR") -> list[str]:
     """把机器上已有的工具链写进 runner 目录的 .env。
 
@@ -1909,7 +1989,7 @@ def _posix_env_lines(dirvar: str = "DIR") -> list[str]:
         'printf "PATH=%s\\n" "$ENVPATH" >> "$' + dirvar + '/.env.tmp"',
         'mv "$' + dirvar + '/.env.tmp" "$' + dirvar + '/.env"',
         'echo "  PATH 已写入 $' + dirvar + '/.env"',
-    ]
+    ] + _posix_proxy_env_lines(dirvar)
 
 
 def _win_env_parts(dirvar: str = "dir") -> list[str]:
@@ -1930,7 +2010,7 @@ def _win_env_parts(dirvar: str = "dir") -> list[str]:
         "$old=@(Get-Content $envPath | Where-Object { $_ -notmatch '^PATH=' }) }",
         "(@($old)+@('PATH=' + ($keep -join ';'))) | Set-Content -Path $envPath -Encoding ASCII",
         "Write-Output ('[4/4] PATH -> .env: ' + ($keep -join ';'))",
-    ]
+    ] + _win_proxy_env_lines(dirvar)
 
 
 def _posix_install_script(p: dict[str, Any], token: str, archive: str, labels: str,
@@ -3278,6 +3358,137 @@ async def handle_runner_ssh_add(request: web.Request) -> web.Response:
     job["_task"] = asyncio.create_task(_run_ssh_add(job, p))
     return web.json_response({"job": job["id"], "name": p["name"]})
 
+# ─────────────────────────────────────────────────────────────
+# 代理：装 runner 时自动写进 .env，也能一键同步到已有机器
+# ─────────────────────────────────────────────────────────────
+
+
+def _posix_proxy_sync_script(directory: str, plat: str) -> str:
+    """把 .env 里的代理刷一遍，然后重启服务 —— .env 只在 listener 启动时读。"""
+    d = directory.replace("~", "$HOME")
+    lines = ["set -e", f"DIR={shlex.quote(d)}", 'cd "$DIR"']
+    if plat != "macos":
+        lines.append("IFS= read -r SUDOPW || true")
+    lines += _posix_env_lines("DIR")
+    if plat == "macos":
+        lines.append(
+            'if [ -x ./svc.sh ]; then ./svc.sh stop >/dev/null 2>&1 || true; '
+            './svc.sh start >/dev/null 2>&1 || true; echo "  服务已重启（launchd）"; '
+            'else echo "  没有 svc.sh，重启后 .env 才生效"; fi')
+    else:
+        lines.append(
+            'if [ -x ./svc.sh ]; then '
+            # 先确认这个密码真能 sudo：不是 sudoer、或者 sudo 密码跟登录密码不一样的
+            # 机器，.env 写了也不会生效，得直接报失败，不能回一句「已同步」。
+            'if echo "$SUDOPW" | sudo -S -k true >/dev/null 2>&1; then '
+            'echo "$SUDOPW" | sudo -S ./svc.sh stop >/dev/null 2>&1 || true; '
+            'echo "$SUDOPW" | sudo -S ./svc.sh start >/dev/null 2>&1 || true; '
+            'echo "  服务已重启（systemd）"; '
+            'else echo "  .env 已写，但登录密码不能 sudo：服务没重启，重启后才生效"; exit 3; fi; '
+            'else echo "  没有 svc.sh，重启后 .env 才生效"; fi')
+    return "\n".join(lines)
+
+
+def _proxy_sync_blocking(job: dict[str, Any]) -> list[dict[str, Any]]:
+    """逐台刷 .env。一台失败不影响其它台。"""
+    rows: list[dict[str, Any]] = []
+    for name, machine in dict(_machines_live()).items():
+        if not machine.get("password"):
+            _ssh_log(job, f"{name}：没存连接密码，跳过（重填一次凭据再同步）")
+            rows.append({"name": name, "ok": False, "error": "没有凭据"})
+            continue
+        box = SshBox(machine["host"], int(machine["port"]), machine["user"],
+                     machine["password"], lambda t: _ssh_log(job, t))
+        try:
+            box.connect()
+            directory = str(machine.get("dir") or "~/actions-runner")
+            plat = str(machine.get("os") or "linux").lower()
+            if plat == "windows":
+                script = "\n".join([f"$dir = '{directory}'"] + _win_proxy_env_lines("dir"))
+                rc, out = box.run(_ps(script), None, 300, True)
+                _ssh_log(job, f"{name}：.env 已写，Windows 要等 runner 下次重启才生效")
+            else:
+                script = _posix_proxy_sync_script(directory, plat)
+                rc, out = box.run(f"bash -c {shlex.quote(script)}",
+                                  stdin_text=machine["password"], timeout=300)
+            if rc != 0:
+                rows.append({"name": name, "ok": False, "error": f"退出码 {rc}"})
+                _ssh_log(job, f"{name}：失败（退出码 {rc}）")
+                continue
+            rows.append({"name": name, "ok": True, "error": ""})
+            _ssh_log(job, f"{name}：已同步")
+        except Exception as exc:  # noqa: BLE001
+            rows.append({"name": name, "ok": False,
+                         "error": f"{type(exc).__name__}: {exc}"[:200]})
+            _ssh_log(job, f"{name}：{type(exc).__name__}: {exc}")
+        finally:
+            box.close()
+    return rows
+
+
+async def _run_proxy_sync(job: dict[str, Any]) -> None:
+    try:
+        rows = await asyncio.to_thread(_proxy_sync_blocking, job)
+        ok = [r for r in rows if r["ok"]]
+        job.update(status="done",
+                   result={"total": len(rows), "ok": len(ok), "machines": rows})
+        _ssh_log(job, f"完成：{len(ok)}/{len(rows)} 台已同步")
+    except Exception as exc:  # noqa: BLE001
+        job.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:300])
+        _ssh_log(job, f"失败：{exc}")
+
+
+async def handle_runner_proxy_get(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    cfg: Config = request.app["cfg"]
+    return web.json_response({"proxy": cfg.proxy, "no_proxy": DEFAULT_NO_PROXY,
+                              "machines": sorted(dict(_machines_live()))})
+
+
+async def handle_runner_proxy(request: web.Request) -> web.Response:
+    """设置 runner 代理：写回配置，并同步到所有已知机器（.env + 重启服务）。"""
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # 「没传这个字段」和「传了空串」是两件事：前者是请求写错了，后者才是「直连」。
+    # 以前用 body.get("proxy") or ""，一个拼错的请求体就能静默清掉全机代理。
+    if "proxy" not in body:
+        return web.json_response(
+            {"error": "要说清楚 proxy：直连请传空字符串", "proxy": None}, status=400)
+    raw = body.get("proxy")
+    if not isinstance(raw, str):
+        return web.json_response(
+            {"error": "proxy 要是字符串（空字符串 = 直连）"}, status=400)
+    value = raw.strip()
+    reason = _proxy_reject_reason(value)
+    if reason:
+        return web.json_response({"error": reason}, status=400)
+
+    cfg: Config = request.app["cfg"]
+    previous = cfg.proxy
+    cfg.proxy = value
+    try:
+        save_config(cfg)
+    except OSError as exc:
+        cfg.proxy = previous
+        return web.json_response({"error": f"写入配置失败：{exc}"}, status=500)
+    global PROXY_URL
+    PROXY_URL = value
+
+    job = _ssh_new_job("proxy", f"同步代理到各台机器（{value or '直连'}）")
+    _ssh_log(job, f"代理设为 {value or '（空，直连）'}，已写回 {cfg.path}")
+    job["_task"] = asyncio.create_task(_run_proxy_sync(job))
+    return web.json_response({"proxy": value, "job": job["id"]})
+
+
 
 async def handle_runner_ssh_remove(request: web.Request) -> web.Response:
     """连上机器停服务删目录，再把 GitHub 上的注册删掉。"""
@@ -3361,6 +3572,7 @@ def config_public(cfg: Config) -> dict[str, Any]:
         "heartbeat": cfg.heartbeat,
         "app_ping": cfg.app_ping,
         "reconnect_max": cfg.reconnect_max,
+        "proxy": cfg.proxy,
         "token_set": bool(cfg.token),
         "token_hint": mask_token(cfg.token),
         "config_path": str(cfg.path) if cfg.path else "",
@@ -3443,6 +3655,7 @@ def save_config(cfg: Config) -> None:
         "heartbeat": cfg.heartbeat,
         "app_ping": cfg.app_ping,
         "reconnect_max": cfg.reconnect_max,
+        "proxy": cfg.proxy,
     }
     body = lines[start + 1:end]
     seen: set[str] = set()
@@ -4368,6 +4581,8 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/machines/live", handle_machines_live)
     app.router.add_post("/runners/delete", handle_machine_delete)
     app.router.add_post("/runners/ssh/add", handle_runner_ssh_add)
+    app.router.add_get("/runners/proxy", handle_runner_proxy_get)
+    app.router.add_post("/runners/proxy", handle_runner_proxy)
     app.router.add_post("/runners/ssh/remove", handle_runner_ssh_remove)
     app.router.add_get("/runners/ssh/job/{job}", handle_runner_ssh_job)
     app.router.add_get("/runners/jit", handle_runner_jit)
@@ -4449,6 +4664,8 @@ def main() -> None:
     )
 
     cfg = Config.load(Path(args.config))
+    global PROXY_URL
+    PROXY_URL = cfg.proxy          # 装 runner 时把这一条写进各台机器的 .env
     asyncio.run(main_async(cfg))
 
 
