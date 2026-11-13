@@ -211,6 +211,29 @@ def test_http_error() -> None:
     check(nohint == "HTTP 503（返回了一个网页，不是接口）", "HTML 里没 error code 时也给个说法", nohint)
 
 
+def test_domain_helpers() -> None:
+    print("自定义域名：域名校验与 zone 匹配")
+    check(relay._valid_host("relay.example.com"), "普通子域合法")
+    check(relay._valid_host("Relay.Example.COM") is True, "大小写不敏感")
+    check(not relay._valid_host("example.com/path"), "带路径的不合法")
+    check(not relay._valid_host("no-dot"), "没点不合法")
+    check(not relay._valid_host(""), "空不合法")
+    check(not relay._valid_host("-bad.example.com"), "开头横线不合法")
+
+    zones = [{"name": "example.com", "id": "z1"},
+             {"name": "api.example.com", "id": "z2"},
+             {"name": "other.net", "id": "z3"}]
+    check(relay._zone_for("relay.example.com", zones)["id"] == "z1", "子域归到父 zone")
+    check(relay._zone_for("x.api.example.com", zones)["id"] == "z2", "有重叠时取最长匹配")
+    check(relay._zone_for("example.com", zones)["id"] == "z1", "根域名自己也能匹配")
+    check(relay._zone_for("notexample.com", zones) is None, "不同 zone 不误匹配")
+    check(relay._zone_for("a.unknown.org", zones) is None, "不在列表里就返回 None")
+
+    check(relay._workers_dev_url("github-local-action", "demo-sub")
+          == "wss://github-local-action.demo-sub.workers.dev/ws", "拼出默认 ws 地址")
+    check(relay._workers_dev_url("", "demo-sub") == "", "没 worker 名就不拼")
+
+
 def main() -> int:
     print("中继自检的解析函数")
     test_whoami_logged_in()
@@ -221,6 +244,7 @@ def main() -> int:
     test_deployments()
     test_worker_name()
     test_http_error()
+    test_domain_helpers()
     print(f"\n结果：{PASS} 项通过，{FAIL} 项失败")
     return 0 if FAIL == 0 else 1
 

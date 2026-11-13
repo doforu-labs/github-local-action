@@ -51,6 +51,9 @@ curl -N http://<内网IP>:18091/stream
 | GET | `/health` | 连接状态、游标、SSE 客户端数、距上一条事件的秒数 |
 | GET | `/relay?force=1` | 中继自检：wrangler 装没装 / 登录没登录 / 有没有 workers 写权限 / worker 在不在 / 地址通不通 |
 | POST | `/relay/deploy` | 跑 `wrangler deploy`，从输出里抬出 `*.workers.dev` 地址写回配置并重连（`{"apply":false}` 则只部署不改配置） |
+| GET | `/relay/domains` | 账号里有哪些 zone、这个 worker 现在绑了哪些自定义域名、默认 workers.dev 地址 |
+| POST | `/relay/domain` | 把一个子域名绑到中继（走 Workers 自定义域名接口，不改 wrangler.toml；等 HTTPS 通了才把中继地址切过去） |
+| POST | `/relay/domain/remove` | 解绑；中继地址正指着它就退回 workers.dev |
 
 `/relay` 和 `/relay/deploy` 只对本机开放。前者只读，一两秒就回来，缓存 20 秒；
 后者是真的发布，会短时间摸一下 Cloudflare。为什么要它：地址以前靠人手抄，

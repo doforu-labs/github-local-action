@@ -2666,7 +2666,7 @@ function route() {
   });
   $('viewTitle').textContent = VIEWS[view][0];
   $('viewSub').textContent = VIEWS[view][1];
-  if (view === 'settings') { loadConfig(); loadService(); loadRelay(); }
+  if (view === 'settings') { loadConfig(); loadService(); loadRelay(); loadDomains(); }
   if (view === 'agent') loadAgentView();
   if (view === 'actions') loadActions();
   if (view === 'runners') {
@@ -3118,6 +3118,49 @@ function renderRelay() {
       L('部署并自动填入地址', 'Deploy and fill in address') + '</button>' +
     '<button class="btn" id="relayRecheck">' + t('重新检测') + '</button></div>');
 
+  /* 自定义域名：账号里有这个 zone 就能把中继绑上去，不用改 wrangler.toml、不用重部署 */
+  const dm = DOMAINS || {};
+  const boundHosts = dm.bound || [];
+  const zones = dm.zones || [];
+  rows.push('<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-muted,#d8dee4)">' +
+    '<div class="hint" style="margin:0">' + esc(L('自定义域名', 'Custom domain')) +
+    (dm.workers_dev_url ? ' · ' + esc(L('默认 ', 'default ') + dm.workers_dev_url) : '') + '</div>');
+  if (!DOMAINS.checked) {
+    rows.push('<div class="hint" style="margin-top:6px">' + t('正在读域名…') + '</div>');
+  } else if (!dm.has_token) {
+    rows.push('<div class="hint" style="color:var(--danger);margin-top:6px">' +
+      esc(L('读不到 wrangler 的登录凭据，先 wrangler login 才能绑域名。',
+            'No wrangler credentials; log in first.')) + '</div>');
+  } else {
+    if (boundHosts.length) {
+      rows.push('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' +
+        boundHosts.map((b) => '<span class="Label Label--success">' + esc(b.hostname) + '</span>').join('') +
+        '</div>');
+      rows.push('<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' +
+        boundHosts.map((b) => '<button class="btn relayUnbind" data-host="' + esc(b.hostname) + '">' +
+          esc(L('解绑 ' + b.hostname, 'Unbind ' + b.hostname)) + '</button>').join('') + '</div>');
+    }
+    rows.push('<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">' +
+      '<input class="input mono" id="relayHost" list="relayZoneList" spellcheck="false" ' +
+        'placeholder="' + esc(L('例如 relay.example.com', 'e.g. relay.example.com')) + '" ' +
+        'style="flex:1;min-width:220px">' +
+      '<datalist id="relayZoneList">' +
+        zones.map((z) => '<option value="' + esc('relay.' + z.name) + '">' + esc(z.name) + '</option>').join('') +
+      '</datalist>' +
+      '<button class="btn" id="relayBind">' + esc(L('绑定域名', 'Bind domain')) + '</button></div>');
+    if (zones.length) {
+      rows.push('<div class="hint" style="margin-top:4px">' +
+        esc(L('账号里的域名：', 'Zones: ') + zones.map((z) => z.name).join('、')) + '</div>');
+    }
+    if (dm.error) {
+      rows.push('<div class="hint" style="color:var(--danger);margin-top:4px">' + esc(dm.error) + '</div>');
+    }
+    rows.push('<div class="hint" style="margin-top:4px">' +
+      esc(L('绑完等它 HTTPS 通了才会切地址；切的只是中继地址，不影响 worker 本身。',
+            'Switching waits until HTTPS responds; only the relay address changes.')) + '</div>');
+  }
+  rows.push('</div>');
+
   if (RELAY.tail) {
     rows.push('<pre class="hint mono" style="margin-top:10px;max-height:200px;overflow:auto;' +
       'white-space:pre-wrap;word-break:break-all;background:var(--bg-muted);padding:8px;' +
@@ -3128,7 +3171,83 @@ function renderRelay() {
   const dep = $('relayDeploy');
   if (dep) dep.addEventListener('click', deployRelay);
   const again = $('relayRecheck');
-  if (again) again.addEventListener('click', () => loadRelay(true));
+  if (again) again.addEventListener('click', () => { loadRelay(true); loadDomains(true); });
+  const bind = $('relayBind');
+  if (bind) bind.addEventListener('click', bindDomain);
+  box.querySelectorAll('.relayUnbind').forEach((b) => {
+    b.addEventListener('click', () => unbindDomain(b.dataset.host));
+  });
+}
+
+let DOMAINS = { checked: false };
+
+async function loadDomains(force) {
+  try {
+    const r = await fetch('/relay/domains' + (force ? '?force=1' : ''));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    DOMAINS = Object.assign({ checked: true }, d);
+  } catch (e) {
+    DOMAINS = { checked: true, has_token: false, bound: [], zones: [], error: String(e.message || e) };
+  }
+  renderRelay();
+}
+
+async function bindDomain() {
+  const inp = $('relayHost');
+  const host = ((inp && inp.value) || '').trim().toLowerCase();
+  if (!host) {
+    flash('error', L('先填一个域名，比如 relay.example.com', 'Enter a hostname first'));
+    return;
+  }
+  const btn = $('relayBind');
+  if (btn) { btn.disabled = true; btn.textContent = L('绑定中…（等证书）', 'Binding…'); }
+  try {
+    const r = await fetch('/relay/domain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname: host, apply: true })
+    });
+    const d = await r.json();
+    if (d.domains) DOMAINS = Object.assign({ checked: true }, d.domains);
+    renderRelay();
+    if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
+    if (d.ws_url) $('cfg-ws').value = d.ws_url;
+    flash('ok', L('已绑定 ' + d.hostname + '（HTTPS ' + ((d.probe && d.probe.seconds) || '?') + ' 秒就通了），中继地址已切过去。',
+      'Bound ' + d.hostname + '; relay address switched to it.'));
+    loadRelay(true);
+  } catch (e) {
+    flash('error', L('绑定失败：', 'Bind failed: ') + e.message);
+    loadDomains(true);
+  } finally {
+    const b = $('relayBind');
+    if (b) { b.disabled = false; b.textContent = L('绑定域名', 'Bind domain'); }
+  }
+}
+
+async function unbindDomain(host) {
+  if (!host) return;
+  if (!window.confirm(L('解绑 ' + host + '？中继会回到 workers.dev 地址。',
+                        'Unbind ' + host + '? The relay goes back to the workers.dev address.'))) return;
+  try {
+    const r = await fetch('/relay/domain/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname: host })
+    });
+    const d = await r.json();
+    if (d.domains) DOMAINS = Object.assign({ checked: true }, d.domains);
+    renderRelay();
+    if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
+    if (d.ws_url) $('cfg-ws').value = d.ws_url;
+    flash('ok', d.reverted
+      ? L('已解绑 ' + host + '，中继地址退回 ' + d.ws_url + '。', 'Unbound ' + host + '; address back to ' + d.ws_url + '.')
+      : L('已解绑 ' + host + '。', 'Unbound ' + host + '.'));
+    loadRelay(true);
+  } catch (e) {
+    flash('error', L('解绑失败：', 'Unbind failed: ') + e.message);
+    loadDomains(true);
+  }
 }
 
 async function loadRelay(force) {

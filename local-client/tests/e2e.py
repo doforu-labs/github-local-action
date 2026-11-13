@@ -621,6 +621,20 @@ reconnect_max = 2
             ck.check(hl.get("ok") is True or bool(hl.get("error")),
                      "中继：连不上时会给原因", str(hl.get("error"))[:80])
 
+            # 自定义域名：也只读（真绑/真解绑碰的是用户的 Cloudflare 账号）
+            dm = await s.get(f"{BASE}/relay/domains?force=1")
+            ck.check(dm.status == 200, "域名：接口可用", str(dm.status))
+            dmd = await dm.json()
+            ck.check({"worker_name", "has_token", "zones", "bound", "workers_dev_url"} <= set(dmd),
+                     "域名：结构完整", str(sorted(dmd))[:140])
+            ck.check(isinstance(dmd.get("zones"), list) and isinstance(dmd.get("bound"), list),
+                     "域名：zones 和 bound 都是数组",
+                     f"{type(dmd.get('zones'))}/{type(dmd.get('bound'))}")
+            ck.check(isinstance(dmd.get("has_token"), bool),
+                     "域名：说清了有没有凭据", str(dmd.get("has_token")))
+            ck.check(dmd.get("bound") == [], "域名：测试环境不会真有绑定",
+                     str(dmd.get("bound"))[:80])
+
             # ── 6i. 仓库全量清单（全部仓库 + 最近提交时间）──
             rl = await s.get(f"{BASE}/github/repos")
             ck.check(rl.status == 200, "仓库清单：接口可用", str(rl.status))

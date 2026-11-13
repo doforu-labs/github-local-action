@@ -34,8 +34,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Set
+from urllib.parse import urlparse
 from collections import OrderedDict
 
 import aiohttp
@@ -533,7 +535,6 @@ async def app_pinger(ws: aiohttp.ClientWebSocketResponse, interval: int) -> None
 
 
 async def ws_loop(cfg: Config, store: Store, bus: Bus, state: State, stop: asyncio.Event) -> None:
-    url = f"{cfg.ws_url}{'&' if '?' in cfg.ws_url else '?'}token={cfg.token}"
     delay = 1
 
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15)
@@ -541,6 +542,9 @@ async def ws_loop(cfg: Config, store: Store, bus: Bus, state: State, stop: async
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         while not stop.is_set():
+            # 地址和令牌每轮重算：它们可以热改（POST /config），算在循环外的话
+            # 改了地址只有重启进程才生效，日志却已经显示新地址，排查时极度误导。
+            url = f"{cfg.ws_url}{'&' if '?' in cfg.ws_url else '?'}token={cfg.token}"
             try:
                 log.info("连接 %s（游标 %s）", cfg.ws_url, store.cursor())
                 async with session.ws_connect(
@@ -5430,6 +5434,364 @@ async def handle_relay_deploy(request: web.Request) -> web.Response:
     return web.json_response(result, status=200 if result.get("ok") else 500)
 
 
+# ─────────────────────────────────────────────────────────────
+# 自定义域名：把中继绑到账号里自己的域名
+#
+# workers.dev 那个地址不走国内 CDN、也记不住。Cloudflare 支持「Workers 自定义域名」：
+# 账号里只要有这个 zone，绑上去就能用一个自己的子域名访问，证书自动签，不用改
+# wrangler.toml、不用重新部署。
+#
+# 凭据用现成的：wrangler 登录后把 oauth_token 明文写在 ~/.wrangler/config/default.toml，
+# 直接用它的 API 就行，不用另外叫人去建一个 API Token。令牌会过期，过期就跑一次
+# wrangler（它自己会刷新并写回文件）再重试。
+# ─────────────────────────────────────────────────────────────
+
+CF_API = "https://api.cloudflare.com/client/v4"
+DOMAINS_CACHE_TTL = 20.0
+_DOMAINS_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+_CF_ACCOUNT: dict[str, str] = {"id": ""}
+
+_HOST_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
+
+
+def _cf_credentials() -> tuple[str, float]:
+    """读 wrangler 的 OAuth 令牌（明文在 ~/.wrangler/config/default.toml）。"""
+    path = Path.home() / ".wrangler" / "config" / "default.toml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return "", 0.0
+    tok = re.search(r'^oauth_token\s*=\s*"([^"]+)"', text, re.M)
+    exp = re.search(r'^expiration_time\s*=\s*"([^"]+)"', text, re.M)
+    ts = 0.0
+    if exp:
+        try:
+            ts = datetime.fromisoformat(exp.group(1).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            ts = 0.0
+    return (tok.group(1) if tok else ""), ts
+
+
+async def _cf_refresh() -> bool:
+    """令牌过期了就借 wrangler 刷一下：它自己会续期并写回同一个文件。"""
+    rc, _ = await _relay_run(["whoami"], 60.0)
+    return rc == 0
+
+
+async def _cf_api(method: str, path: str, body: Any = None,
+                  retry: bool = True) -> dict[str, Any]:
+    """调 Cloudflare API。令牌过期时自动刷一次再重试。"""
+    tok, exp = _cf_credentials()
+    if not tok:
+        return {"ok": False, "status": 0, "result": None,
+                "error": "没有 wrangler 的登录凭据（先 wrangler login）"}
+    if exp and exp < time.time() and retry:
+        await _cf_refresh()
+        tok, exp = _cf_credentials()
+    try:
+        timeout = aiohttp.ClientTimeout(total=25)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.request(method, f"{CF_API}{path}", json=body,
+                                    headers={"Authorization": f"Bearer {tok}"}) as resp:
+                raw = await resp.text()
+                try:
+                    data = json.loads(raw) if raw.strip() else {}
+                except ValueError:
+                    data = {}
+                # 204 是空的：删除类接口就靠它表示成功，别当成失败
+                if resp.status in (200, 201, 204) and data.get("success", True):
+                    return {"ok": True, "status": resp.status,
+                            "result": data.get("result"), "error": ""}
+                msg = "; ".join(str(e.get("message", ""))
+                                for e in (data.get("errors") or []))[:300]
+                low = msg.lower()
+                if retry and resp.status in (401, 403) and (
+                        "token" in low or "authenticat" in low or "expired" in low):
+                    if await _cf_refresh():
+                        return await _cf_api(method, path, body, retry=False)
+                return {"ok": False, "status": resp.status,
+                        "result": data.get("result"),
+                        "error": msg or f"HTTP {resp.status}"}
+    except Exception as exc:                       # noqa: BLE001
+        return {"ok": False, "status": 0, "result": None,
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+def _valid_host(host: str) -> bool:
+    return bool(_HOST_RE.match((host or "").strip().lower().rstrip(".")))
+
+
+def _zone_for(host: str, zones: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """挑最长匹配的 zone：api.x.example.com 属于 example.com，不是 x.example.com。"""
+    name = (host or "").strip().lower().rstrip(".")
+    best: Optional[dict[str, Any]] = None
+    for z in zones:
+        zn = str(z.get("name") or "").lower()
+        if not zn:
+            continue
+        if name == zn or name.endswith("." + zn):
+            if best is None or len(zn) > len(str(best.get("name") or "")):
+                best = z
+    return best
+
+
+def _workers_dev_url(name: str, sub: str) -> str:
+    if not name or not sub:
+        return ""
+    return f"wss://{name}.{sub}.workers.dev/ws"
+
+
+async def _cf_account() -> str:
+    """账号 id：先看缓存，没有再问 /accounts（wrangler 令牌只能看自己那个）。"""
+    if _CF_ACCOUNT["id"]:
+        return _CF_ACCOUNT["id"]
+    res = await _cf_api("GET", "/accounts")
+    rows = res.get("result") or []
+    if res.get("ok") and rows:
+        _CF_ACCOUNT["id"] = str(rows[0].get("id") or "")
+    return _CF_ACCOUNT["id"]
+
+
+async def _cf_subdomain(account: str) -> str:
+    res = await _cf_api("GET", f"/accounts/{account}/workers/subdomain")
+    if res.get("ok") and isinstance(res.get("result"), dict):
+        return str((res["result"] or {}).get("subdomain") or "")
+    return ""
+
+
+async def _cf_domains(account: str, service: str) -> tuple[list[dict[str, Any]], str]:
+    """列出这个 worker 已绑的自定义域名；附带错误文字。"""
+    res = await _cf_api("GET", f"/accounts/{account}/workers/domains")
+    if not res.get("ok"):
+        return [], str(res.get("error") or "读不到已绑域名")
+    rows = [r for r in (res.get("result") or []) if isinstance(r, dict)]
+    mine = [r for r in rows if str(r.get("service") or "") == service]
+    return mine, ""
+
+
+async def _probe_host(host: str, seconds: float = 40.0) -> dict[str, Any]:
+    """绑完等 HTTPS 真的通：证书签发要几秒到几十秒。"""
+    started = time.time()
+    last = ""
+    while time.time() - started < seconds:
+        try:
+            timeout = aiohttp.ClientTimeout(total=6)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.get(f"https://{host}/health") as resp:
+                    if resp.status == 200:
+                        body = await resp.json(content_type=None)
+                        return {"ok": True, "status": 200, "seconds": round(time.time() - started, 1),
+                                "events": body.get("events"), "cursor": body.get("cursor"), "error": ""}
+                    last = f"HTTP {resp.status}"
+        except Exception as exc:                   # noqa: BLE001
+            last = f"{type(exc).__name__}: {exc}"[:160]
+        await asyncio.sleep(2.0)
+    return {"ok": False, "status": 0, "seconds": round(time.time() - started, 1),
+            "events": None, "cursor": None, "error": last or "等超时了还没通"}
+
+
+async def _relay_domains(cfg: Config, force: bool = False) -> dict[str, Any]:
+    """域名面板：能用哪些 zone、现在绑了哪些、默认地址是什么。"""
+    now = time.time()
+    cached = _DOMAINS_CACHE.get("data")
+    if not force and cached and now - float(_DOMAINS_CACHE.get("at") or 0) < DOMAINS_CACHE_TTL:
+        return cached
+
+    name = _worker_name()
+    tok, exp = _cf_credentials()
+    out: dict[str, Any] = {
+        "worker_name": name, "has_token": bool(tok),
+        "token_expired": bool(exp and exp < now),
+        "account_id": "", "zones": [], "bound": [], "subdomain": "",
+        "workers_dev_url": "", "error": "",
+    }
+    if not tok:
+        out["error"] = "读不到 wrangler 的登录凭据，先 wrangler login"
+        _DOMAINS_CACHE.update(at=now, data=out)
+        return out
+
+    account = await _cf_account()
+    out["account_id"] = account
+    if not account:
+        out["error"] = "读不到 Cloudflare 账号 id"
+        _DOMAINS_CACHE.update(at=now, data=out)
+        return out
+
+    zres = await _cf_api("GET", "/zones?per_page=50")
+    if zres.get("ok"):
+        out["zones"] = [{"name": z.get("name"), "id": z.get("id"),
+                         "status": z.get("status")}
+                        for z in (zres.get("result") or []) if isinstance(z, dict)]
+    else:
+        out["error"] = str(zres.get("error") or "读不到域名列表")
+
+    sub = await _cf_subdomain(account)
+    out["subdomain"] = sub
+    out["workers_dev_url"] = _workers_dev_url(name, sub)
+
+    bound, err = await _cf_domains(account, name)
+    out["bound"] = [{"hostname": r.get("hostname"), "zone_name": r.get("zone_name"),
+                     "environment": r.get("environment")} for r in bound]
+    if err and not out["error"]:
+        out["error"] = err
+
+    _DOMAINS_CACHE.update(at=now, data=out)
+    return out
+
+
+async def _bind_domain(cfg: Config, hostname: str, apply: bool = True) -> dict[str, Any]:
+    """把一个子域名绑到中继 worker，等它 HTTPS 通了才算成。"""
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not _valid_host(host):
+        return {"ok": False, "error": "域名格式不对，要像 relay.example.com 这样"}
+    name = _worker_name()
+    if not name:
+        return {"ok": False, "error": "wrangler.toml 里没有 worker 名"}
+    account = await _cf_account()
+    if not account:
+        return {"ok": False, "error": "读不到 Cloudflare 账号 id"}
+
+    zres = await _cf_api("GET", "/zones?per_page=50")
+    if not zres.get("ok"):
+        return {"ok": False, "error": str(zres.get("error") or "读不到域名列表")}
+    zones = [z for z in (zres.get("result") or []) if isinstance(z, dict)]
+    zone = _zone_for(host, zones)
+    if zone is None:
+        names = "、".join(str(z.get("name")) for z in zones) or "（一个都没有）"
+        return {"ok": False,
+                "error": f"{host} 不在这账号的域名里（现有：{names}），绑不了"}
+
+    res = await _cf_api("PUT", f"/accounts/{account}/workers/domains", {
+        "zone_id": zone.get("id"), "hostname": host,
+        "service": name, "environment": "production",
+    })
+    if not res.get("ok"):
+        return {"ok": False, "error": str(res.get("error") or "绑定被 Cloudflare 拒了"),
+                "hostname": host, "zone": zone.get("name")}
+
+    probe = await _probe_host(host)
+    out: dict[str, Any] = {"ok": probe["ok"], "hostname": host,
+                           "zone": zone.get("name"), "probe": probe,
+                           "ws_url": f"wss://{host}/ws", "changed": False,
+                           "reconnect": False, "applied": False,
+                           "error": "" if probe["ok"] else
+                           f"绑上了，但 https://{host}/health 还没通（{probe['error']}）"}
+    if not probe["ok"] or not apply:
+        return out
+    if cfg.ws_url == out["ws_url"]:
+        out["applied"] = True
+        return out
+    previous = cfg.ws_url
+    cfg.ws_url = out["ws_url"]
+    try:
+        save_config(cfg)
+    except OSError as exc:
+        cfg.ws_url = previous
+        return {**out, "ok": False, "error": f"绑定成功了，但写配置失败：{exc}"}
+    out["applied"] = True
+    out["changed"] = True
+    return out
+
+
+async def _unbind_domain(cfg: Config, hostname: str) -> dict[str, Any]:
+    """解绑；如果中继地址正好指着它，就退回 workers.dev 那个默认地址。"""
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not _valid_host(host):
+        return {"ok": False, "error": "域名格式不对"}
+    account = await _cf_account()
+    if not account:
+        return {"ok": False, "error": "读不到 Cloudflare 账号 id"}
+    # 解绑要按 attachment id 删：拿 hostname 当 DELETE 参数会被 Cloudflare 拒
+    # （"Method not allowed for this authentication scheme"，看着像权限问题，其实不是）
+    listed = await _cf_api("GET", f"/accounts/{account}/workers/domains")
+    if not listed.get("ok"):
+        return {"ok": False, "error": str(listed.get("error") or "读不到已绑域名")}
+    rows = [r for r in (listed.get("result") or []) if isinstance(r, dict)]
+    mine = [r for r in rows
+            if str(r.get("hostname") or "").lower() == host
+            and str(r.get("service") or "") == _worker_name()]
+    if not mine:
+        removed = True                 # 本来就没绑，幂等处理
+    else:
+        res = await _cf_api("DELETE",
+                            f"/accounts/{account}/workers/domains/{mine[0].get('id')}")
+        removed = bool(res.get("ok")) or res.get("status") == 404
+        if not removed:
+            return {"ok": False, "error": str(res.get("error") or "解绑失败")}
+
+    out: dict[str, Any] = {"ok": True, "hostname": host, "removed": True,
+                           "reverted": False, "ws_url": cfg.ws_url, "error": ""}
+    if (urlparse(cfg.ws_url).hostname or "") == host:
+        back = _workers_dev_url(_worker_name(), await _cf_subdomain(account))
+        if back:
+            cfg.ws_url = back
+            try:
+                save_config(cfg)
+                out.update(reverted=True, ws_url=back)
+            except OSError as exc:
+                out["error"] = f"解绑成功了，但把地址改回默认值失败：{exc}"
+    return out
+
+
+async def handle_relay_domains(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    force = request.query.get("force") in ("1", "true", "yes")
+    return web.json_response(await _relay_domains(request.app["cfg"], force))
+
+
+async def _domain_body(request: web.Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception:                              # noqa: BLE001
+        body = {}
+    return body if isinstance(body, dict) else {}
+
+
+async def handle_relay_bind(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    body = await _domain_body(request)
+    cfg: Config = request.app["cfg"]
+    state: State = request.app["state"]
+    result = await _bind_domain(cfg, str(body.get("hostname") or ""),
+                                apply=body.get("apply", True) is not False)
+    _DOMAINS_CACHE["data"] = None
+    _RELAY_CACHE["data"] = None
+    if result.get("changed") and state.ws is not None:
+        state.kick = True
+        try:
+            await state.ws.close()
+        except Exception:                          # noqa: BLE001
+            pass
+        result["reconnect"] = True
+    result["domains"] = await _relay_domains(cfg, True)
+    return web.json_response(result, status=200 if result.get("ok") else 500)
+
+
+async def handle_relay_unbind(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    body = await _domain_body(request)
+    cfg: Config = request.app["cfg"]
+    state: State = request.app["state"]
+    result = await _unbind_domain(cfg, str(body.get("hostname") or ""))
+    _DOMAINS_CACHE["data"] = None
+    _RELAY_CACHE["data"] = None
+    if result.get("reverted") and state.ws is not None:
+        state.kick = True
+        try:
+            await state.ws.close()
+        except Exception:                          # noqa: BLE001
+            pass
+        result["reconnect"] = True
+    result["domains"] = await _relay_domains(cfg, True)
+    return web.json_response(result, status=200 if result.get("ok") else 500)
+
+
 def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Application:
     app = web.Application()
     app["store"] = store
@@ -5477,6 +5839,9 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_post("/service/uninstall", handle_service_uninstall)
     app.router.add_get("/relay", handle_relay)
     app.router.add_post("/relay/deploy", handle_relay_deploy)
+    app.router.add_get("/relay/domains", handle_relay_domains)
+    app.router.add_post("/relay/domain", handle_relay_bind)
+    app.router.add_post("/relay/domain/remove", handle_relay_unbind)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)
