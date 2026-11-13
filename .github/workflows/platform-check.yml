@@ -26,7 +26,7 @@ jobs:
           - name: macos-x64
             runs_on: [self-hosted, macOS, X64]
     runs-on: ${{ matrix.target.runs_on }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: 报平台和 runner
         run: |
@@ -50,15 +50,18 @@ jobs:
   windows:
     name: windows-x64
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
+      # 脚本内容必须纯 ASCII：这些机器只有 Windows PowerShell 5.1，它按 ANSI 读
+      # 没有 BOM 的 .ps1，中文会把字符串引号配对搞坏（实测报 missing the terminator）。
       - name: 报平台和 runner
         shell: powershell
         run: |
           Write-Output "runner=$env:RUNNER_NAME"
           Write-Output "os=$env:RUNNER_OS  arch=$env:RUNNER_ARCH"
           Write-Output ([System.Environment]::OSVersion.VersionString)
-          Write-Output "处理器=$env:PROCESSOR_ARCHITECTURE  目录=$env:GITHUB_WORKSPACE"
+          Write-Output "cpu=$env:PROCESSOR_ARCHITECTURE  cores=$env:NUMBER_OF_PROCESSORS"
+          Write-Output "workspace=$env:GITHUB_WORKSPACE"
           Write-Output "proxy=$env:HTTPS_PROXY  no_proxy=$env:NO_PROXY"
       - name: 出网
         shell: powershell
@@ -66,10 +69,10 @@ jobs:
           $sw = [Diagnostics.Stopwatch]::StartNew()
           $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 https://api.github.com/zen
           $sw.Stop()
-          Write-Output "api.github.com $($r.StatusCode) $([math]::Round($sw.Elapsed.TotalSeconds,2))s"
+          Write-Output ("api.github.com {0} {1}s" -f $r.StatusCode, [math]::Round($sw.Elapsed.TotalSeconds,2))
       - uses: actions/checkout@v4
       - name: 仓里读一个文件
         shell: powershell
         run: |
           Get-ChildItem -Name | Select-Object -First 5
-          if (Test-Path README.md) { Write-Output "README.md 有 $((Get-Content README.md).Count) 行" }
+          if (Test-Path README.md) { Write-Output "README.md lines: $((Get-Content README.md).Count)" }
