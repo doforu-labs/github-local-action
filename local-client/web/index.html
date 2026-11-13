@@ -233,6 +233,7 @@
     from { background: var(--accent-muted); }
     to   { background: transparent; }
   }
+  .event-detail { display: block; margin-top: 3px; font-size: 12px; color: var(--fg-muted); white-space: normal; overflow-wrap: anywhere; }
   .row .time {
     color: var(--fg-muted); font: 400 12px/1.5 var(--mono);
     font-variant-numeric: tabular-nums;
@@ -1518,13 +1519,38 @@ function rel(sec) {
   return Math.floor(sec / 86400) + 'd';
 }
 
-// 往一个容器顶部塞一行，超过上限就丢掉尾巴
+// 按事件 ID 倒序插入，超过上限就丢掉尾巴
 function emitRow(container, row, cap) {
   if (!container) return;
   const empty = container.querySelector('.empty');
   if (empty) empty.remove();
-  container.prepend(row);
+  // 迟到/重复回放不能把旧事件插到新事件前面。
+  const next = Array.from(container.children).find(child => Number(child.dataset.eventId) < Number(row.dataset.eventId));
+  container.insertBefore(row, next || null);
   while (container.children.length > cap) container.lastElementChild.remove();
+}
+
+// 用仓库和 GitHub 的 run/job ID 生成关联链接，不使用载荷中的任意 URL。
+function eventDetailHtml(ev) {
+  const payload = ev.payload || {};
+  const job = ev.event === 'workflow_job' ? payload.workflow_job : null;
+  const run = ev.event === 'workflow_run' ? payload.workflow_run : null;
+  if (!job && !run) return '';
+  const item = job || run;
+  const runId = job ? job.run_id : run.id;
+  const parts = [job ? (job.workflow_name || '') : (run.name || '')];
+  if (runId) parts.push('Run ' + runId);
+  if (job) parts.push('Job ' + job.id + (job.name ? ' · ' + job.name : ''));
+  if (item.head_branch) parts.push(item.head_branch);
+  if (job && job.runner_name) parts.push('Runner · ' + job.runner_name);
+  if (item.conclusion) parts.push(item.conclusion);
+  const label = esc(parts.filter(Boolean).join(' · '));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(ev.repo || '') || !/^\d+$/.test(String(runId || ''))) {
+    return '<span class="event-detail">' + label + '</span>';
+  }
+  const url = 'https://github.com/' + ev.repo + '/actions/runs/' + runId +
+    (job && /^\d+$/.test(String(job.id)) ? '/job/' + job.id : '');
+  return '<a class="event-detail" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
 }
 
 function renderEvent(ev, fresh) {
@@ -1535,10 +1561,11 @@ function renderEvent(ev, fresh) {
   const make = () => {
     const row = document.createElement('div');
     row.className = 'row' + (fresh ? ' fresh' : '');
+    row.dataset.eventId = String(ev.id);
     row.innerHTML =
       '<span class="time" title="' + esc(fmtFull(ev.at)) + '">' + fmtTime(ev.at) + '</span>' +
       '<span class="type"><span class="Label Label--' + toneOf(t) + '">' + esc(t) + '</span></span>' +
-      '<span class="repo">' + repoHtml(ev.repo, false, true) + '</span>' +
+      '<span class="repo">' + repoHtml(ev.repo, false, true) + eventDetailHtml(ev) + '</span>' +
       '<span class="act">' + esc(ev.action || '') + '</span>';
     return row;
   };
@@ -1552,12 +1579,14 @@ function renderEvent(ev, fresh) {
 
 async function loadHistory() {
   try {
-    const r = await fetch('/events?after=0&limit=60');
+    const r = await fetch('/events?latest=1&limit=60');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const evs = (d.events || []).slice().sort((a, b) => a.id - b.id);
     $('events').innerHTML = '';
     $('eventsMini').innerHTML = '';
     seen.clear();
+    latestId = 0;
     for (const ev of evs) renderEvent(ev, false);
     $('listSub').textContent = evs.length
       ? L('最近 ' + evs.length + ' 条', 'Latest ' + evs.length)
@@ -1568,7 +1597,7 @@ async function loadHistory() {
 }
 
 function connect() {
-  const es = new EventSource('/stream');
+  const es = new EventSource('/stream?after=' + latestId);
   es.addEventListener('gh', (e) => {
     try {
       const ev = JSON.parse(e.data);
@@ -1577,7 +1606,7 @@ function connect() {
     } catch (_) {}
     scheduleStats();
   });
-  es.onopen = () => $('listSub').textContent = '实时接收中';
+  es.onopen = () => $('listSub').textContent = L('实时接收中', 'Receiving live events');
   es.onerror = () => $('listSub').textContent = '连接断开，正在自动重连…';
 }
 
@@ -2935,8 +2964,12 @@ route();
 applyLang(LANG);   // 进页面就按上次选的语言渲染
 $('cfgLang').addEventListener('change', (e) => setLang(e.target.value));
 loadGithubAuth();   // 先知道 gh 能不能用，行里的「加载 job」入口靠它决定要不要显示
-loadHistory();
-connect();
+// 首次历史加载结束后才开流，避免清空实时事件；失败时从 0 补发恢复。
+async function startEvents() {
+  await loadHistory();
+  connect();
+}
+startEvents();
 pollHealth();
 pollStats();
 setInterval(pollHealth, 2000);

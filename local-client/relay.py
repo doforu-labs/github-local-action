@@ -422,12 +422,16 @@ class Store:
             "last_at": int(row["last_at"] or 0),
         }
 
-    def replay(self, after: int, limit: int = 500) -> list[dict[str, Any]]:
+    def replay(self, after: int, limit: int = 500, *, latest: bool = False) -> list[dict[str, Any]]:
+        # 游标续读用升序；页面首次打开取末尾 N 条，再按升序交给调用者。
+        order = "DESC" if latest else "ASC"
         rows = self._ro().execute(
             "SELECT id, event, repo, action, at, payload FROM events "
-            "WHERE id > ? ORDER BY id LIMIT ?",
+            f"WHERE id > ? ORDER BY id {order} LIMIT ?",
             (after, limit),
         ).fetchall()
+        if latest:
+            rows.reverse()
         out = []
         for r in rows:
             try:
@@ -655,9 +659,14 @@ async def handle_stream(request: web.Request) -> web.StreamResponse:
 
     try:
         await resp.write(b"retry: 3000\n\n")
-        for ev in store.replay(sent_max):
-            await resp.write(_sse_frame(ev))
-            sent_max = max(sent_max, int(ev["id"]))
+        # 一页只有 500 条；必须补完所有页才能转入实时等待。
+        while True:
+            batch = await _offload(store.replay, sent_max)
+            for ev in batch:
+                await resp.write(_sse_frame(ev))
+                sent_max = max(sent_max, int(ev["id"]))
+            if len(batch) < 500:
+                break
 
         while True:
             try:
@@ -697,9 +706,11 @@ async def handle_events(request: web.Request) -> web.Response:
         limit = min(1000, max(1, int(request.query.get("limit", "200"))))
     except ValueError:
         limit = 200
+    latest = request.query.get("latest") == "1"
     events = await _offload(
         MEMO_EVENTS.get_or_compute if limit <= EVENTS_MEMO_MAX_LIMIT else (lambda _k, fn: fn()),
-        ("events", store.version, after, limit), lambda: store.replay(after, limit))
+        ("events", store.version, after, limit, latest),
+        lambda: store.replay(after, limit, latest=latest))
     return web.json_response({"events": events, "after": after})
 
 
