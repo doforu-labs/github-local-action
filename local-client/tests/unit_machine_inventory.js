@@ -35,6 +35,17 @@ assert.equal(context.groupMachines(machines).length, 2, 'same SSH endpoint count
 assert.equal(context.groupMachines([]).length, 0);
 assert.equal(context.groupMachines([machines[0], {...machines[0], port:2222}]).length, 2);
 assert.doesNotMatch(html, /待关联|id="runnerRepo"|id="sshRepo"|\/github\/runners/, 'machine page no longer queries or manages repository runners');
+// Machine connectivity no longer depends on a repository registration.
+for (const [state,label,error] of [
+  ['idle','在线 · 待命',''], ['unprepared','在线 · 待准备',''],
+  ['offline','连接失败','SSH 认证失败'], ['unknown','状态未知','探测失败'], ['busy','有任务在跑','']
+]) {
+  vm.runInContext('machineLive = ' + JSON.stringify({mac:{state,error}}), context);
+  const status = context.machineLiveHtml({name:'mac'});
+  assert.ok(status.includes(label), state);
+  assert.doesNotMatch(status, /未注册|GitHub 上注册/);
+  if (error) assert.ok(status.includes(error));
+}
 (async () => {
   context.fetch = async url => {
     if (url === '/runners') return {ok:true, json:async () => ({machines})};

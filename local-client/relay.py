@@ -1642,27 +1642,27 @@ class SshBox:
         self.log = log_fn
         self.client = None
 
-    def connect(self) -> None:
+    def connect(self, *, timeout: float = SSH_TIMEOUT, attempts: int = 3) -> None:
         """连上去。连不上重试两次——内网机器偶尔会因为 sshd 的
         MaxStartups 把并发会话卡掉一下，一次失败不代表机器有问题。"""
         if paramiko is None:
             raise RuntimeError("本机没装 paramiko")
         last: Optional[Exception] = None
-        for attempt in range(3):
+        for attempt in range(attempts):
             try:
                 c = paramiko.SSHClient()
                 # 内网机器，首次连接没法人工确认指纹；用完即弃的会话，接受新主机键。
                 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 c.connect(
                     self.host, port=self.port, username=self.user, password=self.password,
-                    timeout=SSH_TIMEOUT, banner_timeout=SSH_TIMEOUT, auth_timeout=SSH_TIMEOUT,
+                    timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
                     look_for_keys=False, allow_agent=False,
                 )
                 self.client = c
                 return
             except Exception as exc:            # noqa: BLE001
                 last = exc
-                if attempt < 2:
+                if attempt + 1 < attempts:
                     self.log(f"连不上（{type(exc).__name__}），{attempt + 1} 秒后重试")
                     time.sleep(attempt + 1)
         raise last if last else RuntimeError("连不上")
@@ -2919,15 +2919,11 @@ def _machine_rows() -> list[dict[str, Any]]:
     return rows
 
 
-# ── 机器现在什么状态：在不在线、是不是正在跑某个 action ──
-# 机器记录里本来就带着自己注册到哪个仓库（m["repo"]），所以不用猜仓库。
-# 页面 8 秒刷一次，GitHub 这边分层缓存：runner 名单 15 秒、在跑的 job 12 秒。
+# ── GitHub runner/job 查询缓存（用于动作详情，与机器连通性无关）──
 _RUNNER_CACHE: dict[str, dict[str, Any]] = {}
 _RUNNER_TTL = 15.0
 _JOB_CACHE: dict[str, dict[str, Any]] = {}
 _JOB_TTL = 12.0
-_LIVE_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
-_LIVE_TTL = 4.0
 
 
 async def _repo_runners(repo: str) -> tuple[list[dict[str, Any]], str]:
@@ -3011,164 +3007,220 @@ async def _repo_running_jobs(repo: str) -> tuple[list[dict[str, Any]], str]:
     return found, ""
 
 
-async def _machines_live_view(repos: list[str]) -> dict[str, Any]:
-    """每台机器：在线 / 空闲 / 正在跑什么。问不到就老实说问不到。
+def _machine_endpoint(machine: dict[str, Any]) -> tuple[str, int]:
+    return (str(machine.get("host") or "").lower(), int(machine.get("port") or 22))
 
-    GitHub 的 runner 是挂在仓库下面的，而这套机器记录故意不绑仓库，
-    所以只能拿「本地库里有活动的那些仓库」去逐个问，再按名字对回来。
+
+def _machine_groups() -> dict[tuple[str, int], list[tuple[str, dict[str, Any]]]]:
+    groups: dict[tuple[str, int], list[tuple[str, dict[str, Any]]]] = {}
+    for name, machine in sorted(_machines_live().items(), key=lambda pair: pair[0].lower()):
+        groups.setdefault(_machine_endpoint(machine), []).append((name, machine))
+    return groups
+
+
+_MACHINE_PROBE_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
+_MACHINE_PROBE_TASKS: dict[tuple[Any, ...], asyncio.Task] = {}
+_MACHINE_PROBE_SLOTS = asyncio.Semaphore(4)
+_MACHINE_PROBE_TTL = 20.0
+
+
+def _probe_machine_ssh(machine: dict[str, Any]) -> dict[str, Any]:
+    """只读探测：SSH、独立按需目录和工作进程，与 GitHub 登录/仓库无关。"""
+    box = SshBox(machine["host"], int(machine.get("port") or 22), machine["user"],
+                 machine.get("password") or "", lambda _: None)
+    connected = False
+    try:
+        box.connect(timeout=5, attempts=1)
+        connected = True
+        if _jit_os(machine) == "windows":
+            # 以远端真实用户目录为准；兼容之前准备在 C:\jitlab 等位置的安装。
+            legacy = _jit_home_dir(machine).replace("'", "''")
+            script = (
+                "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "
+                "$candidates=@((Join-Path $env:USERPROFILE 'jitlab'), "
+                f"'{legacy}', 'C:\\jitlab'); "
+                "$directory=$candidates[0]; $ready=$false; "
+                "foreach($d in $candidates){ "
+                "if((Test-Path (Join-Path $d 'bin\\Runner.Listener.exe')) -and "
+                "(Test-Path (Join-Path $d 'run.cmd'))){$directory=$d; $ready=$true; break} }; "
+                "$busy=@(Get-Process -Name 'Runner.Worker' -ErrorAction SilentlyContinue).Count -gt 0; "
+                "@{ready=$ready; busy=$busy; jit_dir=$directory} | ConvertTo-Json -Compress"
+            )
+            rc, out = box.run(_ps(script), timeout=8, quiet=True)
+            if rc != 0:
+                raise RuntimeError("probe failed")
+            # Windows PowerShell 可能把模块初始化的 CLIXML 进度混进合并输出。
+            line = next(line for line in out.splitlines() if line.strip().startswith('{'))
+            details = json.loads(line)
+        else:
+            sftp = box.client.open_sftp()
+            try:
+                directory = sftp.normalize('.') + '/' + JIT_DIRNAME
+                try:
+                    listener = sftp.stat(directory + '/bin/Runner.Listener')
+                    run = sftp.stat(directory + '/run.sh')
+                    ready = bool(listener.st_mode & 0o111) and bool(run.st_mode & 0o111)
+                except FileNotFoundError:
+                    ready = False
+            finally:
+                sftp.close()
+            rc, out = box.run('ps -axo comm=', timeout=8, quiet=True)
+            if rc != 0:
+                raise RuntimeError("probe failed")
+            details = {"ready": ready, "busy": any(
+                line.strip().rsplit('/', 1)[-1] == 'Runner.Worker' for line in out.splitlines()),
+                "jit_dir": directory}
+        return {"connected": True, "ready": bool(details.get("ready")),
+                "busy": bool(details.get("busy")), "jit_dir": str(details.get("jit_dir") or ""),
+                "error": ""}
+    except Exception as exc:
+        if paramiko is not None and isinstance(exc, paramiko.AuthenticationException):
+            reason = "SSH 认证失败，请更新连接凭据"
+        elif connected:
+            reason = "SSH 已连接，但运行环境检测失败"
+        else:
+            reason = "SSH 无法连接，请检查机器、网络和 SSH 服务"
+        return {"connected": connected, "ready": False, "busy": False,
+                "error": reason, "error_type": type(exc).__name__}
+    finally:
+        box.close()
+
+
+def _group_signature(aliases) -> tuple[Any, ...]:
+    """一组机器的凭据指纹：凭据一变，旧探测结果就不再可信。"""
+    return tuple((name, m.get("user"), m.get("password"), m.get("os"), m.get("dir"))
+                 for name, m in aliases)
+
+
+async def _probe_machine_group(endpoint, aliases) -> dict[str, Any]:
+    # 凭据变更立即失效；同端点并发请求只发起一次 SSH 探测。
+    signature = _group_signature(aliases)
+    hit = _MACHINE_PROBE_CACHE.get(endpoint)
+    if hit and hit["signature"] == signature and time.time() - hit["at"] < _MACHINE_PROBE_TTL:
+        return hit["result"]
+    key = (endpoint, signature)
+
+    async def run():
+        result = {"connected": False, "ready": False, "busy": False, "error": "没有可用的 SSH 凭据"}
+        async with _MACHINE_PROBE_SLOTS:
+            for name, machine in aliases:
+                current = dict(await asyncio.to_thread(_probe_machine_ssh, machine))
+                current["credential_name"] = name
+                if current.get("connected") or not result.get("connected"):
+                    result = current
+                if current.get("connected") and not current.get("error"):
+                    break
+        _MACHINE_PROBE_CACHE[endpoint] = {"signature": signature, "at": time.time(), "result": result}
+        return result
+
+    task = _MACHINE_PROBE_TASKS.get(key)
+    if task is None:
+        task = asyncio.create_task(run())
+        _MACHINE_PROBE_TASKS[key] = task
+        task.add_done_callback(lambda done: _MACHINE_PROBE_TASKS.pop(key, None))
+    return await asyncio.shield(task)
+
+
+_MACHINE_LIVE_WAIT = 8.0      # 页面 8 秒轮一次，接口不能比它更久
+
+
+def _probe_outcome(task: Any) -> dict[str, Any]:
+    """一个端点的探测结果：炸了、被取消、超时都折成「未知」，不往上抛。"""
+    if not task.done():
+        return {"connected": False, "ready": False, "busy": False, "timed_out": True,
+                "error": f"探测超过 {int(_MACHINE_LIVE_WAIT)} 秒没回来，下一轮自动重试"}
+    if task.cancelled():
+        return {"connected": False, "ready": False, "busy": False, "failed": True,
+                "error": "探测被取消"}
+    exc = task.exception()
+    if exc is not None:
+        # 一个端点炸了只能影响它自己，不能把整页拖成 502
+        log.info("机器探测失败（不影响其它机器）：%s: %s", type(exc).__name__, exc)
+        return {"connected": False, "ready": False, "busy": False, "failed": True,
+                "error": f"探测出错：{type(exc).__name__}"}
+    result = task.result()
+    if not isinstance(result, dict):
+        return {"connected": False, "ready": False, "busy": False, "failed": True,
+                "error": "探测没有返回结果"}
+    return result
+
+
+async def _machines_live_view() -> dict[str, Any]:
+    """机器在线状态由 SSH 决定，不扫描仓库或按 runner 名称猜机器。
+
+    单个端点探测抛异常或者太慢，只让那台机器变「状态未知」：一次请求最多等
+    _MACHINE_LIVE_WAIT 秒，等不到的端点先按未知返回，探测本身继续跑，下一轮
+    直接命中缓存。以前这里是裸 gather，一个端点抛异常整个接口就 502。
     """
-    live = _machines_live()
-    rows = _machine_rows()
+    groups = _machine_groups()
+    tasks = {}
+    for endpoint, aliases in groups.items():
+        task = asyncio.ensure_future(_probe_machine_group(endpoint, aliases))
+        # 超时被放弃的探测任务后面还会跑完：这里先把异常吃掉，免得到 GC 时
+        # 刷一堆「Task exception was never retrieved」。
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        tasks[endpoint] = task
+    if tasks:
+        await asyncio.wait(list(tasks.values()), timeout=_MACHINE_LIVE_WAIT)
     out: dict[str, dict[str, Any]] = {}
-    errors: dict[str, str] = {}
-
-    auth = await github_auth()
-    if not auth.get("logged_in"):
-        reason = auth.get("error") or "gh 未登录"
-        for row in rows:
-            out[row["name"]] = {"state": "unknown", "runner": "", "labels": [],
-                                "job": None, "repo": row.get("repo") or "", "error": reason,
-                                "last_online_at": int(row.get("last_ok") or 0)}
-        return {"machines": out, "repos": [], "errors": {}, "error": reason,
-                "checked_at": time.time()}
-
-    runner_of: dict[str, dict[str, Any]] = {}     # 小写 runner 名 → runner 记录
-    job_of: dict[str, dict[str, Any]] = {}        # 小写 runner 名 → 在跑的 job
-    # 一次 gh api 打底 1.1 秒（TLS 往返就那样），串着问 3 个仓库就是 4 秒。
-    # 这些仓库之间没有依赖，并发问。
-    fetched = await asyncio.gather(*[_repo_runners(r) for r in repos], return_exceptions=True)
-    busy_repos: list[str] = []
-    for repo, res in zip(repos, fetched):
-        if isinstance(res, BaseException):
-            errors[repo] = f"{type(res).__name__}: {res}"[:200]
-            continue
-        runners, rerr = res
-        if rerr:
-            errors[repo] = rerr
-            continue
-        for r in runners:
-            key = str(r.get("name") or "").lower()
-            if not key:
-                continue
-            old = runner_of.get(key)
-            # 同一个名字可能挂在两个仓库下（重复注册）：优先留「正在忙」那条
-            if old is None or (r.get("busy") and not old.get("busy")) \
-                    or (r.get("status") == "online" and old.get("status") != "online"):
-                runner_of[key] = {**r, "repo": repo}
-        if any(r.get("busy") for r in runners):
-            busy_repos.append(repo)
-
-    if busy_repos:
-        job_lists = await asyncio.gather(*[_repo_running_jobs(r) for r in busy_repos],
-                                         return_exceptions=True)
-        for repo, res in zip(busy_repos, job_lists):
-            if isinstance(res, BaseException):
-                errors.setdefault(repo, f"{type(res).__name__}: {res}"[:200])
-                continue
-            jobs, jerr = res
-            if jerr:
-                errors.setdefault(repo, jerr)
-            for j in jobs:
-                k = str(j.get("runner_name") or "").lower()
-                if k:
-                    job_of.setdefault(k, j)
-
-    for row in rows:
-        name = str(row["name"])
-        repo_hint = str(live.get(name, {}).get("repo") or "")
-        runner = runner_of.get(name.lower())
-        if runner is None and name:
-            # 按需（JIT）runner 叫 jit-<机器名>-<随机数>；那种也算在这台机器头上
-            prefix = "jit-" + name.lower() + "-"
-            runner = next((r for k, r in runner_of.items() if k.startswith(prefix)), None)
-        entry: dict[str, Any] = {"state": "unknown", "runner": "", "labels": [],
-                                 "job": None, "repo": repo_hint}
-        if runner is not None:
-            online = str(runner.get("status") or "") == "online"
-            busy = bool(runner.get("busy"))
-            entry.update({
-                "runner": runner.get("name") or "",
-                "repo": runner.get("repo") or repo_hint,
-                "labels": runner.get("labels") or [],
-                "state": (("busy" if busy else "idle") if online else "offline"),
-                "job": job_of.get(str(runner.get("name") or "").lower()) if busy else None,
-            })
-        elif repos and not errors:
-            # 仓库名单都问到了，里面却没这台：注册没了（被删，或者压根没注册上）
-            entry["state"] = "missing"
-        if errors:
-            entry["error"] = next(iter(errors.values()))
-        # 只有真的在 GitHub 上看到它 online 才算「在线过」；offline/missing 不刷新，
-        # 这样卡片上的最后在线时间会一直停在上次活着的时刻。
-        if entry["state"] in ("idle", "busy"):
-            _machines_live().touch(name, min_gap=20)
-        entry["last_online_at"] = int(_machines_live().get(name, {}).get("last_ok") or 0)
-        out[name] = entry
-
-    return {"machines": out, "repos": list(repos), "errors": errors,
-            "checked_at": time.time()}
+    for endpoint, aliases in groups.items():
+        probe = _probe_outcome(tasks[endpoint])
+        names = {name for name, _ in aliases}
+        running = next((r for r in JIT_POOL["running"].values() if r.get("machine") in names), None)
+        if probe.get("timed_out") or probe.get("failed"):
+            state = "unknown"
+        elif not probe.get("connected"):
+            state = "offline"
+        elif probe.get("error"):
+            state = "unknown"
+        elif probe.get("busy") or running:
+            state = "busy"
+        else:
+            state = "idle" if probe.get("ready") else "unprepared"
+        checked_at = _MACHINE_PROBE_CACHE.get(endpoint, {}).get("at", time.time())
+        # 「在线」= 环境就绪（idle/busy）。仅仅 SSH 连得上、或者探测出错，都不算——
+        # 否则一台环境坏掉的机器会永远显示「最后在线 · 刚刚」。
+        usable = state in ("idle", "busy")
+        for name, machine in aliases:
+            if usable and hasattr(_machines_live(), "touch"):
+                _machines_live().touch(name, at=checked_at, min_gap=20)
+            last_online = int(_machines_live().get(name, {}).get("last_ok") or 0)
+            if usable:
+                last_online = max(last_online, int(checked_at))
+            out[name] = {
+                "state": state, "connected": bool(probe.get("connected")),
+                "ready": bool(probe.get("ready")), "runner": running.get("name", "") if running else "",
+                "labels": [], "repo": "", "error": probe.get("error") or "",
+                "job": ({"job_name": running.get("job"), "run_id": running.get("run_id"),
+                         "repo": running.get("repo"), "run_name": running.get("workflow_name"),
+                         "started_at": int(float(running.get("at") or 0) * 1000)}
+                        if state == "busy" and running else None),
+                "last_online_at": last_online, "checked_at": checked_at,
+                "jit_dir": probe.get("jit_dir") or "", "source": "ssh",
+            }
+    # repos/errors 保留字段兼容旧客户端；机器探测不需要仓库列表。
+    return {"machines": out, "repos": [], "errors": {}, "source": "ssh", "checked_at": time.time()}
 
 
 async def handle_machines_live(request: web.Request) -> web.Response:
-    """机器在线状态 + 正在跑哪个 action。看着便宜，背后是 GitHub 接口，压一层缓存。"""
     blocked = _local_only(request)
     if blocked:
         return blocked
-    now = time.time()
-    cached = _LIVE_CACHE.get("data")
-    if cached is not None and now - float(_LIVE_CACHE.get("at") or 0) < _LIVE_TTL:
-        return web.json_response(cached)
     try:
-        store = request.app["store"]
-        repos = await _offload(_live_candidate_repos, store)
-        data = await _machines_live_view(repos)
-    except Exception as exc:                       # noqa: BLE001
-        return web.json_response({"error": f"{type(exc).__name__}: {exc}"[:300]}, status=502)
-    _LIVE_CACHE["at"] = time.time()
-    _LIVE_CACHE["data"] = data
-    return web.json_response(data)
+        return web.json_response(await _machines_live_view())
+    except Exception as exc:
+        return web.json_response({"error": f"机器状态检测失败：{type(exc).__name__}"}, status=502)
 
 
 async def _prime_machine_live(app: web.Application) -> None:
-    """启动后先把机器状态问一遍。
-
-    冷着问一次要 1~4 秒（每次 gh api 打底 1.1 秒），别让第一个打开页面的人干等。
-    失败就算了——页面自己会再问。
-    """
     try:
-        await asyncio.sleep(2.0)          # 先让 WebSocket 连上，别跟它抢
-        repos = await _offload(_live_candidate_repos, app["store"])
-        data = await _machines_live_view(repos)
-        _LIVE_CACHE["at"] = time.time()
-        _LIVE_CACHE["data"] = data
-        log.info("机器状态已预热（%s 台，查了 %s）", len(data.get("machines") or {}),
-                 "、".join(data.get("repos") or []) or "无仓库")
+        await asyncio.sleep(2.0)
+        data = await _machines_live_view()
+        log.info("机器 SSH 状态已预热（%s 个端点）", len(_machine_groups()))
     except asyncio.CancelledError:
         raise
-    except Exception as exc:                       # noqa: BLE001
-        log.info("机器状态预热失败（不影响用）：%s", exc)
-
-
-def _live_candidate_repos(store: Store) -> list[str]:
-    """去哪儿找 runner：最近有活动的仓库，加上按需池子正在接的仓库。
-
-    runner 挂在仓库下，而机器记录不绑仓库，所以只能按活动量排个优先。
-    限定 3 个：每个仓库一次 GitHub 调用，问多了白花配额。
-    """
-    picked: list[str] = []
-    for r in JIT_POOL["repos"]:
-        if JIT_POOL["repos"].get(r) and r not in picked:
-            picked.append(r)
-    try:
-        for row in store.repos():
-            repo = str(row.get("repo") or "")
-            if repo and repo not in picked:
-                picked.append(repo)
-            if len(picked) >= 3:
-                break
-    except Exception:                              # noqa: BLE001
-        pass
-    return picked[:3]
+    except Exception as exc:
+        log.info("机器状态预热失败（不影响用）：%s", type(exc).__name__)
 
 
 async def handle_machine_delete(request: web.Request) -> web.Response:
@@ -3695,7 +3747,7 @@ async def handle_index(request: web.Request) -> web.Response:
 #   → 向 GitHub 要一张一次性票 → SSH 过去把进程拉起来 → 跑完自己消失。
 #
 # 票是一次性的，用完即废，所以没有缓存、也没有「复用」这回事。
-# 机器凭据来自 SSH_MACHINES（就是「添加一台机器」填密码那次留下的，30 分钟内有效）。
+# 机器凭据来自 SSH_MACHINES；SSH 实测决定是否可用，机器不绑定仓库。
 # ─────────────────────────────────────────────────────────────
 
 JIT_DIRNAME = "jitlab"          # 跟常驻 runner 的 actions-runner 分开放，互不干扰
@@ -3719,11 +3771,13 @@ def _jit_os(machine: dict[str, Any]) -> str:
 
 
 def _jit_home_dir(machine: dict[str, Any]) -> str:
-    """机器上放 JIT 的那份 runner 的目录。
+    """机器上独立的 JIT 目录；SSH 探测得到的实际路径优先。
 
-    Windows 没法用 ~，从常驻 runner 的安装目录推一层上去：
+    兼容旧记录：Windows 从已有 runner 的安装目录推一层上去：
     C:\\Users\\Docker\\actions-runner → C:\\Users\\Docker\\jitlab
     """
+    if machine.get("jit_dir"):
+        return str(machine["jit_dir"])
     if _jit_os(machine) == "windows":
         base = str(machine.get("dir") or r"C:\actions-runner")
         parent = base.rsplit("\\", 1)[0] if "\\" in base else r"C:\Users"
@@ -3754,15 +3808,9 @@ def _jit_can_run(machine: dict[str, Any], labels: list[str]) -> bool:
 
 
 def _jit_auto_pool() -> None:
-    """池子不用人配：手上还能连的机器全算，并发上限就是机器数。
-
-    每台机器同时只接一个 job（_jit_pick 按 busy 排掉了），所以 max_parallel
-    只要不低于机器数就不会成为瓶颈——它存在的意义只是挡住“莫名跑出一堆进程”。
-    每次收事件都重算一次，这样新连上的机器自动进来、密码过期的自动退出。
-    """
-    live = _machines_live()
-    JIT_POOL["machines"] = list(live.keys())
-    JIT_POOL["max_parallel"] = max(1, len(live))
+    """按 SSH 端点去重，同一台机器的旧名称不能重复占用并发名额。"""
+    JIT_POOL["machines"] = [aliases[0][0] for aliases in _machine_groups().values()]
+    JIT_POOL["max_parallel"] = max(1, len(JIT_POOL["machines"]))
 
 
 # 按需配置存在 meta 表里。之前只活在内存，重启一次「仓库」页的开关就全变回关闭——
@@ -3819,14 +3867,27 @@ def _jit_restore(store: Store) -> None:
 
 
 def _jit_pick(labels: list[str]) -> Optional[dict[str, Any]]:
-    """挑一台闲着又能跑这个 job 的机器。"""
-    busy = {str(r.get("machine")) for r in JIT_POOL["running"].values()}
+    """按物理端点排除忙碌/准备中的机器，使用 SSH 探测确认过的凭据和目录。"""
+    busy = {_machine_endpoint(SSH_MACHINES.get(str(r.get("machine")), {}))
+            for r in JIT_POOL["running"].values()}
+    groups = _machine_groups()
     for name in JIT_POOL["machines"]:
         machine = SSH_MACHINES.get(name)
-        if not machine or name in busy:
+        if not machine or _machine_endpoint(machine) in busy:
             continue
-        if _jit_can_run(machine, labels):
-            return {"name": name, **machine}
+        endpoint = _machine_endpoint(machine)
+        hit = _MACHINE_PROBE_CACHE.get(endpoint)
+        if not hit or time.time() - hit["at"] >= _MACHINE_PROBE_TTL:
+            continue
+        # 缓存可能是改凭据之前留下的：指纹对不上就不认，免得拿旧票去连
+        if hit.get("signature") != _group_signature(groups.get(endpoint) or [(name, machine)]):
+            continue
+        probe = hit["result"]
+        if not probe.get("connected") or not probe.get("ready") or probe.get("busy") or probe.get("error"):
+            continue
+        working = SSH_MACHINES.get(probe.get("credential_name")) or machine
+        if _jit_can_run(working, labels):
+            return {**working, "name": name, "jit_dir": probe.get("jit_dir")}
     return None
 
 
@@ -3902,13 +3963,13 @@ async def _jit_launch(machine: dict[str, Any], cfg: str) -> tuple[bool, str]:
         b64 = base64.b64encode(cfg.encode("utf-8")).decode("ascii")
         rc, out = await asyncio.to_thread(
             box.run,
-            f'cd {directory} && printf %s {shlex.quote(b64)} | base64 -d > jit.cfg && '
+            f'cd {shlex.quote(directory)} && printf %s {shlex.quote(b64)} | base64 -d > jit.cfg && '
             f'wc -c < jit.cfg',
             None, 60, True)
         if rc != 0:
             return False, (out or "").strip()[:200]
         # macOS 没有 setsid，nohup 就能活过 ssh 断开；顺手清掉上次被 kill 的残留
-        cmd = (f'cd {directory} && rm -f .runner .credentials .credentials_rsaparams && '
+        cmd = (f'cd {shlex.quote(directory)} && rm -f .runner .credentials .credentials_rsaparams && '
                f'nohup ./run.sh --jitconfig "$(cat jit.cfg)" > run.log 2>&1 < /dev/null & '
                f'echo started')
         rc, out = await asyncio.to_thread(box.run, cmd, None, 60, True)
@@ -3928,33 +3989,37 @@ async def _jit_take_job(item: dict[str, Any]) -> None:
     jid = str(job.get("id") or "")
     jname = str(job.get("name") or "")
 
+    await _machines_live_view()
     machine = _jit_pick(labels)
     if not machine:
         JIT_POOL["stats"]["skipped"] += 1
         return
-
     runner_name = f"jit-{machine['name']}-{jid[-6:]}" if jid else f"jit-{machine['name']}"
-    cfg, err = await _jit_ticket(repo, runner_name, labels)
-    if not cfg:
-        JIT_POOL["stats"]["failed"] += 1
-        JIT_POOL["stats"]["last_error"] = err
-        _jit_record("failed", job=jname, machine=machine["name"], job_id=jid, error=err)
+    key = jid or runner_name
+    if key in JIT_POOL["running"]:
         return
-
-    ok, err = await _jit_launch(machine, cfg)
-    if not ok:
-        JIT_POOL["stats"]["failed"] += 1
-        JIT_POOL["stats"]["last_error"] = err
-        _jit_record("failed", job=jname, machine=machine["name"], job_id=jid, error=err)
-        return
-
-    JIT_POOL["running"][jid or runner_name] = {
+    # 在第一个网络 await 之前占位，两个同时 queued 的 job 不能挑中同一台机器。
+    JIT_POOL["running"][key] = {
         "job": jname, "machine": machine["name"], "name": runner_name,
-        "labels": labels, "at": time.time(),
+        "labels": labels, "at": time.time(), "repo": repo,
+        "run_id": job.get("run_id"), "workflow_name": job.get("workflow_name"),
     }
-    JIT_POOL["stats"]["picked"] += 1
-    _jit_record("picked", job=jname, machine=machine["name"], runner=runner_name, job_id=jid)
-    log.info("JIT 接活：%s → %s（%s）", jname, machine["name"], runner_name)
+    started = False
+    try:
+        cfg, err = await _jit_ticket(repo, runner_name, labels)
+        if cfg:
+            started, err = await _jit_launch(machine, cfg)
+        if not started:
+            JIT_POOL["stats"]["failed"] += 1
+            JIT_POOL["stats"]["last_error"] = err
+            _jit_record("failed", job=jname, machine=machine["name"], job_id=jid, error=err)
+            return
+        JIT_POOL["stats"]["picked"] += 1
+        _jit_record("picked", job=jname, machine=machine["name"], runner=runner_name, job_id=jid)
+        log.info("JIT 接活：%s → %s（%s）", jname, machine["name"], runner_name)
+    finally:
+        if not started:
+            JIT_POOL["running"].pop(key, None)
 
 
 async def _jit_on_event(item: dict[str, Any]) -> None:
@@ -3978,7 +4043,7 @@ async def _jit_on_event(item: dict[str, Any]) -> None:
     if not JIT_POOL["repos"].get(str(item.get("repo") or "")):
         return
 
-    # 池子跟着手头的机器走：新装上的自动能用，密码过期的自动退出
+    # 按 SSH 端点重建池子；接活前再探测连接和运行环境。
     _jit_auto_pool()
     if len(JIT_POOL["running"]) >= int(JIT_POOL["max_parallel"]):
         JIT_POOL["stats"]["skipped"] += 1
@@ -4030,11 +4095,11 @@ def _jit_view() -> dict[str, Any]:
         "watching": sorted(r for r, v in JIT_POOL["repos"].items() if v),
         "max_parallel": JIT_POOL["max_parallel"],
         "machines": machines,
-        "available": sorted(_machines_live().keys()),
+        "available": [aliases[0][0] for aliases in _machine_groups().values()],
         # 带平台和架构的版本：页面上要看得出哪台是 arm、哪台是 x64
         "available_info": [
             {"name": n, "os": _jit_os(m), "arch": _jit_arch(m)}
-            for n, m in sorted(_machines_live().items())
+            for aliases in _machine_groups().values() for n, m in aliases[:1]
         ],
         "running": [
             {"job": r["job"], "machine": r["machine"], "name": r["name"],
@@ -4043,7 +4108,7 @@ def _jit_view() -> dict[str, Any]:
         ],
         "history": JIT_POOL["history"][:12],
         "stats": dict(JIT_POOL["stats"]),
-        "pool_size": len(SSH_MACHINES),
+        "pool_size": len(_machine_groups()),
     }
 
 

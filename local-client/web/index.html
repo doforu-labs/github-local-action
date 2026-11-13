@@ -2196,7 +2196,6 @@ let machineInventoryLoaded = false;
 let machineLoadError = '';
 // 机器现在什么状态（在线/空闲/正在跑什么），来自 /machines/live
 let machineLive = {};
-let machineLiveRepos = [];
 let machineLiveError = '';
 let liveLoadToken = 0;
 
@@ -2289,8 +2288,8 @@ function machineLiveHtml(m) {
   const state = lv.state || 'unknown';
   const job = lv.job;
   if (state === 'busy' && job && job.run_id) {
-    const title = (job.run_name || job.job_name || '') + (job.run_number ? ' #' + job.run_number : '');
-    const tip = [job.repo, job.job_name, job.step ? L('正在跑步骤：' + job.step, 'step: ' + job.step) : '',
+    const title = (job.run_name || job.job_name || '');
+    const tip = [job.repo, job.job_name,
                  job.started_at ? L('开始 ' + fmtFull(job.started_at), 'started ' + fmtFull(job.started_at)) : '']
       .filter(Boolean).join('\n') + '\n' + L('点一下跳到这次运行', 'click to open this run');
     return '<a class="Label Label--accent machine-live" href="#/actions" data-openrun="' + esc(String(job.run_id)) +
@@ -2301,20 +2300,18 @@ function machineLiveHtml(m) {
     return '<span class="Label Label--accent machine-live">' + SPIN + t('有任务在跑') + '</span>';
   }
   if (state === 'idle') {
-    return '<span class="Label Label--success machine-live">' + t('在线 · 空闲') + '</span>';
+    return '<span class="Label Label--success machine-live">' + L('在线 · 待命', 'Online · ready') + '</span>';
+  }
+  if (state === 'unprepared') {
+    return '<span class="Label Label--attention machine-live" title="' +
+      esc(L('SSH 连接正常，按需运行环境尚未就绪', 'SSH is connected; the on-demand runtime is not ready')) +
+      '">' + L('在线 · 待准备', 'Online · setup needed') + '</span>';
   }
   if (state === 'offline') {
     return '<span class="Label Label--danger machine-live" title="' +
-      esc(L('GitHub 上注册着，但 runner 进程没连上来', 'registered on GitHub, but the runner process is not connected')) +
-      '">' + t('离线') + '</span>';
+      esc(lv.error || L('SSH 无法连接', 'SSH connection failed')) + '">' + L('连接失败', 'Connection failed') + '</span>';
   }
-  if (state === 'missing') {
-    return '<span class="Label machine-live" title="' +
-      esc(L('在 ' + (machineLiveRepos.join('、') || '这些仓库') + ' 里都没找到它的 runner',
-          'no runner with this name in ' + (machineLiveRepos.join(', ') || 'the checked repos'))) +
-      '">' + t('未注册') + '</span>';
-  }
-  return '<span class="Label Label--secondary machine-live" title="' + esc(machineLiveError || '') + '">' +
+  return '<span class="Label Label--secondary machine-live" title="' + esc(lv.error || machineLiveError || '') + '">' +
     t('状态未知') + '</span>';
 }
 
@@ -2332,7 +2329,7 @@ async function loadMachines(quiet) {
   }
   renderMachineInventory();
 
-  // 第二步：状态（背后是 GitHub，冷的要 1~4 秒）。到了只换那几个标签，不重画整页。
+  // 第二步：SSH 连通性、按需环境和任务进程；不依赖 GitHub 注册。
   const token = ++liveLoadToken;
   try {
     const r = await fetch('/machines/live');
@@ -2340,7 +2337,6 @@ async function loadMachines(quiet) {
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     if (token !== liveLoadToken) return;
     machineLive = d.machines || {};
-    machineLiveRepos = d.repos || [];
     machineLiveError = d.error || '';
   } catch (e) {
     if (token !== liveLoadToken) return;

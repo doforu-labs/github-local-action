@@ -46,7 +46,7 @@ def ck(ok: bool, label: str, detail: str = "") -> None:
 
 def _machine(name: str, os_: str = "macos", arch: str = "arm64") -> dict:
     return {"name": name, "os": os_, "arch": arch, "host": "10.0.0.1",
-            "port": 22, "user": "dev", "dir": "/Users/dev/actions-runner"}
+            "port": (2222 if os_ == "windows" else 22), "user": "dev", "dir": "/Users/dev/actions-runner"}
 
 
 def _fresh_pool() -> None:
