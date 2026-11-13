@@ -988,13 +988,10 @@
         <div class="Box">
           <div class="Box-header">
             界面语言
-            <div class="spacer"></div>
-            <span class="hint">改完立刻生效</span>
           </div>
 
           <div class="form-row">
             <div class="label">语言</div>
-            <div class="hint">只换你看得见的文字，不改中继的任何行为。选择存在这个浏览器里，下次打开还是这个。</div>
             <select class="input" id="cfgLang">
               <option value="zh">中文</option>
               <option value="en">English</option>
@@ -1005,8 +1002,6 @@
         <div class="Box" style="margin-top:16px">
           <div class="Box-header">
             连接
-            <div class="spacer"></div>
-            <span class="hint">改完立刻生效</span>
           </div>
 
           <div class="form-row">
@@ -1025,19 +1020,16 @@
 
           <div class="form-row">
             <div class="label">协议层心跳 <span class="hint" style="margin:0">秒</span></div>
-            <div class="hint">WebSocket ping 间隔，防止 NAT 或代理回收空闲连接。</div>
             <input class="input num" id="cfg-heartbeat" type="number" min="5" max="600" step="1">
           </div>
 
           <div class="form-row">
             <div class="label">应用层 ping <span class="hint" style="margin:0">秒</span></div>
-            <div class="hint">由客户端定时发一条消息，顺带确认对端还活着。</div>
             <input class="input num" id="cfg-appping" type="number" min="30" max="3600" step="1">
           </div>
 
           <div class="form-row">
             <div class="label">重连退避上限 <span class="hint" style="margin:0">秒</span></div>
-            <div class="hint">连不上时按 1、2、4… 翻倍等待，最多等这么久。</div>
             <input class="input num" id="cfg-reconnect" type="number" min="5" max="600" step="1">
           </div>
 
@@ -1046,38 +1038,6 @@
             <button class="btn" id="cfgReset">放弃更改</button>
             <div class="spacer"></div>
             <span class="hint" id="cfgWhere"></span>
-          </div>
-        </div>
-
-        <div class="Box">
-          <div class="Box-header">
-            本地服务
-            <div class="spacer"></div>
-            <span class="Label Label--secondary">改这些要重启进程</span>
-          </div>
-
-          <div class="form-row">
-            <div class="label">监听地址</div>
-            <div class="hint">局域网设备的访问地址；<code>0.0.0.0</code> 表示所有网卡。</div>
-            <input class="input mono" id="cfg-host" type="text" readonly>
-          </div>
-
-          <div class="form-row">
-            <div class="label">端口</div>
-            <div class="hint">默认 18091，避开本机其他服务。</div>
-            <input class="input mono" id="cfg-port" type="text" readonly>
-          </div>
-
-          <div class="form-row">
-            <div class="label">事件库</div>
-            <div class="hint">SQLite 文件，断线期间的事件会补进这里。</div>
-            <input class="input mono" id="cfg-db" type="text" readonly>
-          </div>
-
-          <div class="form-row">
-            <div class="label">配置文件</div>
-            <div class="hint">保存时写回这个文件，改动前会留一份 <code>.bak</code>。</div>
-            <input class="input mono" id="cfg-path" type="text" readonly>
           </div>
         </div>
 
@@ -1118,7 +1078,7 @@ const I18N_EN = {
   "工作流运行记录，来自 workflow_run 事件": "Workflow runs, from workflow_run events",
   "实时推送的事件，最新的在最上面": "Live events, newest first",
   "添加机器，有任务时自动运行": "Add machines; they run when there are tasks",
-  "中继连接与本地服务参数": "Relay connection and local service settings",
+  "连接与凭据": "Connection and credentials",
   "账号下的全部仓库，最近提交的在前；开了按需接管的排最上面": "All repos in the account, newest commit first. Ones with on-demand enabled are pinned on top.",
 
   // 概览
@@ -1204,31 +1164,15 @@ const I18N_EN = {
   // 设置
   "界面语言": "Language",
   "语言": "Language",
-  "只换你看得见的文字，不改中继的任何行为。选择存在这个浏览器里，下次打开还是这个。": "Only changes the text you see, not how the relay behaves. The choice is stored in this browser.",
   "连接": "Connection",
-  "改完立刻生效": "Applies immediately",
   "中继地址": "Relay URL",
   "Worker 的 WebSocket 地址，保存后会自动断开重连。": "The Worker's WebSocket URL. Saving reconnects automatically.",
   "访问令牌": "Access token",
   "留空表示不修改。": "Leave blank to keep unchanged.",
   "留空则不修改": "Leave blank to keep unchanged",
   "协议层心跳": "Protocol heartbeat",
-  "WebSocket ping 间隔，防止 NAT 或代理回收空闲连接。": "WebSocket ping interval. Keeps NAT and proxies from dropping idle connections.",
   "应用层 ping": "App-level ping",
-  "由客户端定时发一条消息，顺带确认对端还活着。": "The client sends a message on a timer, which also confirms the peer is alive.",
   "重连退避上限": "Reconnect backoff cap",
-  "连不上时按 1、2、4… 翻倍等待，最多等这么久。": "On failure it waits 1, 2, 4… doubling, up to this long.",
-  "本地服务": "Local service",
-  "改这些要重启进程": "These need a process restart",
-  "监听地址": "Listen address",
-  "局域网设备的访问地址；": "The address LAN devices use to reach it;",
-  "表示所有网卡。": "means all interfaces.",
-  "端口": "Port",
-  "默认 18091，避开本机其他服务。": "Default 18091, picked to stay clear of other local services.",
-  "事件库": "Event store",
-  "SQLite 文件，断线期间的事件会补进这里。": "SQLite file. Events received while offline are backfilled here.",
-  "配置文件": "Config file",
-  "保存时写回这个文件，改动前会留一份": "Written back on save; a copy is kept before changes",
   "放弃更改": "Discard changes",
   "连接信息已加密保存": "Connection details saved (encrypted)",
 
@@ -2652,7 +2596,7 @@ const VIEWS = {
   repos: ['仓库', '账号下的全部仓库，最近提交的在前；开了按需接管的排最上面'],
   events: ['事件流', '实时推送的事件，最新的在最上面'],
   agent: ['给 Agent', '把这段复制给 AI，它就知道怎么用这个系统'],
-  settings: ['设置', '中继连接与本地服务参数']
+  settings: ['设置', '连接与凭据']
 };
 
 function currentView() {
@@ -2922,10 +2866,6 @@ function fillConfig(c) {
     ? L('当前令牌 ' + c.token_hint + '，明文不会显示。留空表示不修改。',
         'Current token ' + c.token_hint + ', shown in masked form. Leave blank to keep unchanged.')
     : t('还没设置令牌，中继大概率连不上。填一个再保存。');
-  $('cfg-host').value = c.http_host;
-  $('cfg-port').value = c.http_port;
-  $('cfg-db').value = c.db_path;
-  $('cfg-path').value = c.config_path || '（启动时没指定配置文件，改不了）';
   $('cfgWhere').textContent = c.config_path ? L('写入 ' + c.config_path, 'writes to ' + c.config_path) : '';
   cfgLoaded = true;
 }
