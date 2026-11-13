@@ -577,6 +577,18 @@ reconnect_max = 2
             ck.check(rc0.get("repos") == [] and rc0.get("queued") == 0,
                      "JIT：没开仓库时对账不查 GitHub", str(rc0.get("repos"))[:80])
 
+            # 自动启动：只验状态接口。真装/真卸由 tests/service_check.py 拿临时 label 跑
+            # （e2e 如果直接 POST /service/install，会把服务文件写进用户真实目录）
+            svc = await s.get(f"{BASE}/service")
+            ck.check(svc.status == 200, "自动启动：状态接口可用", str(svc.status))
+            svd = await svc.json()
+            ck.check({"platform", "supported", "installed", "running", "managed",
+                      "file", "log"} <= set(svd), "自动启动：状态结构完整", str(sorted(svd))[:120])
+            ck.check(svd.get("platform") in ("macos", "linux"),
+                     "自动启动：认出了平台", str(svd.get("platform")))
+            ck.check(str(svd.get("file", "")).endswith((".plist", ".service")),
+                     "自动启动：给出服务文件在哪", str(svd.get("file"))[:120])
+
             # ── 6i. 仓库全量清单（全部仓库 + 最近提交时间）──
             rl = await s.get(f"{BASE}/github/repos")
             ck.check(rl.status == 200, "仓库清单：接口可用", str(rl.status))

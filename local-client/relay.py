@@ -27,6 +27,7 @@ import secrets
 import shlex
 import signal
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -4823,6 +4824,255 @@ async def handle_runner_jit_prepare(request: web.Request) -> web.Response:
     return web.json_response({"job": job["id"], "kind": job["kind"]})
 
 
+# ── 随系统自动启动：macOS 写 launchd，Linux 写 systemd user unit ──────────
+# 不依赖 sudo：两个平台都装在用户目录、以当前用户身份跑（macOS 登录后起，
+# Linux 要开机就起得再开 linger）。服务文件里的绝对路径全部现场拼，换机器不用改。
+
+SERVICE_LABEL = "local.github-local-action"
+SERVICE_UNIT = "github-local-action.service"
+SERVICE_TIMEOUT = 15.0
+# launchd / systemd 拉起的进程没有登录 shell 的 PATH，gh 在 /opt/homebrew/bin 或
+# /usr/local/bin 里就找不到了，所以显式给一条。
+SERVICE_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def _service_platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return ""
+
+
+def _service_paths(label: str = SERVICE_LABEL, unit: str = SERVICE_UNIT) -> dict[str, Path]:
+    home = Path.home()
+    if _service_platform() == "macos":
+        return {"file": home / "Library/LaunchAgents" / f"{label}.plist",
+                "log": home / "Library/Logs" / "github-local-action.log"}
+    return {"file": home / ".config" / "systemd" / "user" / unit,
+            "log": home / ".local" / "state" / "github-local-action.log"}
+
+
+def _xml_escape(text: str) -> str:
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _service_plist(label: str, cmd: list[str], workdir: str, log: str) -> str:
+    """launchd 的 LaunchAgent 配置。RunAtLoad：登录就起；KeepAlive：掉了再拉。"""
+    args = "".join(f"    <string>{_xml_escape(x)}</string>\n" for x in cmd)
+    return "\n".join([
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">', '<dict>',
+        f'  <key>Label</key>\n  <string>{_xml_escape(label)}</string>',
+        '  <key>ProgramArguments</key>', '  <array>',
+        args.rstrip("\n"), '  </array>',
+        f'  <key>WorkingDirectory</key>\n  <string>{_xml_escape(workdir)}</string>',
+        '  <key>RunAtLoad</key>\n  <true/>',
+        '  <key>KeepAlive</key>\n  <true/>',
+        '  <key>ThrottleInterval</key>\n  <integer>10</integer>',
+        f'  <key>StandardOutPath</key>\n  <string>{_xml_escape(log)}</string>',
+        f'  <key>StandardErrorPath</key>\n  <string>{_xml_escape(log)}</string>',
+        '  <key>EnvironmentVariables</key>', '  <dict>',
+        f'    <key>PATH</key>\n    <string>{SERVICE_PATH}</string>',
+        '  </dict>',
+        '</dict>', '</plist>', "",
+    ])
+
+
+def _service_unit(cmd: list[str], workdir: str, log: str) -> str:
+    """systemd user unit。Restart=on-failure 比 always 温和：正常退出不拉起来。"""
+    return "\n".join([
+        "[Unit]",
+        "Description=GitHub Local Action 本地接收端",
+        "After=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"WorkingDirectory={workdir}",
+        "ExecStart=" + " ".join(shlex.quote(x) for x in cmd),
+        "Restart=on-failure",
+        "RestartSec=5",
+        f"Environment=PATH={SERVICE_PATH}",
+        f"StandardOutput=append:{log}",
+        f"StandardError=append:{log}",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+    ])
+
+
+async def _svc_run(args: list[str]) -> tuple[int, str]:
+    """跑一条 launchctl / systemctl，把 stdout+stderr 一起拿回来。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    except FileNotFoundError:
+        return 127, f"本机没有 {args[0]}"
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=SERVICE_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return 124, f"{args[0]} 超过 {SERVICE_TIMEOUT:.0f}s 没返回"
+    return proc.returncode or 0, out.decode("utf-8", "replace")
+
+
+def _service_command(cfg: Config) -> list[str]:
+    """服务里执行的命令：当前解释器 + 当前脚本 + 当前配置文件。"""
+    args = [sys.executable, str(Path(__file__).resolve())]
+    if cfg.path:
+        args += ["-c", str(cfg.path)]
+    return args
+
+
+async def _service_domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+async def _service_launchd_state(label: str) -> tuple[bool, bool, int]:
+    """(加载没有, 在跑没有, pid)。问不到就当没加载。"""
+    rc, out = await _svc_run(["launchctl", "print", f"{await _service_domain()}/{label}"])
+    if rc != 0:
+        return False, False, 0
+    pid = 0
+    match = re.search(r"\bpid = (\d+)", out)
+    if match:
+        pid = int(match.group(1))
+    running = pid > 0 or "state = running" in out
+    return True, running, pid
+
+
+async def _service_status() -> dict[str, Any]:
+    plat = _service_platform()
+    paths = _service_paths()
+    info: dict[str, Any] = {
+        "platform": plat, "supported": bool(plat),
+        "installed": paths["file"].exists(),
+        "file": str(paths["file"]), "log": str(paths["log"]),
+        "label": SERVICE_LABEL, "enabled": False, "running": False,
+        "managed": False, "linger": None, "hint": "", "error": "",
+    }
+    if not plat:
+        info["hint"] = "只支持 macOS 和 Linux"
+        return info
+    if plat == "macos":
+        loaded, running, pid = await _service_launchd_state(SERVICE_LABEL)
+        info.update(loaded=loaded, running=running,
+                    managed=bool(pid and pid == os.getpid()))
+        info["enabled"] = info["installed"]        # LaunchAgent 放到目录里就算启用
+        if info["managed"]:
+            info["hint"] = "当前这个进程就是 launchd 拉起来的"
+        elif info["installed"]:
+            info["hint"] = "已装好，下次登录/开机自动启动"
+        return info
+    rc, out = await _svc_run(["systemctl", "--user", "is-enabled", SERVICE_UNIT])
+    info["enabled"] = out.strip() == "enabled"
+    rc2, out2 = await _svc_run(["systemctl", "--user", "is-active", SERVICE_UNIT])
+    info["running"] = out2.strip() == "active"
+    rc3, out3 = await _svc_run(["systemctl", "--user", "show", SERVICE_UNIT, "-p", "MainPID", "--value"])
+    try:
+        pid = int(out3.strip() or 0)
+    except ValueError:
+        pid = 0
+    info["managed"] = bool(pid and pid == os.getpid())
+    rc4, out4 = await _svc_run(["loginctl", "show-user", os.environ.get("USER", ""), "-p", "Linger"])
+    if rc4 == 0 and "Linger=" in out4:
+        info["linger"] = out4.strip().endswith("yes")
+    if rc == 127:
+        info["error"] = out or "本机没有 systemctl"
+    elif rc != 0 and "Failed to connect to bus" in (out or ""):
+        info["error"] = "当前用户没有可用的 systemd 会话（无图形登录/无 linger），服务无法在本会话里启停"
+    if info["managed"]:
+        info["hint"] = "当前这个进程就是 systemd 拉起来的"
+    elif info["installed"]:
+        info["hint"] = ("已装好，开机自动启动" if info["linger"] else
+                         "已装好；登录后才会启动，开机就起还需 loginctl enable-linger")
+    return info
+
+
+async def _service_install(cfg: Config) -> dict[str, Any]:
+    plat = _service_platform()
+    if not plat:
+        return {"ok": False, "error": "只支持 macOS 和 Linux"}
+    paths = _service_paths()
+    cmd = _service_command(cfg)
+    workdir = str(Path(__file__).resolve().parent)
+    try:
+        paths["file"].parent.mkdir(parents=True, exist_ok=True)
+        paths["log"].parent.mkdir(parents=True, exist_ok=True)
+        text = (_service_plist(SERVICE_LABEL, cmd, workdir, str(paths["log"])) if plat == "macos"
+                else _service_unit(cmd, workdir, str(paths["log"])))
+        paths["file"].write_text(text, encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "error": f"写服务文件失败：{exc}"}
+
+    note = ""
+    if plat == "linux":
+        rc, out = await _svc_run(["systemctl", "--user", "daemon-reload"])
+        if rc != 0:
+            note = (out or "").strip()[:200] or f"daemon-reload 退出码 {rc}"
+        else:
+            rc, out = await _svc_run(["systemctl", "--user", "enable", SERVICE_UNIT])
+            if rc != 0:
+                note = (out or "").strip()[:200] or f"enable 退出码 {rc}"
+    # 现在不去 bootstrap：当前这个进程还占着端口，拉起来只会撞端口然后被反复重启。
+    return {"ok": True, "note": note, "file": str(paths["file"]), "log": str(paths["log"]),
+            "needs_relaunch": True}
+
+
+async def _service_uninstall() -> dict[str, Any]:
+    plat = _service_platform()
+    paths = _service_paths()
+    note = ""
+    if plat == "macos":
+        rc, out = await _svc_run(["launchctl", "bootout",
+                                  f"{await _service_domain()}/{SERVICE_LABEL}"])
+        if rc != 0:
+            note = (out or "").strip()[:200]
+        await _svc_run(["launchctl", "disable", f"{await _service_domain()}/{SERVICE_LABEL}"])
+    elif plat == "linux":
+        rc, out = await _svc_run(["systemctl", "--user", "disable", "--now", SERVICE_UNIT])
+        if rc != 0:
+            note = (out or "").strip()[:200]
+        await _svc_run(["systemctl", "--user", "daemon-reload"])
+    removed = False
+    try:
+        if paths["file"].exists():
+            paths["file"].unlink()
+            removed = True
+    except OSError as exc:
+        return {"ok": False, "error": f"删服务文件失败：{exc}", "note": note}
+    return {"ok": True, "removed": removed, "note": note}
+
+
+async def handle_service(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    return web.json_response(await _service_status())
+
+
+async def handle_service_install(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    result = await _service_install(request.app["cfg"])
+    result["status"] = await _service_status()
+    return web.json_response(result, status=200 if result.get("ok") else 500)
+
+
+async def handle_service_uninstall(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    result = await _service_uninstall()
+    result["status"] = await _service_status()
+    return web.json_response(result, status=200 if result.get("ok") else 500)
+
+
 def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Application:
     app = web.Application()
     app["store"] = store
@@ -4865,6 +5115,9 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_post("/runners/jit/pool", handle_runner_jit_pool)
     app.router.add_post("/runners/jit/prepare", handle_runner_jit_prepare)
     app.router.add_post("/runners/jit/reconcile", handle_runner_jit_reconcile)
+    app.router.add_get("/service", handle_service)
+    app.router.add_post("/service/install", handle_service_install)
+    app.router.add_post("/service/uninstall", handle_service_uninstall)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)

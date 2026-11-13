@@ -1052,6 +1052,17 @@
             <div class="hint">正在检测…</div>
           </div>
         </div>
+
+        <div class="Box">
+          <div class="Box-header">
+            随系统自动启动
+            <div class="spacer"></div>
+            <span class="hint">macOS 用 launchd，Linux 用 systemd</span>
+          </div>
+          <div class="form-row" id="svcBody">
+            <div class="hint">正在检测…</div>
+          </div>
+        </div>
       </section>
 
 
@@ -1075,6 +1086,8 @@ const I18N_EN = {
   "仓库": "Repos",
   "事件流": "Events",
   "设置": "Settings",
+  "随系统自动启动": "Start automatically at login",
+  "macOS 用 launchd，Linux 用 systemd": "launchd on macOS, systemd on Linux",
   "接收端运行状态": "Receiver status",
   "工作流运行记录，来自 workflow_run 事件": "Workflow runs, from workflow_run events",
   "实时推送的事件，最新的在最上面": "Live events, newest first",
@@ -2642,7 +2655,7 @@ function route() {
   });
   $('viewTitle').textContent = VIEWS[view][0];
   $('viewSub').textContent = VIEWS[view][1];
-  if (view === 'settings') loadConfig();
+  if (view === 'settings') { loadConfig(); loadService(); }
   if (view === 'agent') loadAgentView();
   if (view === 'actions') loadActions();
   if (view === 'runners') {
@@ -2893,6 +2906,106 @@ function fillConfig(c) {
     : t('还没设置令牌，中继大概率连不上。填一个再保存。');
   $('cfgWhere').textContent = c.config_path ? L('写入 ' + c.config_path, 'writes to ' + c.config_path) : '';
   cfgLoaded = true;
+}
+
+let SVC = { checked: false };
+
+function renderService() {
+  const box = $('svcBody');
+  if (!box) return;
+  if (!SVC.checked) { box.innerHTML = '<div class="hint">' + t('正在检测…') + '</div>'; return; }
+
+  if (!SVC.supported) {
+    box.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px">' +
+        '<span class="Label Label--secondary">' + L('不支持', 'Not supported') + '</span>' +
+        '<span class="hint">' + L('只支持 macOS 和 Linux', 'Only macOS and Linux') + '</span>' +
+      '</div>';
+    return;
+  }
+
+  let label, cls, line;
+  if (SVC.managed) {
+    cls = 'Label--success'; label = L('已接管', 'Managed');
+    line = L('当前这个进程就是服务拉起来的，已经开始自己跑了。',
+             'This very process was started by the service.');
+  } else if (SVC.installed && SVC.running) {
+    cls = 'Label--success'; label = L('已开启', 'On');
+    line = L('服务在跑，但当前页面是另一个进程。', 'The service is running, but this page is served by another process.');
+  } else if (SVC.installed) {
+    cls = 'Label--attention'; label = L('已安装 · 未运行', 'Installed, not running');
+    line = L('下次登录（或开机）就会自己起来；要立刻切过去，先退出当前程序再启动。',
+             'It will start at next login (or boot). To switch now, quit this process and start it again.');
+  } else {
+    cls = 'Label--secondary'; label = L('未开启', 'Off');
+    line = SVC.platform === 'macos'
+      ? L('开启后写到 ~/Library/LaunchAgents/，每次登录自动启动，崩了会被拉起来。',
+          'Writes a LaunchAgent, starts at every login and is restarted if it dies.')
+      : L('开启后写到 systemd 用户单元，登录后自动启动；要在不登录的情况下开机就起，还需要 loginctl enable-linger。',
+          'Installs a systemd user unit; it starts at login. Starting at boot without logging in also needs loginctl enable-linger.');
+  }
+
+  const linger = (SVC.platform === 'linux' && SVC.installed)
+    ? '<div class="hint" style="margin-top:6px">' +
+        (SVC.linger === true
+          ? L('linger：已开启，不登录也会开机自启动。', 'linger: on, starts at boot without login.')
+          : SVC.linger === false
+            ? L('linger：未开启（登录后才会起）。', 'linger: off, starts only after login.')
+            : L('linger：读不到（可能没有 loginctl）。', 'linger: unknown.')) +
+      '</div>'
+    : '';
+
+  box.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<span class="Label ' + cls + '">' + esc(label) + '</span>' +
+      '<span class="hint" style="margin:0">' + esc(line) + '</span>' +
+    '</div>' +
+    linger +
+    '<div class="hint mono" style="margin-top:8px;word-break:break-all">' + esc(SVC.file || '') + '</div>' +
+    (SVC.error ? '<div class="hint" style="color:var(--danger);margin-top:6px">' + esc(SVC.error) + '</div>' : '') +
+    '<div style="display:flex;gap:8px;margin-top:10px">' +
+      (SVC.installed
+        ? '<button class="btn" id="svcOff">' + L('关闭自动启动', 'Disable auto-start') + '</button>'
+        : '<button class="btn btn-primary" id="svcOn">' + L('开启自动启动', 'Enable auto-start') + '</button>') +
+      '<button class="btn" id="svcRecheck">' + t('重新检测') + '</button>' +
+    '</div>';
+
+  const on = $('svcOn');
+  if (on) on.addEventListener('click', () => switchService('install'));
+  const off = $('svcOff');
+  if (off) off.addEventListener('click', () => switchService('uninstall'));
+  const again = $('svcRecheck');
+  if (again) again.addEventListener('click', () => loadService(true));
+}
+
+async function switchService(action) {
+  const btn = $(action === 'install' ? 'svcOn' : 'svcOff');
+  if (btn) { btn.disabled = true; btn.textContent = L('处理中…', 'Working…'); }
+  try {
+    const r = await fetch('/service/' + action, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
+    if (d.status) SVC = Object.assign({ checked: true }, d.status);
+    renderService();
+    flash('ok', action === 'install'
+      ? L('已写入服务配置，下次登录/开机自动启动。', 'Service installed; it will start at next login/boot.')
+      : L('已移除开机自启动。', 'Auto-start removed.'));
+  } catch (e) {
+    flash('error', L('操作失败：', 'Failed: ') + e.message);
+    loadService(true);
+  }
+}
+
+async function loadService(force) {
+  renderService();
+  try {
+    const r = await fetch('/service');
+    const d = await r.json();
+    SVC = Object.assign({ checked: true }, d);
+  } catch (e) {
+    SVC = { checked: true, supported: false, error: String(e.message || e) };
+  }
+  renderService();
 }
 
 async function loadConfig() {
