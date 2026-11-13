@@ -1063,6 +1063,17 @@
             <div class="hint">正在检测…</div>
           </div>
         </div>
+
+        <div class="Box">
+          <div class="Box-header">
+            中继（Cloudflare Worker）
+            <div class="spacer"></div>
+            <span class="hint">用 wrangler 部署，地址自动填回上面</span>
+          </div>
+          <div class="form-row" id="relayBody">
+            <div class="hint">正在检测…</div>
+          </div>
+        </div>
       </section>
 
 
@@ -2655,7 +2666,7 @@ function route() {
   });
   $('viewTitle').textContent = VIEWS[view][0];
   $('viewSub').textContent = VIEWS[view][1];
-  if (view === 'settings') { loadConfig(); loadService(); }
+  if (view === 'settings') { loadConfig(); loadService(); loadRelay(); }
   if (view === 'agent') loadAgentView();
   if (view === 'actions') loadActions();
   if (view === 'runners') {
@@ -3006,6 +3017,156 @@ async function loadService(force) {
     SVC = { checked: true, supported: false, error: String(e.message || e) };
   }
   renderService();
+}
+
+/* ─────────── 中继：wrangler 自检 + 一键部署 ───────────
+   地址以前靠人手抄：抄错一字母就是「连接失败」，日志里看不出是抄错还是网断。
+   这里把两件事摊开：「地址对不对」用 GET /health 验，「有没有权限」用
+   wrangler whoami（看 scope）+ deployments list（真读一次，读得到才算有权限）。
+   点部署时地址直接从 wrangler 输出里抠，不用再抄。 */
+let RELAY = { checked: false };
+
+function relayTag(cls, text) {
+  return '<span class="Label ' + cls + '">' + esc(text) + '</span>';
+}
+
+function renderRelay() {
+  const box = $('relayBody');
+  if (!box) return;
+  if (!RELAY.checked) { box.innerHTML = '<div class="hint">' + t('正在检测…') + '</div>'; return; }
+
+  if (RELAY.error) {
+    box.innerHTML = relayTag('Label--danger', L('自检接口不可用', 'Status API unavailable')) +
+      '<div class="hint" style="margin-top:6px">' + esc(RELAY.error) + '</div>';
+    return;
+  }
+
+  const w = RELAY.wrangler || {};
+  const a = RELAY.auth || {};
+  const wk = RELAY.worker || {};
+  const h = RELAY.health || {};
+  const rows = [];
+
+  /* 地址 + 连通性 */
+  rows.push('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+    (h.ok ? relayTag('Label--success', L('地址可用', 'Reachable'))
+          : relayTag('Label--danger', L('连不上', 'Unreachable'))) +
+    '<span class="hint mono" style="margin:0;word-break:break-all">' +
+    esc(RELAY.ws_url || L('（还没填地址）', '(no address yet)')) + '</span></div>');
+  if (!h.ok && h.error) {
+    rows.push('<div class="hint" style="color:var(--danger);margin-top:6px">' + esc(h.error) + '</div>');
+  } else if (h.ok) {
+    rows.push('<div class="hint" style="margin-top:6px">' +
+      esc(L('中继里有 ' + (h.events == null ? '?' : h.events) + ' 条事件，游标 ' + (h.cursor == null ? '?' : h.cursor),
+          'Relay holds ' + (h.events == null ? '?' : h.events) + ' events, cursor ' + (h.cursor == null ? '?' : h.cursor))) +
+      '</div>');
+  }
+
+  /* 权限：没装 / 没登录 / 缺 workers write / 能部署 */
+  let permCls, permText;
+  if (!w.found) {
+    permCls = 'Label--danger'; permText = L('没装 wrangler', 'wrangler not installed');
+  } else if (!a.logged_in) {
+    permCls = 'Label--danger'; permText = L('未登录', 'Not logged in');
+  } else if (!a.can_deploy) {
+    permCls = 'Label--attention'; permText = L('已登录 · 缺部署权限', 'Logged in, cannot deploy');
+  } else {
+    permCls = 'Label--success'; permText = L('已登录 · 有部署权限', 'Logged in, can deploy');
+  }
+  const who = [a.email, a.account_name, w.version ? 'wrangler ' + w.version : ''].filter(Boolean);
+  rows.push('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px">' +
+    relayTag(permCls, permText) +
+    '<span class="hint" style="margin:0">' + esc(who.join(' · ')) + '</span></div>');
+
+  const notes = [];
+  if (!w.found) {
+    notes.push(L('装一个：npm i -g wrangler（或 brew install wrangler）。', 'Install one: npm i -g wrangler (or brew install wrangler).'));
+  }
+  if (w.found && !a.logged_in) {
+    notes.push(L('先跑一次 wrangler login，回这里刷新就能一键部署。', 'Run wrangler login once, then re-check here.'));
+  }
+  if (a.logged_in && !a.can_deploy) {
+    notes.push(L('令牌里没有 workers 写权限，重新 wrangler login 刷新一次。', 'Token lacks workers write; re-run wrangler login.'));
+  }
+  if (a.missing_scopes && a.missing_scopes.length) {
+    notes.push(L('wrangler 还提示令牌缺 ' + a.missing_scopes.join('、') + '（跟部署无关，可以不管）。',
+      'wrangler also warns about missing scopes ' + a.missing_scopes.join(', ') + ' (unrelated to deploy).'));
+  }
+  if (a.error) notes.push(a.error);
+  if (notes.length) {
+    rows.push('<div class="hint" style="margin-top:6px">' + notes.map(esc).join('<br>') + '</div>');
+  }
+
+  /* worker 本身在 Cloudflare 上存不存在 */
+  if (wk.exists) {
+    const when = wk.latest ? fmtFull(Date.parse(wk.latest)) : '';
+    rows.push('<div class="hint" style="margin-top:6px">' + esc(
+      L('Cloudflare 上找到了 worker「' + RELAY.worker_name + '」，' + wk.deployments + ' 次部署' +
+        (when ? '，最近一次 ' + when : '') + '。',
+        'Found worker "' + RELAY.worker_name + '" on Cloudflare, ' + wk.deployments +
+        ' deployment(s)' + (when ? ', latest ' + when : '') + '.')) + '</div>');
+  } else if (wk.error) {
+    rows.push('<div class="hint" style="color:var(--danger);margin-top:6px">' +
+      esc(L('读不到 worker：', 'Cannot read worker: ') + wk.error) + '</div>');
+  }
+
+  rows.push('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +
+    '<button class="btn btn-primary" id="relayDeploy">' +
+      L('部署并自动填入地址', 'Deploy and fill in address') + '</button>' +
+    '<button class="btn" id="relayRecheck">' + t('重新检测') + '</button></div>');
+
+  if (RELAY.tail) {
+    rows.push('<pre class="hint mono" style="margin-top:10px;max-height:200px;overflow:auto;' +
+      'white-space:pre-wrap;word-break:break-all;background:var(--bg-muted);padding:8px;' +
+      'border-radius:6px">' + esc(RELAY.tail) + '</pre>');
+  }
+  box.innerHTML = rows.join('');
+
+  const dep = $('relayDeploy');
+  if (dep) dep.addEventListener('click', deployRelay);
+  const again = $('relayRecheck');
+  if (again) again.addEventListener('click', () => loadRelay(true));
+}
+
+async function loadRelay(force) {
+  renderRelay();
+  try {
+    const r = await fetch('/relay' + (force ? '?force=1' : ''));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    RELAY = Object.assign({ checked: true }, d, { tail: RELAY.tail });
+  } catch (e) {
+    RELAY = { checked: true, error: String(e.message || e) };
+  }
+  renderRelay();
+}
+
+async function deployRelay() {
+  const btn = $('relayDeploy');
+  if (btn) { btn.disabled = true; btn.textContent = L('部署中…（约 30 秒）', 'Deploying… (~30s)'); }
+  try {
+    const r = await fetch('/relay/deploy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apply: true })
+    });
+    const d = await r.json();
+    if (d.status) RELAY = Object.assign({ checked: true }, d.status);
+    RELAY.tail = d.tail || '';
+    renderRelay();
+    if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
+    if (d.ws_url) $('cfg-ws').value = d.ws_url;   // 上面输入框跟着变，否则看着像没生效
+    flash('ok', d.changed
+      ? L('部署完成，中继地址已改成 ' + d.ws_url + '，正在重连。',
+          'Deployed; relay address is now ' + d.ws_url + ', reconnecting.')
+      : L('部署完成，地址没变（' + d.ws_url + '），当前连接不用动。',
+          'Deployed; address unchanged (' + d.ws_url + ').'));
+  } catch (e) {
+    flash('error', L('部署失败：', 'Deploy failed: ') + e.message);
+  } finally {
+    const b = $('relayDeploy');
+    if (b) { b.disabled = false; b.textContent = L('部署并自动填入地址', 'Deploy and fill in address'); }
+  }
 }
 
 async function loadConfig() {

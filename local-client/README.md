@@ -49,6 +49,12 @@ curl -N http://<内网IP>:18091/stream
 | GET | `/events?after=N&limit=200` | 按游标拉一段历史 |
 | GET | `/stats` | 今日 / 总量 / 24 小时分布 / 按类型分布 / 账号 / 仓库列表 |
 | GET | `/health` | 连接状态、游标、SSE 客户端数、距上一条事件的秒数 |
+| GET | `/relay?force=1` | 中继自检：wrangler 装没装 / 登录没登录 / 有没有 workers 写权限 / worker 在不在 / 地址通不通 |
+| POST | `/relay/deploy` | 跑 `wrangler deploy`，从输出里抬出 `*.workers.dev` 地址写回配置并重连（`{"apply":false}` 则只部署不改配置） |
+
+`/relay` 和 `/relay/deploy` 只对本机开放。前者只读，一两秒就回来，缓存 20 秒；
+后者是真的发布，会短时间摸一下 Cloudflare。为什么要它：地址以前靠人手抄，
+抄错一个字母就是「连接失败」，日志里又看不出是抄错了还是网断了。
 
 `/health` 里的 `seconds_since_last_event` 是判断「真的安静」还是「连接死了」的关键：配合 `connected` 看，连接为 true 但该值持续增大，说明链路活着但仓库确实没动静；连接为 false 则是真断了。
 

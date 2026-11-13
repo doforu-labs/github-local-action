@@ -589,6 +589,38 @@ reconnect_max = 2
             ck.check(str(svd.get("file", "")).endswith((".plist", ".service")),
                      "自动启动：给出服务文件在哪", str(svd.get("file"))[:120])
 
+            # 中继自检：只读。真实部署（wrangler deploy）是外部动作，e2e 不跑它
+            rl = await s.get(f"{BASE}/relay?force=1")
+            ck.check(rl.status == 200, "中继：自检接口可用", str(rl.status))
+            rld = await rl.json()
+            ck.check({"ws_url", "worker_name", "wrangler", "auth", "worker", "health"} <= set(rld),
+                     "中继：自检结构完整", str(sorted(rld))[:160])
+            wr = rld.get("wrangler") or {}
+            ck.check({"found", "path", "version"} <= set(wr), "中继：说清 wrangler 在哪",
+                     str(sorted(wr))[:120])
+            ck.check(isinstance(wr.get("found"), bool), "中继：装没装是个布尔值",
+                     str(wr.get("found")))
+            au = rld.get("auth") or {}
+            ck.check({"logged_in", "email", "account_id", "can_deploy", "scopes"} <= set(au),
+                     "中继：权限结构完整", str(sorted(au))[:140])
+            ck.check(isinstance(au.get("can_deploy"), bool),
+                     "中继：能不能部署是个布尔值", str(au.get("can_deploy")))
+            ck.check(isinstance(rld.get("worker", {}).get("exists"), (bool, type(None))),
+                     "中继：worker 在不在有结论", str(rld.get("worker"))[:100])
+            ck.check(rld.get("worker_name") in ("", None) or isinstance(rld["worker_name"], str),
+                     "中继：worker 名是字符串", str(rld.get("worker_name"))[:60])
+            hl = rld.get("health") or {}
+            ck.check({"ok", "base", "status", "error"} <= set(hl), "中继：连通性结构完整",
+                     str(sorted(hl))[:120])
+            ck.check(isinstance(hl.get("ok"), bool), "中继：连通性结论是布尔值",
+                     str(hl.get("ok")))
+            # 测试配置里的地址指向本地 mock，/health 应该返回 404：这正好证明
+            # 「地址填错/服务不在」是能被看出来的，而不是一律说 ok
+            ck.check(hl.get("base", "").startswith("http://127.0.0.1"),
+                     "中继：从 ws_url 反推出 http 根地址", str(hl.get("base"))[:80])
+            ck.check(hl.get("ok") is True or bool(hl.get("error")),
+                     "中继：连不上时会给原因", str(hl.get("error"))[:80])
+
             # ── 6i. 仓库全量清单（全部仓库 + 最近提交时间）──
             rl = await s.get(f"{BASE}/github/repos")
             ck.check(rl.status == 200, "仓库清单：接口可用", str(rl.status))

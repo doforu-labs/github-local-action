@@ -19,11 +19,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import glob
 import json
 import logging
 import os
 import re
 import secrets
+import shutil
 import shlex
 import signal
 import sqlite3
@@ -5073,6 +5075,345 @@ async def handle_service_uninstall(request: web.Request) -> web.Response:
     return web.json_response(result, status=200 if result.get("ok") else 500)
 
 
+# ─────────────────────────────────────────────────────────────
+# 中继自检 / 一键部署（Cloudflare Worker + wrangler）
+#
+# 以前中继地址是手填的：先自己跑一遍 wrangler deploy，人眼从输出里抄一行 URL，
+# 再回设置页粘上。抄错一个字母就是「连接失败」，日志里看不出是抄错了还是网断了。
+# 这里让程序自己干：读 wrangler.toml 的 name → 跑 deploy → 从输出里抠出
+# <name>.<子域>.workers.dev → 拼成 wss://…/ws 写回配置并重连。
+#
+# 页面上还要能看出「现在到底有没有权限」：没登录、OAuth 令牌过期、缺 workers
+# write，这些错以前都要等到 deploy 那一刻才蹦出来。所以另给一个只读自检：
+# whoami 看身份和 scope，deployments list 真读一次（读得到说明这个 worker 对
+# 当前令牌可见、且令牌没过期），再顺手 GET 一下 /health 确认地址通不通。
+# ─────────────────────────────────────────────────────────────
+
+WORKER_DIRNAME = "remote-worker"
+WORKER_DEPLOY_TIMEOUT = 300.0
+WORKER_QUERY_TIMEOUT = 60.0
+RELAY_CACHE_TTL = 20.0
+_RELAY_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+
+# wrangler 是 node 脚本。服务（launchd/systemd）拉起来的进程没有登录 shell 的
+# PATH，/opt/homebrew/bin 里没有 node 时它就直接起不来，所以这些目录都得兜住。
+_RELAY_BINS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+               "/usr/sbin", "/sbin", "~/.volta/bin", "~/.local/bin", "~/.bun/bin")
+
+
+def _relay_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / WORKER_DIRNAME
+
+
+def _relay_env() -> dict[str, str]:
+    """给 wrangler 用的环境：补 PATH，关掉花哨输出和遥测。"""
+    dirs: list[str] = []
+    for exe in ("wrangler", "node", "npx"):
+        found = shutil.which(exe)
+        if found:
+            dirs.append(str(Path(found).parent))
+    for d in _RELAY_BINS:
+        dirs.append(str(Path(d).expanduser()))
+    dirs += sorted(glob.glob(str(Path.home() / ".nvm/versions/node/*/bin")), reverse=True)
+    seen: set[str] = set()
+    path_list: list[str] = []
+    for d in dirs:
+        if d and d not in seen and Path(d).is_dir():
+            seen.add(d)
+            path_list.append(d)
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join(path_list)
+    env.update({"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0",
+                "WRANGLER_SEND_METRICS": "false"})
+    return env
+
+
+def _relay_strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text or "")
+
+
+def _worker_name() -> str:
+    """从 wrangler.toml 抠 worker 名（部署出来的地址前缀就是它）。"""
+    toml = _relay_dir() / "wrangler.toml"
+    try:
+        text = toml.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r'^\s*name\s*=\s*"([^"]+)"', text, re.M)
+    return m.group(1) if m else ""
+
+
+async def _relay_run(args: list[str], timeout: float) -> tuple[int, str]:
+    """跑一条 wrangler 命令，stdout/stderr 合并返回。"""
+    exe = shutil.which("wrangler")
+    if not exe:
+        return 127, ("没装 wrangler。装一个：npm i -g wrangler "
+                     "（或 brew install wrangler / pnpm add -g wrangler）")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            exe, *args, cwd=str(_relay_dir()), env=_relay_env(),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    except OSError as exc:
+        return 126, f"启动 wrangler 失败：{exc}"
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        return 124, f"wrangler {args[0] if args else ''} 超时（{int(timeout)}s）"
+    return (proc.returncode or 0), _relay_strip_ansi((out or b"").decode("utf-8", "replace"))
+
+
+def _relay_last_error(text: str) -> str:
+    """从 wrangler 输出里挑一句像错误的（✘ [ERROR] 那行最好用）。
+
+    行首那几个包装（✘、[ERROR]、ERROR:）都剥掉——页面上要显示的是「哪出错了」，
+    不是 wrangler 自己的装饰。
+    """
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if "ERROR" in s or "✘" in s or s.lower().startswith("error"):
+            return _relay_clean_error(s)
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return _relay_clean_error(lines[-1]) if lines else ""
+
+
+def _relay_clean_error(line: str) -> str:
+    s = line.replace("✘", "").strip()
+    s = re.sub(r"^\[?ERROR\]?[:：]?\s*", "", s, flags=re.I)
+    return s.strip()[:300]
+
+
+def _parse_whoami(text: str) -> dict[str, Any]:
+    """解析 `wrangler whoami`：身份、账号、scope，以及能不能部署。"""
+    info: dict[str, Any] = {
+        "logged_in": False, "email": "", "account_id": "", "account_name": "",
+        "scopes": [], "can_deploy": False, "missing_scopes": [],
+    }
+    low = (text or "").lower()
+    if ("not authenticated" in low or "not logged in" in low
+            or "wrangler login" in low and "you are logged in" not in low):
+        return info
+
+    m = re.search(r"email\s+(\S+@\S+?)[\.\s]*$", text, re.M)
+    if m:
+        info["email"] = m.group(1).rstrip(".")
+    for line in text.splitlines():
+        if "│" in line and re.search(r"\b[0-9a-f]{32}\b", line):
+            cells = [c.strip() for c in line.strip("│").split("│")]
+            if len(cells) >= 2 and re.fullmatch(r"[0-9a-f]{32}", cells[1]):
+                info["account_name"], info["account_id"] = cells[0], cells[1]
+                break
+
+    for line in text.splitlines():
+        m3 = re.match(r"^-\s+([A-Za-z0-9_.:-]+)(?:\s+\((read|write|admin)\))?\s*$",
+                      line.strip())
+        if m3:
+            info["scopes"].append({"name": m3.group(1), "access": m3.group(2) or ""})
+    # 老式令牌只有 workers (write)；新式是 workers_scripts (write)。两个都认。
+    writable = {s["name"] for s in info["scopes"] if s["access"] in ("write", "admin")}
+    info["can_deploy"] = bool(writable & {"workers", "workers_scripts"})
+
+    # 「missing scopes are:」下面是另一批 - xxx，长得和上面的 scope 一模一样，
+    # 所以要从那行切开分开解析，否则会被当成已有权限、然后被「不在 known 里」过滤掉。
+    _, _, tail = text.partition("missing scopes are")
+    for line in tail.splitlines():
+        s = line.strip()
+        if s.startswith("-"):
+            name = s.lstrip("- ").split(" ")[0].strip()
+            if name:
+                info["missing_scopes"].append(name)
+    info["logged_in"] = bool(info["email"] or info["account_id"])
+    return info
+
+
+def _parse_wrangler_version(text: str) -> str:
+    m = re.search(r"wrangler\s+(\d+\.\d+\.\d+)", text or "")
+    return m.group(1) if m else ""
+
+
+_WORKER_URL_RE = re.compile(r"https://([A-Za-z0-9][A-Za-z0-9_.-]*\.workers\.dev)")
+
+
+def _deploy_url_to_ws(url: str) -> str:
+    """https://x.workers.dev → wss://x.workers.dev/ws（客户端连的是这个）。"""
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return ""
+    if u.endswith("/ws"):
+        u = u[:-3]
+    u = u.replace("https://", "wss://").replace("http://", "ws://")
+    return u + "/ws"
+
+
+async def _relay_health(cfg: Config) -> dict[str, Any]:
+    """GET 一下中继的 /health：既验地址填得对不对，也验它是否活着。"""
+    base = _worker_base(cfg)
+    info: dict[str, Any] = {"ok": False, "base": base, "status": 0,
+                           "events": None, "cursor": None, "error": ""}
+    if not base:
+        info["error"] = "配置里没有中继地址"
+        return info
+    try:
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.get(f"{base}/health") as resp:
+                info["status"] = resp.status
+                if resp.status == 200:
+                    body = await resp.json(content_type=None)
+                    info["ok"] = bool(body.get("ok"))
+                    info["events"] = body.get("events")
+                    info["cursor"] = body.get("cursor")
+                else:
+                    info["error"] = (await resp.text())[:160]
+    except Exception as exc:                       # noqa: BLE001
+        info["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return info
+
+
+async def _relay_status(cfg: Config, force: bool = False) -> dict[str, Any]:
+    """只读自检：wrangler 装没装、登录没登录、有没有权限、worker 在不在、地址通不通。
+
+    whoami 和 deployments list 各要一两秒，页面每次进设置都等它不合适，缓存 20 秒；
+    ?force=1（或点「重新检测」）绕过缓存。
+    """
+    now = time.time()
+    cached = _RELAY_CACHE.get("data")
+    if not force and cached and now - float(_RELAY_CACHE.get("at") or 0) < RELAY_CACHE_TTL:
+        return cached
+
+    exe = shutil.which("wrangler") or ""
+    name = _worker_name()
+    whoami_task = asyncio.ensure_future(_relay_run(["whoami"], WORKER_QUERY_TIMEOUT)) if exe else None
+    deploy_task = (asyncio.ensure_future(
+        _relay_run(["deployments", "list", "--name", name], WORKER_QUERY_TIMEOUT))
+        if exe and name else None)
+
+    data: dict[str, Any] = {
+        "ws_url": cfg.ws_url,
+        "worker_base": _worker_base(cfg),
+        "worker_name": name,
+        "worker_dir": str(_relay_dir()),
+        "dir_exists": (_relay_dir() / "wrangler.toml").exists(),
+        "wrangler": {"found": bool(exe), "path": exe, "version": ""},
+        "auth": {"logged_in": False, "email": "", "account_id": "", "account_name": "",
+                 "scopes": [], "can_deploy": False, "missing_scopes": [], "error": ""},
+        "worker": {"exists": None, "deployments": 0, "latest": "", "error": ""},
+        "health": await _relay_health(cfg),
+        "checked_at": int(now),
+    }
+    if not exe:
+        data["auth"]["error"] = "没装 wrangler，装一个才能部署"
+    elif not name:
+        data["worker"]["error"] = f"{_relay_dir()}/wrangler.toml 里找不到 name"
+    else:
+        rc, out = await whoami_task
+        data["wrangler"]["version"] = _parse_wrangler_version(out)
+        data["auth"].update(_parse_whoami(out))
+        if rc != 0 and not data["auth"]["logged_in"]:
+            data["auth"]["error"] = _relay_last_error(out) or f"wrangler whoami 退出码 {rc}"
+
+        rc2, out2 = await deploy_task
+        if rc2 == 0:
+            data["worker"]["exists"] = True
+            data["worker"]["deployments"] = len(re.findall(r"^Version\(s\):", out2, re.M))
+            # 列表是旧→新，取最大值才是「最近一次」（ISO 时间字符串按字典序就是时间序）
+            stamps = re.findall(r"^Created:\s+(\S+)", out2, re.M)
+            data["worker"]["latest"] = max(stamps) if stamps else ""
+        else:
+            msg = _relay_last_error(out2) or f"wrangler deployments list 退出码 {rc2}"
+            data["worker"]["exists"] = False
+            data["worker"]["error"] = msg
+
+    _RELAY_CACHE["at"] = now
+    _RELAY_CACHE["data"] = data
+    return data
+
+
+async def _relay_deploy(cfg: Config, apply: bool = True) -> dict[str, Any]:
+    """跑 wrangler deploy，把输出里的地址变成 ws_url。
+
+    apply=True 时才写配置：先改内存、写盘失败就回滚，和 POST /config 一样。
+    """
+    name = _worker_name()
+    started = time.time()
+    rc, out = await _relay_run(["deploy"], WORKER_DEPLOY_TIMEOUT)
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    result: dict[str, Any] = {
+        "ok": rc == 0, "rc": rc, "seconds": round(time.time() - started, 1),
+        "worker_name": name, "url": "", "ws_url": "",
+        "applied": False, "changed": False, "reconnect": False,
+        "tail": "\n".join(lines[-14:]),
+    }
+    m = _WORKER_URL_RE.search(out)
+    if m:
+        result["url"] = "https://" + m.group(1)
+        result["ws_url"] = _deploy_url_to_ws(result["url"])
+    if rc != 0:
+        result["error"] = _relay_last_error(out) or f"wrangler deploy 退出码 {rc}"
+        return result
+    if not result["ws_url"]:
+        result["ok"] = False
+        result["error"] = ("部署成功，但输出里没有 workers.dev 地址（可能只绑了自定义域名），"
+                          "地址得手工填")
+        return result
+    if not apply:
+        return result
+    if cfg.ws_url == result["ws_url"]:
+        result["applied"] = True
+        return result
+    previous = cfg.ws_url
+    cfg.ws_url = result["ws_url"]
+    try:
+        save_config(cfg)
+    except OSError as exc:
+        cfg.ws_url = previous
+        result["ok"] = False
+        result["error"] = f"部署成功但写配置失败：{exc}"
+        return result
+    result["applied"] = True
+    result["changed"] = True
+    return result
+
+
+async def handle_relay(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    force = request.query.get("force") in ("1", "true", "yes")
+    return web.json_response(await _relay_status(request.app["cfg"], force))
+
+
+async def handle_relay_deploy(request: web.Request) -> web.Response:
+    blocked = _local_only(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:                              # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    cfg: Config = request.app["cfg"]
+    state: State = request.app["state"]
+    result = await _relay_deploy(cfg, apply=body.get("apply", True) is not False)
+    _RELAY_CACHE["data"] = None                    # 下一次查询重新采集
+    if result.get("changed") and state.ws is not None:
+        state.kick = True                          # 地址变了，让 ws_loop 用新地址重连
+        try:
+            await state.ws.close()
+        except Exception:                          # noqa: BLE001
+            pass
+        result["reconnect"] = True
+    result["status"] = await _relay_status(cfg, True)
+    return web.json_response(result, status=200 if result.get("ok") else 500)
+
+
 def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Application:
     app = web.Application()
     app["store"] = store
@@ -5118,6 +5459,8 @@ def build_app(cfg: Config, store: Store, bus: Bus, state: State) -> web.Applicat
     app.router.add_get("/service", handle_service)
     app.router.add_post("/service/install", handle_service_install)
     app.router.add_post("/service/uninstall", handle_service_uninstall)
+    app.router.add_get("/relay", handle_relay)
+    app.router.add_post("/relay/deploy", handle_relay_deploy)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/config", handle_config)
     app.router.add_post("/config", handle_config_save)
