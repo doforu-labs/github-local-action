@@ -193,6 +193,24 @@ def test_worker_name() -> None:
           str(relay._relay_dir()))
 
 
+def test_http_error() -> None:
+    print("HTTP 错误：变成一句人话")
+    html = ('<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js ie6 oldie"> <![endif]-->\n'
+            '<body><h2>Error 1042</h2><div>error code: 1042</div></body>')
+    msg = relay._relay_http_error(404, "text/html; charset=UTF-8", html)
+    check(msg == "HTTP 404（Cloudflare error code 1042）", "HTML 错误页只给状态码和 error code", msg)
+    check("<" not in msg, "不再把 HTML 原样贴出来", msg)
+
+    plain = relay._relay_http_error(404, "text/plain", "error code: 1042")
+    check(plain == "HTTP 404 error code: 1042", "纯文本错误照样显示", plain)
+
+    jsonish = relay._relay_http_error(500, "application/json", '{"error":"boom"}')
+    check(jsonish == 'HTTP 500 {"error":"boom"}', "JSON 错误不丢内容", jsonish)
+
+    nohint = relay._relay_http_error(503, "text/html", "<html><body>oops</body></html>")
+    check(nohint == "HTTP 503（返回了一个网页，不是接口）", "HTML 里没 error code 时也给个说法", nohint)
+
+
 def main() -> int:
     print("中继自检的解析函数")
     test_whoami_logged_in()
@@ -202,6 +220,7 @@ def main() -> int:
     test_last_error()
     test_deployments()
     test_worker_name()
+    test_http_error()
     print(f"\n结果：{PASS} 项通过，{FAIL} 项失败")
     return 0 if FAIL == 0 else 1
 

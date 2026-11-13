@@ -3107,7 +3107,10 @@ function renderRelay() {
         ' deployment(s)' + (when ? ', latest ' + when : '') + '.')) + '</div>');
   } else if (wk.error) {
     rows.push('<div class="hint" style="color:var(--danger);margin-top:6px">' +
-      esc(L('读不到 worker：', 'Cannot read worker: ') + wk.error) + '</div>');
+      esc(L('读不到 worker：', 'Cannot read worker: ') + wk.error) + '</div>' +
+      '<div class="hint" style="margin-top:4px">' +
+      esc(L('上面那个按钮会重新建一个（D1 里的历史事件不会丢）。',
+            'The button below recreates it; events already in D1 are kept.')) + '</div>');
   }
 
   rows.push('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +

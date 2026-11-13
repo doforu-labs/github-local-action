@@ -5251,6 +5251,20 @@ def _deploy_url_to_ws(url: str) -> str:
     return u + "/ws"
 
 
+def _relay_http_error(status: int, ctype: str, body: str) -> str:
+    """把 HTTP 错误变成一句人话。
+
+    worker 被删掉时 workers.dev 返回的是一整页 HTML（里面藏着 error code: 1042），
+    原样贴进卡片就是一堆 <!DOCTYPE html>，谁也看不出是「worker 不在了」。
+    """
+    text = (body or "").strip()
+    looks_html = "text/html" in (ctype or "").lower() or text.startswith("<")
+    if looks_html:
+        code = re.search(r"error code:\s*(\d+)", text)
+        return f"HTTP {status}" + (f"（Cloudflare error code {code.group(1)}）" if code else "（返回了一个网页，不是接口）")
+    return f"HTTP {status} " + text.replace("\n", " ")[:160]
+
+
 async def _relay_health(cfg: Config) -> dict[str, Any]:
     """GET 一下中继的 /health：既验地址填得对不对，也验它是否活着。"""
     base = _worker_base(cfg)
@@ -5270,7 +5284,9 @@ async def _relay_health(cfg: Config) -> dict[str, Any]:
                     info["events"] = body.get("events")
                     info["cursor"] = body.get("cursor")
                 else:
-                    info["error"] = (await resp.text())[:160]
+                    info["error"] = _relay_http_error(
+                        resp.status, resp.headers.get("Content-Type", ""),
+                        await resp.text())
     except Exception as exc:                       # noqa: BLE001
         info["error"] = f"{type(exc).__name__}: {exc}"[:200]
     return info
