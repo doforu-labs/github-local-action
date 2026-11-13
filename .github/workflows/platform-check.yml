@@ -1,0 +1,75 @@
+name: 平台可用性验收
+
+# 挨个平台跑一遍按需 runner：Linux x64、macOS arm64、macOS x64、Windows x64。
+# 每个 job 都会打印自己落在哪台机器上，所以跑完这张表就能看出哪类平台没接住。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/platform-check.yml'
+
+concurrency:
+  group: platform-check
+  cancel-in-progress: false
+
+jobs:
+  posix:
+    name: ${{ matrix.target.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: linux-x64
+            runs_on: [self-hosted, Linux, X64]
+          - name: macos-arm64
+            runs_on: [self-hosted, macOS, ARM64]
+          - name: macos-x64
+            runs_on: [self-hosted, macOS, X64]
+    runs-on: ${{ matrix.target.runs_on }}
+    timeout-minutes: 10
+    steps:
+      - name: 报平台和 runner
+        run: |
+          echo "runner=${RUNNER_NAME}"
+          echo "os=${RUNNER_OS}  arch=${RUNNER_ARCH}"
+          uname -a
+          sw_vers 2>/dev/null || head -2 /etc/os-release
+          echo "workspace=${GITHUB_WORKSPACE}"
+          echo "proxy=${HTTPS_PROXY:-<none>}"
+          echo "no_proxy=${NO_PROXY:-<none>}"
+      - name: 出网
+        run: |
+          curl -sS --max-time 15 -o /dev/null \
+            -w 'api.github.com %{http_code} %{time_total}s\n' https://api.github.com/zen
+      - uses: actions/checkout@v4
+      - name: 仓里读一个文件
+        run: |
+          ls -1 | head -5
+          test -f README.md && echo "README.md 有 $(wc -l < README.md) 行"
+
+  windows:
+    name: windows-x64
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: 报平台和 runner
+        shell: pwsh
+        run: |
+          Write-Output "runner=$env:RUNNER_NAME"
+          Write-Output "os=$env:RUNNER_OS  arch=$env:RUNNER_ARCH"
+          Write-Output ([System.Environment]::OSVersion.VersionString)
+          Write-Output "处理器=$env:PROCESSOR_ARCHITECTURE  目录=$env:GITHUB_WORKSPACE"
+          Write-Output "proxy=$env:HTTPS_PROXY  no_proxy=$env:NO_PROXY"
+      - name: 出网
+        shell: pwsh
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 https://api.github.com/zen
+          $sw.Stop()
+          Write-Output "api.github.com $($r.StatusCode) $([math]::Round($sw.Elapsed.TotalSeconds,2))s"
+      - uses: actions/checkout@v4
+      - name: 仓里读一个文件
+        shell: pwsh
+        run: |
+          Get-ChildItem -Name | Select-Object -First 5
+          if (Test-Path README.md) { Write-Output "README.md 有 $((Get-Content README.md).Count) 行" }
