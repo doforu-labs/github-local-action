@@ -63,6 +63,8 @@ def tracked_files() -> list[Path]:
 
 def scan(path: Path) -> list[tuple[int, str, str, str]]:
     """返回 [(行号, 规则名, 命中文本, 建议)]。"""
+    if path.resolve() == Path(__file__).resolve():
+        return []          # 这个文件本身写着所有规则词，扫自己只会报自己
     try:
         text = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
@@ -80,10 +82,12 @@ def scan(path: Path) -> list[tuple[int, str, str, str]]:
                 continue
             hits.append((lineno, "内网 IP", ip, "换成 10.0.0.5 这类文档占位地址"))
         for m in EMAIL.finditer(line):
-            domain = m.group(0).rsplit("@", 1)[1].lower()
-            if domain in SAFE_EMAIL_DOMAINS:
+            found = m.group(0)
+            domain = found.rsplit("@", 1)[1].lower()
+            # git@github.com:owner/repo.git 是 SSH 写法，不是邮箱
+            if domain in SAFE_EMAIL_DOMAINS or found.startswith("git@"):
                 continue
-            hits.append((lineno, "邮箱", m.group(0), "换成 demo@example.com"))
+            hits.append((lineno, "邮箱", found, "换成 demo@example.com"))
         for m in HOME_DIR.finditer(line):
             if m.group(1) in SAFE_HOME_USERS:
                 continue

@@ -57,7 +57,7 @@ def main() -> int:
     print("本机闸：回环地址的四种写法")
     for addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
         ck(relay.is_local(FakeReq(addr)), f"{addr} 判定为本机")
-    for addr in ("10.0.0.21", "192.168.1.9", "::ffff:10.0.0.21", ""):
+    for addr in ("10.0.0.21", "203.0.113.7", "::ffff:10.0.0.21", ""):
         ck(not relay.is_local(FakeReq(addr)), f"{addr or '(空)'} 判定为局域网")
 
     print("本机闸：放行与拒绝的形态")
