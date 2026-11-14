@@ -64,6 +64,38 @@ HARD_RULES: list[tuple[str, re.Pattern[str], str]] = [
 LOCAL_WORDS = Path(__file__).with_name("pii-words.local")
 
 
+def self_slug() -> str:
+    """仓库自己的「组织/仓库」，从 origin 现读。
+
+    为什么需要它：徽章、clone 示例这类东西必须写自家地址
+    （`github.com/<owner>/<repo>/actions/.../badge.svg`），不写就没有徽章。
+    但把名字硬写进这个脚本本身又等于把品牌词留在源码里——所以从 git remote 读：
+    名字不进仓库，fork 之后也会自动变成 fork 自己的地址。
+
+    读不到（没有 origin、不是 git 仓库）就返回空串，等于没有例外——宁可严一点。
+    """
+    try:
+        url = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=ROOT, capture_output=True, check=True
+        ).stdout.decode("utf-8", "replace").strip()
+    except (subprocess.CalledProcessError, OSError):
+        return ""
+    m = re.search(r"github\.com[:/]+([\w.-]+/[\w.-]+?)(?:\.git)?/?$", url)
+    return m.group(1) if m else ""
+
+
+def redact_self(text: str) -> str:
+    """把「仓库自己的地址」从待扫文本里抹掉，只留这一个洞。
+
+    注意洞很窄：只抹完整的 `<owner>/<repo>`，单独出现的组织名照样会被
+    `pii-words.local` 里的词拦住。
+    """
+    slug = self_slug()
+    if not slug:
+        return text
+    return re.sub(re.escape(slug), "<this-repo>", text, flags=re.I)
+
+
 def local_rules() -> list[tuple[str, re.Pattern[str], str]]:
     try:
         raw = LOCAL_WORDS.read_text(encoding="utf-8").splitlines()
@@ -101,6 +133,7 @@ def scan(path: Path) -> list[tuple[int, str, str, str]]:
         text = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
         return []          # 二进制文件不管
+    text = redact_self(text)
     hits: list[tuple[int, str, str, str]] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         for name, pattern, hint in rules():

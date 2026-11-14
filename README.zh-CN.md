@@ -1,5 +1,8 @@
 # GitHub Local Action
 
+[![CI](https://github.com/doforu-labs/github-local-action/actions/workflows/test.yml/badge.svg)](https://github.com/doforu-labs/github-local-action/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 把 GitHub 账户下所有仓库的事件实时送进你的局域网，把 GitHub Actions 的 job 派到你自己机器上跑。
 
 ```text

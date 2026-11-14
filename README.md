@@ -1,5 +1,8 @@
 # GitHub Local Action
 
+[![CI](https://github.com/doforu-labs/github-local-action/actions/workflows/test.yml/badge.svg)](https://github.com/doforu-labs/github-local-action/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Stream events from every repository in your GitHub account into your own LAN, and run GitHub Actions jobs on your own machines.
 
 ```text
