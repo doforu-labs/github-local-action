@@ -14,6 +14,7 @@
 - `remote-worker/package-lock.json`：`npm ci` 可复现
 - 文档拆分：`docs/quickstart.md`、`architecture.md`、`self-hosted-runner.md`、`known-limitations.md`、`lab-notes.md`、`publishing.md`，配三张真界面截图
 - 默认 README 改成英文（`README.md`），中文版是 `README.zh-CN.md`；两版章节一一对应
+- 六份指南全部双语：`docs/*.md` 英文、`docs/*.zh-CN.md` 中文，每页顶部带语言切换，中文版内容一行没少（`jit-on-demand-runner.md` 是实验附录，暂只中文）
 
 ### 更改
 - 自动启动服务的 launchd label 去掉了组织/品牌前缀，改成 `local.github-local-action`（systemd unit 名 `github-local-action.service` 没变）。**装过改名前的版本**：先用旧版面板里的「卸载服务」卸一次再装新版——新旧两个进程会抢同一个端口

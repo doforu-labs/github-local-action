@@ -1,85 +1,88 @@
-# 发布清单（维护者用）
+# Publishing checklist (for maintainers)
 
-把仓库从私有翻成公开之前过一遍。前两节是「已经做好的」，第三、四节是「只有仓库主人能做的」。
+[简体中文](publishing.zh-CN.md)
 
-## 一、代码侧已经处理好的
+Run through this before flipping a private repository to public. The first two sections are already done; sections three and four can only be done by the repository owner.
 
-| 项 | 状态 |
+## 1. Things already handled in code
+
+| Item | Status |
 |---|---|
-| 许可证 | `LICENSE`（MIT），依赖里 aiohttp 是 Apache-2.0、paramiko（可选）是 LGPL-2.1，不冲突 |
-| 安全策略 / 贡献指南 / 行为准则 | `SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md` |
-| CI | `.github/workflows/test.yml`：Python 3.11/3.13、Node 20/22、Windows 前端测试、e2e、worker 类型检查、脱敏扫描 |
-| 统一测试入口 | `make test` / `scripts/run_tests.py` |
-| 依赖锁定 | `remote-worker/package-lock.json`（`npm ci` 可复现） |
-| 可安装 | `local-client/pyproject.toml`：`pip install .` 后 `github-local-action` 命令可用，状态页与 `/agent.md` 随包安装 |
-| 脱敏 | 真实邮箱、内网 IP、真机主机名、Cloudflare 账号 id、D1 资源 id 已换成示例值；`make pii` 会把它们再抓出来 |
-| 陌生人能不能跑起来 | `remote-worker/schema.sql` 补上了 `webhook_secrets` 表（原来自动配 webhook 会 500）；README 里 `d1 create` 的库名与 `wrangler.toml` 对齐 |
-| 安全边界 | `POST /config` 补上本机闸（原来局域网设备能改 `ws_url` 与令牌），新增 `tests/unit_local_only.py` 锁住这道闸 |
-| self-hosted workflow 的闸 | `platform-*.yml` 每个 job 用仓库变量当开关：`if: vars.RUN_SELF_HOSTED == 'true'`，没设就不跑（fork 里天然是关的，也不跟组织/仓库名绑定） |
-| 文档 | README 拆成首页 + `docs/quickstart` / `architecture` / `self-hosted-runner` / `known-limitations` / `lab-notes`，配三张真界面截图 |
+| License | `LICENSE` (MIT); dependencies are aiohttp (Apache-2.0) and optional paramiko (LGPL-2.1), no conflict |
+| Security policy / contributing / code of conduct | `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` |
+| CI | `.github/workflows/test.yml`: Python 3.11/3.13, Node 20/22, Windows frontend tests, e2e, worker type check, PII scan |
+| Unified test entry point | `make test` / `scripts/run_tests.py` |
+| Dependency locking | `remote-worker/package-lock.json` (reproducible with `npm ci`) |
+| Installable | `local-client/pyproject.toml`: `pip install .` provides the `github-local-action` command, and the status page plus `/agent.md` ship with the package |
+| Desensitisation | Real email addresses, private IPs, real hostnames, the Cloudflare account id and the D1 resource id are replaced with placeholders; `make pii` catches them again |
+| Can a stranger get it running | `remote-worker/schema.sql` now creates the `webhook_secrets` table (automatic webhook configuration used to 500); the `d1 create` database name in the README matches `wrangler.toml` |
+| Security boundary | `POST /config` is local-only now (LAN devices could previously change `ws_url` and the token); `tests/unit_local_only.py` locks that down |
+| Gate on self-hosted workflows | Every job in `platform-*.yml` is gated on a repository variable: `if: vars.RUN_SELF_HOSTED == 'true'`. Unset means it never runs (forks are off by default), and no organisation or repository name is hardcoded |
+| Docs | README is a front page plus `docs/quickstart`, `architecture`, `self-hosted-runner`, `known-limitations`, `lab-notes`, with three real screenshots; every doc exists in English and Chinese |
 
-## 二、git 历史：已经重写过一次
+## 2. Git history: rewritten once already
 
-**状态：已完成**（2026-11-14）。原来的历史里带着实验室真机的地址 / 用户名 / 密码、账号邮箱、Cloudflare 账号 id 与账号子域、真机主机名、私有仓库名，以及组织名——翻 public 等于全部永久公开。已经用 `git filter-repo` 逐条替换掉，86 条 commit 一条没丢，commit message 里的旧值也一起换掉了。
+**Status: done** (2026-11-14). The original history carried the lab machine's address / username / password, an account email, the Cloudflare account id and account subdomain, real hostnames, private repository names, and the organisation name — making it public would have published all of it permanently. It was replaced item by item with `git filter-repo`; all 86 commits survived and the old values inside commit messages were replaced too.
 
-**重写前打了完整备份**：`~/Desktop/github-local-action-backup-20261114.bundle`（git bundle，含重写前的全部历史）。要还原就 `git clone <那个 bundle> <目录>`。
+**A complete backup was taken first**: `~/Desktop/github-local-action-backup-20261114.bundle` (a git bundle with the entire pre-rewrite history). To restore, `git clone <that bundle> <directory>`.
 
-以后再用同样的手法清理（比如又手滑提交了别的凭据）：
+Doing the same again later (say, another credential slips into a commit):
 
 ```bash
-# 1) 备份，这一步别省
+# 1) back up; do not skip this
 git bundle create ~/gla-backup-$(date +%Y%m%d).bundle --all
 
-# 2) 替换清单放仓库外面，逐行「原值==>新值」
-#    注意：filter-repo 不认 # 注释，整行都会被当成表达式——
-#    一行裸 # 会被当成「匹配所有井号」的规则，把全仓库的注释符换成删除标记（踩过这个坑）
-printf '%s\n' '原地址==>10.0.0.21' '原用户名==>tester' > /tmp/redact.txt
+# 2) keep the replacement list outside the repo, one "old==>new" per line.
+#    Note: filter-repo does not understand # comments — every line is an expression,
+#    and a bare # line becomes "match every hash sign" and rewrites all comments
+#    in the repository into a deletion marker (this was hit for real).
+printf '%s\n' 'old-address==>10.0.0.21' 'old-user==>tester' > /tmp/redact.txt
 
-# 3) 文件内容和 commit message 都要替换
+# 3) replace both file contents and commit messages
 git filter-repo --replace-text /tmp/redact.txt --replace-message /tmp/redact.txt
 
-# 4) 验收：应该是空的
-git log -p | grep -nE '原地址|原用户名'
+# 4) verify: this should print nothing
+git log -p | grep -nE 'old-address|old-user'
 ```
 
-重写之后所有 commit hash 都变了，远端要 `git push --force`。推之前确认没有别的协作者、没有别的克隆。
+Every commit hash changes afterwards, so the remote needs `git push --force`. Confirm there are no other collaborators and no other clones before pushing.
 
-### 还剩一件：commit 作者
+### One thing left: commit authorship
 
-86 条 commit 的作者都是同一个组织账号（noreply 地址里带组织名）。这在 `git log` 里看得见，但它属于「你打算用哪个账号发布」，不是泄漏——换成个人账号是一条命令：
+All 86 commits are authored by the same organisation account (its noreply address contains the organisation name). It is visible in `git log`, but it is really "which account will you publish under", not a leak — switching to a personal account is one command:
 
 ```bash
-printf '%s\n' 'Your Name <123456+you@users.noreply.github.com> 旧组织名 <旧的 noreply>' > /tmp/mailmap
+printf '%s\n' 'Your Name <123456+you@users.noreply.github.com> old-org-name <old-noreply>' > /tmp/mailmap
 git filter-repo --mailmap /tmp/mailmap
 ```
 
-代价是所有 commit 不再关联到原组织账号（那正是目的）。改作者不可逆，所以留给你按发布账号决定。
+The cost is that commits no longer link to the original organisation account (which is the point). Rewriting authorship is irreversible, so it is left for you to decide based on the publishing account.
 
-## 三、翻转仓库可见性
+## 3. Flipping repository visibility
 
-1. **确认账号的可见性**：匿名访问 `api.github.com/orgs/<org>` 与 `api.github.com/repos/<账号>/<repo>` 返回 404 说明不是公开状态。挂私有组织下的仓库能不能直接转 public，各计划策略不同，先到 **Settings → General → Danger Zone → Change visibility** 试一次，被拒会有明确报错。
-2. **建议先复制一份试水**，而不是直接翻转：
+1. **Check the account's visibility**: if anonymous access to `api.github.com/orgs/<org>` and `api.github.com/repos/<account>/<repo>` returns 404, it is not public. Whether a repository under a private organisation can be converted directly to public varies by plan — try **Settings → General → Danger Zone → Change visibility** once; a refusal comes with a clear error.
+2. **Prefer a copy first** over flipping the original:
    ```bash
-   git push --mirror git@github.com:<你的账号>/github-local-action-public.git
+   git push --mirror git@github.com:<your-account>/github-local-action-public.git
    ```
-   在副本上把 README、issue 模板、CI 全跑一遍，看过两天再决定主仓库翻不翻。
-3. 翻转是不可逆的：历史会被永久公开、会被立刻 fork 抓走，后悔只能整仓删除。
+   Run the README, issue templates and CI on the copy, watch it for a couple of days, then decide about the main repository.
+3. Flipping is irreversible: history becomes permanently public and is immediately captured by forks. Undoing it means deleting the whole repository.
 
-## 四、公开之后建议打开
+## 4. Worth enabling after going public
 
-- **Settings → Code security**：Secret scanning + Push protection（防止以后有人手滑提交令牌）
-- **Settings → General → Features**：Discussions（问答不用堆在 issue 里）
-- **Settings → Branches**：保护 `main`，要求 CI 通过 + 至少一次 review
-- **Settings → Actions → General**：Fork PR 的 workflow 需要 maintainer 批准
-- **About**：一句话描述 + topics：
+- **Settings → Code security**: Secret scanning + Push protection (so a future accidental token commit is blocked)
+- **Settings → General → Features**: Discussions (so questions do not pile up as issues)
+- **Settings → Branches**: protect `main`, require CI plus at least one review
+- **Settings → Actions → General**: require maintainer approval for workflow runs from fork PRs
+- **About**: a one-line description plus topics:
   `github-webhook` `cloudflare-workers` `self-hosted-runner` `sse` `sqlite` `mcp` `local-first`
-- **Releases**：打 `v0.1.0`，写清「这是第一个公开版本，接口还会变」
-- **Pin 一条 issue**：写明能力边界（运行中日志拿不到、局域网接口不认证）
+- **Releases**: tag `v0.1.0` and say plainly "first public version, interfaces will change"
+- **Pin one issue**: state the capability boundaries (no live logs during a run, LAN endpoints unauthenticated)
 
-## 五、公开之后每次改动
+## 5. Every change after going public
 
 ```bash
 make test && make pii && make typecheck
 ```
 
-`make pii` 是硬闸：真实邮箱、内网 IP、令牌、真机主机名一旦混进来，CI 直接红。
+`make pii` is a hard gate: a real email address, private IP, token or real hostname slipping in turns CI red.

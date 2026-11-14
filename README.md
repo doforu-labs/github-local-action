@@ -11,7 +11,7 @@ GitHub ──webhook──▶ remote-worker ──WebSocket──▶ local-clien
 
 ![Overview](docs/images/overview.png)
 
-> The in-depth guides in `docs/` are written in Chinese, as are code comments and commit messages. English issues and PRs are welcome — this page is meant to be enough to get you running.
+> Code comments and commit messages are in Chinese. Documentation is bilingual: every guide in `docs/` exists in both English and Chinese.
 
 ## What it solves
 
@@ -54,7 +54,7 @@ cp config.example.toml config.toml             # fill ws_url + token
 python3 relay.py
 ```
 
-Then open `http://<your-lan-ip>:18091/`. Creating the GitHub App and pointing its webhook at the worker is step 2 of [docs/quickstart.md](docs/quickstart.md) (Chinese, but it is mostly a checklist — the URL and the events to subscribe to are what matter). **Subscribe to `Workflow run`**, otherwise the Actions view stays empty.
+Then open `http://<your-lan-ip>:18091/`. Creating the GitHub App and pointing its webhook at the worker is step 2 of the [quickstart](docs/quickstart.md). **Subscribe to `Workflow run`**, otherwise the Actions view stays empty.
 
 If `gh` is installed and logged in, the panel can also call the GitHub REST API to fill in jobs/steps and to fetch run history without relying on webhooks. The token stays inside `gh`'s own keyring; the relay never reads or stores it.
 
@@ -100,7 +100,7 @@ Details, per-platform pitfalls, and why the password only lives 30 minutes: [sel
 
 ## Docs
 
-The guides are in Chinese; this README is the English entry point.
+Every guide below is available in English and Chinese (add `.zh-CN.md` for the Chinese version).
 
 | Doc | Contents |
 |---|---|

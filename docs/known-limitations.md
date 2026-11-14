@@ -1,72 +1,74 @@
-# 已知边界
+# Known limitations
 
-这份文件写清楚「做不到」的部分，以及为什么做不到。大部分不是没实现，是上游不给。
+[简体中文](known-limitations.zh-CN.md)
 
-## webhook 载荷只有运行级信息
+This file is about what does **not** work, and why. Most of it is not missing implementation — it is GitHub not offering the data.
 
-`workflow_run` 事件的载荷里有：run id、工作流名、分支、状态、结论、触发方式、发起人、提交 sha。
+## The webhook payload only has run-level information
 
-没有：单个运行里的 job、每个步骤、日志。这些只能调 GitHub REST API（`/repos/{owner}/{repo}/actions/runs/{id}/jobs`、`/logs`）才拿得到，所以「加载 job 与步骤」是面板反过来用本机 `gh` 的登录态去问 GitHub，不是从事件里读的。
+The `workflow_run` payload contains: run id, workflow name, branch, status, conclusion, trigger, actor, commit sha.
 
-## 运行中的日志：只有一条路能拿到实时文本
+It does not contain: the jobs inside a run, the individual steps, or logs. Those are only available through the GitHub REST API (`/repos/{owner}/{repo}/actions/runs/{id}/jobs`, `/logs`), which is why "load jobs and steps" makes the panel call GitHub using the local `gh` login — it does not read that from the event.
 
-四条通道逐个试过（2026-11 实测，runner 2.338.2）：
+## Live logs while a run is in progress: exactly one way works
 
-| 通道 | 运行中能不能拿 | 实测 |
+Four channels were tested one by one (measured 2026-11, runner 2.338.2):
+
+| Channel | Available while running? | Measurement |
 |---|---|---|
-| `/actions/runs/{id}/logs`、`/actions/jobs/{id}/logs` | **不能**，404 | 40 秒的运行期间一直 404，job 结束后约 6 秒才变 200；`gh run view --log` 直接报 `is still in progress` |
-| `runs/{id}/jobs` 里的步骤状态 | 能，但只有状态没有文字 | 4 秒轮询能看到「1/2 已完成」 |
-| 机器上 `_diag/Worker_*.log` | runner 自己的事件有，**step 的 stdout 没有** | 打 20 行标记，grep 命中 0 行 |
-| 步骤自己 `tee` 到机器本地 | **能，延迟不到 2 秒** | 每 6 秒采样一次，每次都多出 3 行 |
+| `/actions/runs/{id}/logs`, `/actions/jobs/{id}/logs` | **No**, 404 | 404 for the whole 40-second run, turning 200 about 6 seconds after the job ends; `gh run view --log` just says `is still in progress` |
+| Step states from `runs/{id}/jobs` | Yes, but state only, no text | Polling every 4 seconds shows "1/2 completed" |
+| `_diag/Worker_*.log` on the machine | Runner events are there, **step stdout is not** | 20 marker lines printed, 0 grep hits |
+| The step `tee`-ing to a local file | **Yes, under 2 seconds of latency** | Sampling every 6 seconds found 3 new lines every time |
 
-结论：想在中继页上看「正在滚的日志」，只有让 workflow 自己落一份到机器上，中继去 tail 那台机器。GitHub 侧的文本日志天生是跑完才有。
+Conclusion: to watch scrolling logs on the relay page, the workflow itself has to write a file on the machine and the relay has to tail that machine. GitHub-side text logs only exist once a run has finished.
 
 ```yaml
-- name: 一边输出一边落盘
+- name: stream and persist at the same time
   run: |
-    set -o pipefail            # 保留失败语义，否则 tee 的退出码会盖掉失败
+    set -o pipefail            # keep failure semantics, otherwise tee's exit code masks them
     for i in $(seq 1 30); do
-      echo "[$i/30] $(date '+%H:%M:%S') 正在跑"
+      echo "[$i/30] $(date '+%H:%M:%S') running"
       sleep 2
     done 2>&1 | stdbuf -oL tee -a /tmp/gha-live.log
 ```
 
-- **必须 `stdbuf -oL`**。直接管道给 `tee`，stdout 会被块缓冲，几十秒才吐一次，看起来像没在跑。
-- 文件留在机器上**不自动清**，多台机器要各自 tail；写 `/tmp` 重启就没了。
-- 这是 GitHub 的已知限制，不是本项目的 bug：社区帖 [discussions#75518](https://github.com/orgs/community/discussions/75518) 从 2023-11 挂到 2026-11 官方一直没回；[#154834](https://github.com/orgs/community/discussions/154834) 说 2025-03 之后连半截日志都拿不到了。我们另外验了两个流传的说法：`_diag/pages/*.log` 在整个步骤执行期间一直是 0 字节（等步骤结束才落盘、随即上传删除），`?tail_logs=true` 也不是实时流，只是结束前约 12 秒提前返 200。
+- **`stdbuf -oL` is mandatory.** Piping straight into `tee` leaves stdout block-buffered, so output appears only every few dozen seconds and looks like nothing is happening.
+- The file stays on the machine and is **not cleaned up**; with several machines each has to be tailed; anything in `/tmp` disappears on reboot.
+- This is a known GitHub limitation, not a bug in this project. Community threads [discussions#75518](https://github.com/orgs/community/discussions/75518) has been open since 2023-11 with no official reply as of 2026-11; [#154834](https://github.com/orgs/community/discussions/154834) says that since 2025-03 even partial logs are unavailable. Two widely repeated claims were also checked: `_diag/pages/*.log` stays at 0 bytes for the entire step (it is written only after the step ends, then uploaded and deleted), and `?tail_logs=true` is not a live stream either — it merely returns 200 about 12 seconds before the run ends.
 
-## 日志归档没做
+## Log archiving is not implemented
 
-`/logs` 返回的是 zip，体积大、不适合放进这个中转，所以面板只显示 job 与步骤状态，日志去 GitHub 页面看。
+`/logs` returns a zip. It is large and a poor fit for this relay, so the panel shows job and step state only, and logs are read on the GitHub website.
 
-## 写 `.github/workflows/*` 需要 `workflow` scope
+## Writing `.github/workflows/*` needs the `workflow` scope
 
-本机 `gh` 令牌一般只有 `repo / read:org / gist / delete_repo`，用 API 写 workflow 文件会被以 404 拒绝（写普通文件正常）。绕法是走 SSH 推送——SSH 密钥不受 OAuth scope 限制。
+A local `gh` token usually only carries `repo / read:org / gist / delete_repo`; writing workflow files through the API is rejected with a 404 (writing ordinary files is fine). The workaround is to push over SSH — SSH keys are not subject to OAuth scopes.
 
-## 局域网接口没有认证
+## The LAN endpoints are unauthenticated
 
-`/stream`、`/stats`、`/actions`、状态页本身都**不校验身份**，设计前提是「跑在可信局域网里，谁连上谁看」。它们只暴露你自己仓库的公开元数据（仓库名、分支、提交标题），不暴露令牌。
+`/stream`, `/stats`, `/actions` and the status page itself **do not authenticate**: the design assumption is "it runs on a trusted LAN, whoever can connect can look". They only expose public metadata about your own repositories (repository name, branch, commit title) and never a token.
 
-需要跨网段访问就别把端口暴露出去，用 SSH 隧道：
+If you need access across network segments, do not expose the port — use an SSH tunnel:
 
 ```bash
 ssh -L 18091:localhost:18091 you@10.0.0.5
 ```
 
-真正敏感的接口（`/github/*`、`/runners/*`、`/relay/deploy`，会用到本机 `gh` 凭据和 SSH 密码）**只接受本机请求**，局域网访问一律 403。
+The genuinely sensitive endpoints (`/github/*`, `/runners/*`, `/relay/deploy`, which use the local `gh` credentials and the SSH password) **only accept local requests**; LAN access always gets 403.
 
-`GET /config` 局域网能读（令牌已掩码），但 **`POST /config` 只认本机**：改配置会重写 `ws_url` 与令牌，等于把整条事件流指向别处。所以在手机/平板上打开面板能看，改设置会拿到 403——回到跑接收端那台机器上改。
+`GET /config` is readable from the LAN (the token is masked), but **`POST /config` is local-only**: changing the config rewrites `ws_url` and the token, which is equivalent to pointing the entire event stream somewhere else. So opening the panel from a phone or tablet works for reading, but saving settings returns 403 — go back to the machine running the receiver.
 
-## self-hosted runner 在公开仓库上是危险的
+## Self-hosted runners on a public repository are dangerous
 
-公开仓库 + self-hosted 意味着任何人的 PR 都能在你机器上执行代码。GitHub 自己也会警告。要么只给私有仓库用，要么在 workflow 里加审批闸（`environment` + required reviewers）。
+Public repository + self-hosted means any PR can execute code on your machine. GitHub warns about this too. Either restrict it to private repositories or add an approval gate in the workflow (`environment` with required reviewers).
 
-## Windows 上的测试没进 CI
+## Windows tests are not in CI
 
-`unit_machines` 会断言密钥文件权限是 `600`，这在 Windows 的权限模型里没有对应概念。所以 Windows 只跑前端那 4 个 JS 测试，Python 单测在 Linux / macOS 上跑。
+`unit_machines` asserts that the key file's permissions are `600`, which has no equivalent in the Windows permission model. So Windows only runs the four JS frontend tests; the Python unit tests run on Linux and macOS.
 
-## SQLite 单进程
+## SQLite is single-process
 
-本地库是 SQLite，写操作串行。几千条的规模完全够（`/stats` 对高频查询做了缓存 + 单飞），但别指望它当时序数据库存几十万行——真要长期留，定期把旧行导出成 JSONL 再删。
+The local database is SQLite and writes are serialized. At a few thousand rows that is plenty (`/stats` caches hot queries and single-flights them), but do not expect it to behave like a time-series database with hundreds of thousands of rows — if you need long retention, periodically export old rows to JSONL and delete them.
 
-远端 D1 有自动清理：Durable Object 每天用 `setAlarm` 删掉超过 `RETENTION_DAYS`（默认 90 天）的事件，所以 SQL 存储不会无限长——实测 300 事件/天约占免费额度的 3%。
+Remote D1 cleans itself up: the Durable Object uses `setAlarm` daily to delete events older than `RETENTION_DAYS` (90 by default), so SQL storage does not grow without bound — measured at 300 events/day it occupies about 3% of the free allowance.

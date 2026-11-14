@@ -7,7 +7,7 @@ GitHub ──webhook──▶ remote-worker ──WebSocket──▶ local-clien
          (公网入口)     (Cloudflare)      (你要连出去的线)     (本机端口)
 ```
 
-[English](README.md) · [快速开始](docs/quickstart.md) · [架构](docs/architecture.md) · [已知边界](docs/known-limitations.md)
+[English](README.md) · [快速开始](docs/quickstart.zh-CN.md) · [架构](docs/architecture.zh-CN.md) · [已知边界](docs/known-limitations.zh-CN.md)
 
 ![状态页](docs/images/overview.png)
 
@@ -52,7 +52,7 @@ cp config.example.toml config.toml             # 填 ws_url 和 token
 python3 relay.py
 ```
 
-然后浏览器打开 `http://<你的内网IP>:18091/`。中间那步「建一个 GitHub App 并把 Webhook 指过来」在 [快速开始](docs/quickstart.md) 里有逐步说明。
+然后浏览器打开 `http://<你的内网IP>:18091/`。中间那步「建一个 GitHub App 并把 Webhook 指过来」在 [快速开始](docs/quickstart.zh-CN.md) 里有逐步说明。
 
 装了 `gh` 且已 `gh auth login` 的话，动作页还能反过来调 GitHub REST API 补齐 job 与步骤、拉任意仓库的历史运行——令牌由 gh 自己保管，接收端不读不写。
 
@@ -83,7 +83,7 @@ MCP 两种传输都支持，7 个工具全只读：
 
 不想用 GitHub 托管的机器，可以在局域网里的任意机器上装 self-hosted runner，`runs-on: [self-hosted, linux, x64]` 直接落到它身上。面板的「机器」页能填地址、端口、用户名、密码，一键 SSH 过去把 runner 装好、注册、起服务，看日志实时往下走——Linux、macOS、Windows 三个平台都实测跑通过。
 
-细节、各平台的坑、以及「为什么密码只活 30 分钟」在 [自建 runner](docs/self-hosted-runner.md)。
+细节、各平台的坑、以及「为什么密码只活 30 分钟」在 [自建 runner](docs/self-hosted-runner.zh-CN.md)。
 
 ![事件流](docs/images/events.png)
 
@@ -91,13 +91,13 @@ MCP 两种传输都支持，7 个工具全只读：
 
 | 文档 | 内容 |
 |---|---|
-| [快速开始](docs/quickstart.md) | 从零到收到第一条事件，含 GitHub App 配置 |
-| [架构](docs/architecture.md) | 两级中继、协议、去重与续传、免费额度实测 |
-| [自建 runner](docs/self-hosted-runner.md) | 安装、SSH 一键接入、三平台差异 |
-| [已知边界](docs/known-limitations.md) | 哪些做不到、为什么做不到、绕法 |
-| [实测笔记](docs/lab-notes.md) | 一次真实 push 的全链路时间线、按需 runner 实验 |
+| [快速开始](docs/quickstart.zh-CN.md) | 从零到收到第一条事件，含 GitHub App 配置 |
+| [架构](docs/architecture.zh-CN.md) | 两级中继、协议、去重与续传、免费额度实测 |
+| [自建 runner](docs/self-hosted-runner.zh-CN.md) | 安装、SSH 一键接入、三平台差异 |
+| [已知边界](docs/known-limitations.zh-CN.md) | 哪些做不到、为什么做不到、绕法 |
+| [实测笔记](docs/lab-notes.zh-CN.md) | 一次真实 push 的全链路时间线、按需 runner 实验 |
 | [接口说明](local-client/AGENT.md) | HTTP / SSE / MCP 全部端点（服务自己也吐这份） |
-| [发布清单](docs/publishing.md) | 维护者把仓库公开前要过的检查 |
+| [发布清单](docs/publishing.zh-CN.md) | 维护者把仓库公开前要过的检查 |
 
 ## 开发
 
