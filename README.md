@@ -57,7 +57,7 @@ cp config.example.toml config.toml             # fill ws_url + token
 python3 relay.py
 ```
 
-Then open `http://<your-lan-ip>:18091/`. Creating the GitHub App and pointing its webhook at the worker is step 2 of the [quickstart](docs/quickstart.md). **Subscribe to `Workflow run`**, otherwise the Actions view stays empty.
+Then open `http://<your-lan-ip>:18091/`. 18091 is the default port — change `http_port` in `config.toml` and restart if you need another one; `http_host = "0.0.0.0"` is what makes it reachable from other devices on the LAN. Creating the GitHub App and pointing its webhook at the worker is step 2 of the [quickstart](docs/quickstart.md). **Subscribe to `Workflow run`**, otherwise the Actions view stays empty.
 
 If `gh` is installed and logged in, the panel can also call the GitHub REST API to fill in jobs/steps and to fetch run history without relying on webhooks. The token stays inside `gh`'s own keyring; the relay never reads or stores it.
 

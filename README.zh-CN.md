@@ -55,7 +55,7 @@ cp config.example.toml config.toml             # 填 ws_url 和 token
 python3 relay.py
 ```
 
-然后浏览器打开 `http://<你的内网IP>:18091/`。中间那步「建一个 GitHub App 并把 Webhook 指过来」在 [快速开始](docs/quickstart.zh-CN.md) 里有逐步说明。
+然后浏览器打开 `http://<你的内网IP>:18091/`——18091 是默认端口，想换就改 `config.toml` 里的 `http_port` 再重启；同网段其他设备能打开靠的是 `http_host = "0.0.0.0"`。中间那步「建一个 GitHub App 并把 Webhook 指过来」在 [快速开始](docs/quickstart.zh-CN.md) 里有逐步说明。
 
 装了 `gh` 且已 `gh auth login` 的话，动作页还能反过来调 GitHub REST API 补齐 job 与步骤、拉任意仓库的历史运行——令牌由 gh 自己保管，接收端不读不写。
 
