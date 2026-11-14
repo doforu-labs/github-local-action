@@ -67,8 +67,8 @@ def payload(repo, name, run_id, number, branch, status, conclusion, trigger,
     }
 
 
-A = "example-org/demo-test"
-B = "OWNER/docs"
+A = "example-org/relay-test"
+B = "example-org/docs"
 
 # (repo, 名字, run_id, 号, 分支, 状态, 结论, 触发, sha, 标题, 发起人, 开始, 更新, 尝试, PR, 文件)
 RUNS = [

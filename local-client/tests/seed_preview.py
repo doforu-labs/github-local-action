@@ -19,7 +19,7 @@ conn.executescript(
     """
 )
 
-REPOS = ["example-org/core", "example-org/desktop", "acme/infra", "acme/web", "lab/notes"]
+REPOS = ["acme/core", "acme/desktop", "acme/infra", "example/web", "lab/notes"]
 TYPES = ["push", "pull_request", "issues", "issue_comment", "release", "workflow_run", "create"]
 ACTIONS = {"pull_request": ["opened", "closed", "synchronize"], "issues": ["opened", "closed"]}
 
