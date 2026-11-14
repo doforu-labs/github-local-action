@@ -16,7 +16,7 @@
 - 英文版 README
 
 ### 更改
-- 自动启动服务的 launchd label 去掉了组织/品牌前缀，改成 `local.github-local-action`。升级时 `service/install` 与 `service/uninstall` 会自动停掉并删掉旧 label 的 plist，`service/status` 会报出 `legacy_files`（不清理就会两个进程抢同一个端口）。systemd unit 名 `github-local-action.service` 没变
+- 自动启动服务的 launchd label 去掉了组织/品牌前缀，改成 `local.github-local-action`（systemd unit 名 `github-local-action.service` 没变）。**装过改名前的版本**：先用旧版面板里的「卸载服务」卸一次再装新版——新旧两个进程会抢同一个端口
 - `platform-*.yml` 的 self-hosted 闸从写死仓库名改成仓库变量 `RUN_SELF_HOSTED`，谁 fork 都不会往自己的机器上派 job
 - `LICENSE` 版权方、`pyproject.toml` 的 authors / Homepage 不再写具体组织，改成 `The github-local-action contributors` 与 `OWNER` 占位
 - 测试 fixture 里的 Cloudflare 账号子域（`*.demo-sub.workers.dev`）换成 `demo-sub`

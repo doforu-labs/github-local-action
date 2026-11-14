@@ -29,9 +29,6 @@ SAFE_IPS = {
 SAFE_EMAIL_DOMAINS = {"example.com", "example.org", "users.noreply.github.com", "example.net"}
 # 明显是假值的 32 位十六进制（账号 id 的占位符）
 FAKE_HEX = {"0123456789abcdef0123456789abcdef"}
-# 品牌/组织名规则的例外：这行必须保留旧品牌名，它是升级时用来清掉旧版安装的
-# launchd label，删了就清不掉旧服务（两个进程会抢端口）。
-SAFE_BRAND_LINE_MARKERS = {"LEGACY_SERVICE_LABELS"}
 # 允许出现的 workers.dev 账号子域（Cloudflare 账号子域是账号级标识，能反查到人）
 SAFE_WORKER_SUBDOMAINS = {"x", "demo-sub", "your-subdomain"}
 # /Users/<name> 里允许的用户名（示例名，不代表真人）
@@ -58,10 +55,35 @@ HARD_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("AWS key", re.compile(r"AKIA[0-9A-Z]{16}"), "把密钥删掉"),
     ("私钥", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "私钥不能进仓库"),
     ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "把令牌删掉"),
-    ("真机主机名", re.compile(r"lab-linux|lab-mac|lab-win|lab-mac"), "换成 lab-linux-1 / lab-mac-1 这类示例名"),
-    ("私有仓库名", re.compile(r"demo-test|demo-[ab]"), "换成 example-org/xxx"),
-    ("品牌/组织名", re.compile(r"the desktop app", re.I), "项目不绑组织：换成 OWNER 或 contributors"),
 ]
+
+# 那些「自己环境里的专有名词」（真机主机名、私有仓库名、品牌词）不能写在仓库里：
+# 词本身就是不该公开的东西，写进规则等于把它们又公开一遍。改成读本地的
+# `scripts/pii-words.local`（已 gitignore），一行一个词，大小写不敏感。
+# 没有这个文件时只跑上面的通用规则——公开仓库里别人 clone 下来也能跑。
+LOCAL_WORDS = Path(__file__).with_name("pii-words.local")
+
+
+def local_rules() -> list[tuple[str, re.Pattern[str], str]]:
+    try:
+        raw = LOCAL_WORDS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    words = [w.strip() for w in raw if w.strip() and not w.lstrip().startswith("#")]
+    if not words:
+        return []
+    return [("本机专有名词", re.compile("|".join(re.escape(w) for w in words), re.I),
+             "这些是你自己环境里的名字（真机名/私有仓库/品牌），不该进仓库")]
+
+
+_RULES: list[tuple[str, re.Pattern[str], str]] | None = None
+
+
+def rules() -> list[tuple[str, re.Pattern[str], str]]:
+    global _RULES
+    if _RULES is None:
+        _RULES = HARD_RULES + local_rules()
+    return _RULES
 
 
 def tracked_files() -> list[Path]:
@@ -74,20 +96,17 @@ def tracked_files() -> list[Path]:
 def scan(path: Path) -> list[tuple[int, str, str, str]]:
     """返回 [(行号, 规则名, 命中文本, 建议)]。"""
     if path.resolve() == Path(__file__).resolve():
-        return []          # 这个文件本身写着所有规则词，扫自己只会报自己
+        return []          # 这个文件里的正则是在「讲」敏感词，扫自己只会报自己
     try:
         text = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
         return []          # 二进制文件不管
     hits: list[tuple[int, str, str, str]] = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        for name, pattern, hint in HARD_RULES:
+        for name, pattern, hint in rules():
             m = pattern.search(line)
-            if not m:
-                continue
-            if name == "品牌/组织名" and any(k in line for k in SAFE_BRAND_LINE_MARKERS):
-                continue
-            hits.append((lineno, name, m.group(0), hint))
+            if m:
+                hits.append((lineno, name, m.group(0), hint))
         for m in PRIVATE_IP.finditer(line):
             ip = m.group(0)
             # 10.0.0.0/8 这种网段写法是配置默认值，不是某台机器
@@ -135,7 +154,10 @@ def main() -> int:
         print(f"\nFAIL：{total} 处不该公开的内容，逐条改掉再提交。")
         return 1
     if verbose:
-        print("OK：仓库里没有邮箱 / 内网 IP / 令牌 / 真机主机名。")
+        print("OK：仓库里没有邮箱 / 内网 IP / 令牌 / 真实资源 id。")
+        if not LOCAL_WORDS.exists():
+            print(f"提示：没有 {LOCAL_WORDS.name}，只跑了通用规则——"
+                  "你自己机器名/私有仓库/品牌词这类专有名词不会被扫出来")
     return 0
 
 

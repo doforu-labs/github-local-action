@@ -1,8 +1,9 @@
-"""自动启动服务的 label：不许绑组织名，换 label 后旧安装必须能被清掉。
+"""自动启动服务的 label：不许绑组织名，plist 要落到当前用户目录。
 
-改名这件事的危险点在迁移：机器上装着旧 label 的服务，label 一换，旧的那个不会自己
-消失，还会占着端口跟新服务抢。所以这里锁三条：新 label 干净、旧 label 记在清单里、
-装/卸时真的会把旧文件清掉。
+这个文件曾经还负责「升级时清掉旧 label 的 plist」。后来把旧 label 常量整个删掉了：
+仓库从未公开过，不存在别人的旧安装，为它长期在源码里留一个品牌字符串不划算。
+装过改名前版本的人，用旧版的 `service uninstall` 卸一次即可（这里也把「卸载不留
+残余、不动别人的文件」锁一下）。
 """
 import os
 import sys
@@ -35,40 +36,33 @@ class ServiceLabel(unittest.IsolatedAsyncioTestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def _write_legacy(self) -> Path:
-        p = self.agents / f"{relay.LEGACY_SERVICE_LABELS[0]}.plist"
-        p.write_text("<plist><dict/></plist>", encoding="utf-8")
-        return p
-
     def test_label_is_brand_free(self):
-        # 只认这一个值：谁再往里塞组织/品牌前缀都会红（原来的写法是写死旧品牌名，
-        # 但那样等于把品牌名又放回仓库，脱敏扫描也会报，所以用等值断言）。
+        # 只认这一个值：谁再往里塞组织/品牌前缀都会红
         self.assertEqual(relay.SERVICE_LABEL, "local.github-local-action")
         self.assertTrue(relay.SERVICE_LABEL.startswith("local."),
                         "服务 label 用 local. 前缀，不挂任何组织域名")
         # systemd unit 名一直没变过，换 label 不该动它
         self.assertEqual(relay.SERVICE_UNIT, "github-local-action.service")
 
-    def test_legacy_label_is_remembered(self):
-        # 删掉这条就等于升级后清不掉旧服务：两个进程抢同一个端口
-        self.assertIn("local.github-local-action", relay.LEGACY_SERVICE_LABELS)
-
-    async def test_status_reports_legacy_install(self):
-        info = await relay._service_status()
-        self.assertNotIn("legacy_files", info, "没有旧文件时不该报")
-        old = self._write_legacy()
-        info = await relay._service_status()
-        self.assertEqual(info["legacy_files"], [str(old)])
-        self.assertIn("旧服务", info["hint"])
-
-    async def test_install_and_uninstall_drop_legacy(self):
-        old = self._write_legacy()
-        await relay._service_drop_legacy()
-        self.assertFalse(old.exists(), "装/卸新版时必须把旧 plist 删掉")
-
-    async def test_new_plist_path_uses_new_label(self):
+    def test_plist_path_follows_label(self):
         self.assertEqual(relay._service_paths()["file"],
                          self.agents / "local.github-local-action.plist")
+
+    async def test_status_reports_clean_state(self):
+        info = await relay._service_status()
+        self.assertEqual(info["label"], relay.SERVICE_LABEL)
+        self.assertFalse(info["installed"], "临时 HOME 里不该有服务文件")
+        self.assertNotIn("legacy_files", info, "旧 label 兼容已经整段删掉了")
+
+    async def test_uninstall_leaves_other_agents_alone(self):
+        mine = self.agents / "local.github-local-action.plist"
+        other = self.agents / "com.example.other.plist"
+        mine.write_text("<plist><dict/></plist>", encoding="utf-8")
+        other.write_text("<plist><dict/></plist>", encoding="utf-8")
+        r = await relay._service_uninstall()
+        self.assertTrue(r["ok"], r)
+        self.assertFalse(mine.exists(), "自己的 plist 要删掉")
+        self.assertTrue(other.exists(), "别人的 plist 一个都不能碰")
 
 
 if __name__ == "__main__":

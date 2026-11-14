@@ -8,6 +8,14 @@ dist/
 __pycache__/
 *.pyc
 
+# 脱敏扫描器的本地词表：真机名/私有仓库名/品牌词这些「自己的名词」放这里，
+# 不进仓库（scripts/check_pii.py 会自动读它）
+scripts/pii-words.local
+
+# Python 缓存（根目录跑脚本就会生成，不该进仓库）
+__pycache__/
+*.pyc
+
 # 本地数据库
 *.db
 *.db-wal
