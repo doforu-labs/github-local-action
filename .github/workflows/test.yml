@@ -95,3 +95,30 @@ jobs:
         run: npm ci
       - working-directory: remote-worker
         run: npm run typecheck
+
+  docker:
+    name: 镜像构建 + 冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建镜像
+        run: docker build -t github-local-action:ci .
+      # 只构建不跑容器：真正的运行时验证（本机闸 403/200、配置写回）在
+      # docs/docker.md 里写了怎么手工跑，CI 这里只防镜像悄无声息地烂掉
+      - name: 镜像里该有的东西都在，不该有的都不在
+        run: |
+          docker run --rm --entrypoint sh github-local-action:ci -c '
+            set -e
+            gh --version | head -1
+            command -v node && { echo "镜像里不该有 node"; exit 1; } || true
+            command -v wrangler && { echo "镜像里不该有 wrangler"; exit 1; } || true
+            # 直接问程序自己：状态页找得到且读得出内容（136KB 左右）。
+            # 别去猜路径——它在 site-packages 和 <prefix>/share 下都找得到
+            python -c "import relay,sys; n=len(relay.read_index()); print(\"状态页 \", n, \"字节\"); sys.exit(0 if n > 1000 else 1)"
+            python -c "import aiohttp, paramiko; print(\"aiohttp + paramiko OK\")"
+            # 本地产物不该被打进镜像（.dockerignore 的 ** 前缀踩过坑）
+            for f in /app/local-client/config.toml /app/local-client/events.db; do
+              test -e "$f" && { echo "本地产物混进镜像了: $f"; exit 1; } || true
+            done
+            id -u | grep -qx 10001 && echo "非 root 运行：OK"
+          '

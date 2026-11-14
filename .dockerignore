@@ -1,21 +1,26 @@
-# 镜像里只该有源码：本地产物、数据库、配置、虚拟环境一律不进构建上下文
+# 镜像里只该有源码。注意：Docker 的匹配按「相对构建上下文的完整路径」来，
+# 裸写 config.toml 只匹配根目录那一个，local-client/ 下面那份照样会进镜像——
+# 所以下面全部带 **/。这条踩过：镜像里曾混进 local-client/config.toml 和 events.db。
 .git
 .github
 docs
-local-client/.venv
-local-client/build
-local-client/dist
-local-client/*.egg-info
-local-client/__pycache__
-local-client/tests/__pycache__
+
+**/.venv
+**/build
+**/dist
+**/*.egg-info
 **/__pycache__
 **/*.pyc
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-config.toml
-*.bundle
-node_modules
-remote-worker/node_modules
+
+# 本地产物与配置：config.toml 里有令牌，events.db 里有你的事件
+**/config.toml
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+**/*.machines.key
+**/*.bak
+**/*.bundle
+
+**/node_modules
 .DS_Store
