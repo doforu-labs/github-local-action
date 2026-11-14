@@ -9,9 +9,13 @@
 2. 那个线程一死，`proc.stdout` 就变成 None，接着 `proc.stdout + proc.stderr`
    抛 TypeError，把真实结果整个盖掉，报错信息指向一行毫无关系的代码。
 
-macOS / Linux 默认 UTF-8，所以本地永远复现不出来。这里把两件事都钉住。
+macOS / Linux 默认 UTF-8，所以本地永远复现不出来。这里把三件事都钉住：
+除了上面两个（解码 + None 拼接），还有第三个——汇总器自己的 `print()` 在 cp1252 的
+管道上打印中文测试名会 UnicodeEncodeError，修完前两个它才露出来。
 """
 import importlib.util
+import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -61,6 +65,39 @@ class RunTestsDriver(unittest.TestCase):
             ok, last = self.rt._run(["node", "x.js"])
         self.assertTrue(ok)
         self.assertEqual(last, "（无输出）")
+
+    def test_stdout_is_forced_to_utf8(self):
+        # 真复现 Windows runner 的形态：让子进程的输出流是 cp1252，然后再打印中文。
+        # 不调 _force_utf8_output() 就会 UnicodeEncodeError，调了才过得去。
+        path = ROOT / "scripts" / "run_tests.py"
+        code = (
+            "import importlib.util\n"
+            f"spec = importlib.util.spec_from_file_location('rt', {str(path)!r})\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "mod._force_utf8_output()\n"
+            "print('  PASS  unit_job_card.js  stale 标只出现在该出现的 job 上')\n"
+        )
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, env=env)
+        err = (r.stderr or b"").decode("utf-8", "replace")
+        self.assertEqual(r.returncode, 0, f"cp1252 下打印中文必须能过，实际失败：\n{err}")
+        self.assertIn("stale", (r.stdout or b"").decode("utf-8", "replace"))
+
+    def test_without_force_it_would_crash(self):
+        # 反向对照：去掉那一行就真会炸，确保上面那个测试不是空跑
+        path = ROOT / "scripts" / "run_tests.py"
+        code = (
+            "import importlib.util\n"
+            f"spec = importlib.util.spec_from_file_location('rt', {str(path)!r})\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "print('中文测试名')\n"
+        )
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, env=env)
+        self.assertNotEqual(r.returncode, 0, "不强制 UTF-8 时 cp1252 应该编码失败")
+        self.assertIn("UnicodeEncodeError", (r.stderr or b"").decode("utf-8", "replace"))
 
     def test_child_gets_utf8_io_env(self):
         seen = {}

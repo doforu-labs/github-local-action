@@ -23,6 +23,18 @@ CLIENT = ROOT / "local-client"
 TESTS = CLIENT / "tests"
 
 
+def _force_utf8_output() -> None:
+    """把汇总器自己的输出流改成 UTF-8。
+
+    Windows runner 上的 sys.stdout 是 cp1252（管道 + 本地化 locale），测试名里有中文，
+    `print()` 直接抛 UnicodeEncodeError —— 这是修完解码之后暴露出来的另一半，同一个病。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def _run(cmd: list[str]) -> tuple[bool, str]:
     # encoding 必须写死 utf-8：测试输出都是中文，Windows 默认拿 cp1252 解码会在读线程里
     # 抛 UnicodeDecodeError，那个线程一死 stdout 就变成 None（见下面那次真实翻车）。
@@ -36,6 +48,7 @@ def _run(cmd: list[str]) -> tuple[bool, str]:
 
 
 def main() -> int:
+    _force_utf8_output()
     only = ""
     for i, arg in enumerate(sys.argv):
         if arg == "--only" and i + 1 < len(sys.argv):
@@ -76,4 +89,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    _force_utf8_output()
     raise SystemExit(main())
