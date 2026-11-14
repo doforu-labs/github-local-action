@@ -290,6 +290,34 @@ reconnect_max = 2
             bye = await s.delete(f"{MCP}", headers={"Mcp-Session-Id": sid})
             ck.check(bye.status == 200, "MCP HTTP 能正常收尾", str(bye.status))
 
+            # ── 6a3. /mcp 的跨源闸 ──
+            # 浏览器发的请求本身就来自 127.0.0.1，所以来源 IP 那道闸对网页是漏的：
+            # 只看 IP 的话，随便一个站点都能把运行记录读走。
+            evil = await s.post(f"{MCP}", json={"jsonrpc": "2.0", "id": 6,
+                                                            "method": "tools/list"},
+                                headers={"Origin": "https://evil.example"})
+            ck.check(evil.status == 403, "外来页面的跨源请求被 403", str(evil.status))
+            ck.check("error" in (await evil.json()), "拒绝时给出 error 文案", "")
+            evil_pre = await s.options(f"{MCP}", headers={
+                "Origin": "https://evil.example",
+                "Access-Control-Request-Method": "POST"})
+            ck.check(evil_pre.status == 403, "外来页面的预检也被 403", str(evil_pre.status))
+            evil_get = await s.get(f"{MCP}", headers={"Origin": "https://evil.example"})
+            ck.check(evil_get.status == 403, "外来页面的 GET 也被 403", str(evil_get.status))
+            null_origin = await s.post(f"{MCP}", json={"jsonrpc": "2.0", "id": 7,
+                                                                 "method": "ping"},
+                                       headers={"Origin": "null"})
+            ck.check(null_origin.status == 403, "Origin: null（沙箱 iframe）被 403",
+                     str(null_origin.status))
+            same = await s.post(f"{MCP}", json={"jsonrpc": "2.0", "id": 8,
+                                                         "method": "ping"},
+                                headers={"Origin": f"http://127.0.0.1:{RELAY_PORT}"})
+            ck.check(same.status == 200, "本机页面的跨源请求放行", str(same.status))
+            ck.check(same.headers.get("Access-Control-Allow-Origin") ==
+                     f"http://127.0.0.1:{RELAY_PORT}",
+                     "放行时把请求自己的 Origin 回声回去（不再是 *）",
+                     str(same.headers.get("Access-Control-Allow-Origin")))
+
             # ── 6b. 账号与仓库列表 ──
             acc = st.get("account") or {}
             ck.check(acc.get("login") == "demo", "从 payload 识别出账号", str(acc))

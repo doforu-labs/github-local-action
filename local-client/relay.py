@@ -1060,6 +1060,38 @@ def _local_only(
     return web.json_response({"error": reason}, status=403)
 
 
+# `/mcp` 已经按来源 IP 只认本机——但浏览器发的请求本身就来自 127.0.0.1，那道闸
+# 对网页是漏的：随便一个站点都能 POST 过来，把运行记录、事件、机器清单读走。
+# 命令行和 IDE 这类客户端根本不会发 Origin，所以没这个头就放行；带了 Origin 的
+# 只认本机页面。
+_MCP_ORIGIN_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def mcp_origin_ok(origin: str) -> bool:
+    """跨源准入：没带 Origin 放行，带了就必须是本机页面。"""
+    origin = (origin or "").strip()
+    if not origin:
+        return True
+    if origin == "null":          # 沙箱 iframe 与 file:// 发出来的就是这个
+        return False
+    try:
+        host = urlparse(origin).hostname or ""
+    except ValueError:
+        return False
+    return host.lower() in _MCP_ORIGIN_HOSTS
+
+
+def _mcp_origin_gate(request: web.Request) -> Optional[web.Response]:
+    if mcp_origin_ok(request.headers.get("Origin", "")):
+        return None
+    return web.json_response(
+        {"error": "跨源请求被拒：/mcp 只接受本机页面和本机客户端"
+                  "（命令行/IDE 不发 Origin，不受影响）"},
+        status=403,
+        headers={"Vary": "Origin"},
+    )
+
+
 # api.github.com 在有些网络里会时不时 TLS 直接断（Go 报 EOF / connection reset）。
 # 这类失败重试往往就过了，所以只读调用默认重试 3 次。
 _GH_TRANSIENT = (
@@ -3967,7 +3999,7 @@ def mcp_handle(msg: dict[str, Any], base: str) -> dict[str, Any] | None:
 
 async def handle_mcp_post(request: web.Request) -> web.Response:
     """POST /mcp：收一条（或一批）JSON-RPC。"""
-    blocked = _local_only(request)
+    blocked = _local_only(request) or _mcp_origin_gate(request)
     if blocked:
         return blocked
     if _mcp is None:
@@ -4011,7 +4043,7 @@ async def handle_mcp_post(request: web.Request) -> web.Response:
     if not any(m.get("id") is not None for m in msgs):
         await asyncio.get_running_loop().run_in_executor(
             None, lambda: [mcp_handle(m, base) for m in msgs])
-        return web.Response(status=202, headers=mcp_cors())
+        return web.Response(status=202, headers=mcp_cors(request))
 
     loop = asyncio.get_running_loop()
     if single:
@@ -4022,9 +4054,9 @@ async def handle_mcp_post(request: web.Request) -> web.Response:
         out = replies or None
 
     if out is None:
-        return web.Response(status=202, headers=mcp_cors())
+        return web.Response(status=202, headers=mcp_cors(request))
 
-    headers = mcp_cors()
+    headers = mcp_cors(request)
     if single and msgs[0].get("method") == "initialize":
         new_sid = uuid.uuid4().hex
         mcp_touch_session(new_sid)
@@ -4032,22 +4064,29 @@ async def handle_mcp_post(request: web.Request) -> web.Response:
     return web.json_response(out, headers=headers)
 
 
-def mcp_cors() -> dict[str, str]:
+def mcp_cors(request: web.Request) -> dict[str, str]:
+    """把请求自己的 Origin 回声回去；没带这个头就不用写（非浏览器客户端不看）。"""
+    origin = request.headers.get("Origin", "")
     return {
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": origin or "*",
         "Access-Control-Allow-Headers": "Content-Type, Mcp-Session-Id, MCP-Protocol-Version",
         "Access-Control-Expose-Headers": "Mcp-Session-Id",
+        "Vary": "Origin",
     }
 
 
 async def handle_mcp_other(request: web.Request) -> web.Response:
     """GET 会想开 SSE 长流；本服务没有「主动推给客户端」的需求，回 405 让
     客户端回到 POST。DELETE 是客户端收尾，直接受。"""
+    blocked = _mcp_origin_gate(request)
+    if blocked:
+        return blocked
     if request.method == "DELETE":
         sid = request.headers.get("Mcp-Session-Id", "")
         MCP_SESSIONS.pop(sid, None)
-        return web.Response(status=200, headers=mcp_cors())
-    return web.Response(status=405, headers={**mcp_cors(), "Allow": "POST, DELETE"})
+        return web.Response(status=200, headers=mcp_cors(request))
+    return web.Response(
+        status=405, headers={**mcp_cors(request), "Allow": "POST, DELETE"})
 
 
 async def handle_index(request: web.Request) -> web.Response:

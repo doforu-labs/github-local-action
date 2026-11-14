@@ -37,9 +37,10 @@ def ck(ok: bool, label: str, detail: str = "") -> None:
 class FakeReq:
     """只带 handler 在过闸前后会碰到的字段。"""
 
-    def __init__(self, remote: str, body: dict | None = None):
+    def __init__(self, remote: str, body: dict | None = None, headers: dict | None = None):
         self.remote = remote
         self._body = body or {}
+        self.headers = headers or {}
         self.app: dict = {}
         self.query: dict = {}
         self.match_info: dict = {}
@@ -66,6 +67,33 @@ def main() -> int:
     ck(blocked is not None and blocked.status == 403, "局域网被 403 拦下",
        str(getattr(blocked, "status", None)))
     ck(blocked is not None and "error" in json.loads(blocked.body.decode()), "拒绝时给出 error 文案")
+
+    print("跨源闸：/mcp 只认本机页面")
+    # 浏览器发的请求本身就来自 127.0.0.1，来源 IP 拦不住它，所以得看 Origin。
+    for origin in ("", "http://127.0.0.1:18091", "http://localhost:5173",
+                   "https://127.0.0.1", "http://[::1]:8080"):
+        ck(relay.mcp_origin_ok(origin), f"放行：{origin or '(没带 Origin，命令行/IDE)'}")
+    for origin in ("https://evil.example", "http://10.0.0.21:8080", "null",
+                   "https://127.0.0.1.evil.example", "http://localhost.attacker.test",
+                   "ftp://x", "不是个 URL"):
+        ck(not relay.mcp_origin_ok(origin), f"拦下：{origin}")
+
+    gate = relay._mcp_origin_gate(
+        FakeReq("127.0.0.1", headers={"Origin": "https://evil.example"}))
+    ck(gate is not None and gate.status == 403, "外来页面过闸被 403",
+       str(getattr(gate, "status", None)))
+    ck(relay._mcp_origin_gate(FakeReq("127.0.0.1")) is None,
+       "没带 Origin 的本机客户端照旧放行")
+    ck(relay._mcp_origin_gate(
+        FakeReq("127.0.0.1", headers={"Origin": "http://127.0.0.1:5173"})) is None,
+       "本机页面放行")
+
+    cors = relay.mcp_cors(FakeReq("127.0.0.1"))
+    ck(cors["Access-Control-Allow-Origin"] == "*", "没带 Origin 时不回声通配")
+    cors2 = relay.mcp_cors(FakeReq("127.0.0.1", headers={"Origin": "http://127.0.0.1:5173"}))
+    ck(cors2["Access-Control-Allow-Origin"] == "http://127.0.0.1:5173",
+       "带 Origin 时原样回声，不再是 *", str(cors2["Access-Control-Allow-Origin"]))
+    ck(cors2.get("Vary") == "Origin", "回 Vary: Origin，别让缓存混用")
 
     print("改配置：只允许本机")
     import asyncio

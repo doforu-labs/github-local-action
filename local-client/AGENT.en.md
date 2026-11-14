@@ -182,6 +182,12 @@ machine's `gh` credentials), so exposing it to the LAN would walk around that wa
 To use it from another machine, open a tunnel:
 `ssh -L 18091:localhost:18091 user@host`.
 
+**Cross-origin is rejected too**: a browser request already comes *from* 127.0.0.1, so the
+IP check alone does not stop it — the `Origin` header is checked as well. No `Origin`
+(command line, IDE, scripts) is allowed; with one, only `localhost` / `127.0.0.1` /
+`[::1]` pages get through, everything else is `403`. Browser-based remote MCP clients
+therefore do not work, on purpose.
+
 ### stdio
 
 ```json
