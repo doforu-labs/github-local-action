@@ -84,6 +84,63 @@ def main() -> int:
     ck(getattr(resp2, "status", None) == 400, "本机请求越过闸（走到了解析体那步）",
        str(getattr(resp2, "status", None)))
 
+    print("本机闸：容器里跑时，宿主机的地址算不算本机")
+    # 真实 /proc/net/route 的一段（默认路由的网关是 172.17.0.1）
+    route = (
+        "Iface\tDestination\tGateway\t\tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+        "eth0\t00000000\t010011AC\t\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+        "eth0\t000011AC\t00000000\t\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+    )
+    ck(relay._default_gateway(route) == "172.17.0.1", "从 /proc/net/route 算出网关",
+       repr(relay._default_gateway(route)))
+    ck(relay._default_gateway("Iface\tDestination\tGateway\n") == "", "没有默认路由就返回空")
+    ck(relay._default_gateway("乱七八糟\n不是路由表") == "", "解析不了不该抛异常")
+
+    def req_with_peers(remote: str, peers: tuple[str, ...]) -> FakeReq:
+        r = FakeReq(remote)
+        r.app = {"cfg": relay.Config("wss://example.test/ws", "t", trusted_peers=peers)}
+        return r
+
+    saved_gateway = relay._gateway_cache["ip"]
+    relay._gateway_cache["ip"] = "172.17.0.1"      # 假装在容器里
+    try:
+        ck(not relay.is_local(req_with_peers("172.17.0.1", ())),
+           "默认不列：网桥网关仍算外人（行为没变）")
+        ck(relay.is_local(req_with_peers("172.17.0.1", ("172.17.0.1",))),
+           "显式列 IP：放行")
+        ck(relay.is_local(req_with_peers("172.17.0.1", ("gateway",))),
+           "写 gateway 令牌：自动认网关")
+        ck(relay.is_local(req_with_peers("10.0.0.21", ("10.0.0.21", "gateway"))),
+           "列了别的宿主机地址也放行")
+        ck(not relay.is_local(req_with_peers("10.0.0.22", ("gateway",))),
+           "同网段的其他设备仍被拦")
+    finally:
+        relay._gateway_cache["ip"] = saved_gateway
+
+    print("容器布置：环境变量也能列可信地址")
+    import os
+    from pathlib import Path as _P
+    import tempfile
+
+    tmp = tempfile.TemporaryDirectory()
+    cfg_path = _P(tmp.name) / "config.toml"
+    cfg_path.write_text('[relay]\nws_url = "wss://x.test/ws"\ntoken = "t"\n'
+                       'trusted_peers = ["10.0.0.21"]\n', encoding="utf-8")
+    old_env = os.environ.get("GLA_TRUSTED_PEERS")
+    os.environ["GLA_TRUSTED_PEERS"] = "gateway, 10.0.0.21"
+    try:
+        loaded = relay.Config.load(cfg_path)
+        ck(loaded.trusted_peers == ("10.0.0.21", "gateway"),
+           "文件 + 环境变量合并去重", str(loaded.trusted_peers))
+        ck(relay._toml_value(list(loaded.trusted_peers)) == '["10.0.0.21", "gateway"]',
+           "写回 TOML 时列值格式对", relay._toml_value(list(loaded.trusted_peers)))
+    finally:
+        if old_env is None:
+            os.environ.pop("GLA_TRUSTED_PEERS", None)
+        else:
+            os.environ["GLA_TRUSTED_PEERS"] = old_env
+        tmp.cleanup()
+
     print()
     if FAILS:
         print(f"结果：{len(PASSES)} 通过 / {len(FAILS)} 失败")

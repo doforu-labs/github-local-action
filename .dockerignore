@@ -1,0 +1,21 @@
+# 镜像里只该有源码：本地产物、数据库、配置、虚拟环境一律不进构建上下文
+.git
+.github
+docs
+local-client/.venv
+local-client/build
+local-client/dist
+local-client/*.egg-info
+local-client/__pycache__
+local-client/tests/__pycache__
+**/__pycache__
+**/*.pyc
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+config.toml
+*.bundle
+node_modules
+remote-worker/node_modules
+.DS_Store

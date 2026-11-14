@@ -1,0 +1,43 @@
+# 只跑常驻的那半边。Worker 用宿主机上的 wrangler 部署，见 docs/docker.md。
+#
+#   export GH_TOKEN=$(gh auth token)      # 复用本机 gh 登录态
+#   mkdir -p ./data && docker compose up -d
+#
+# 配置第一次直接写在 ./data/config.toml（照 local-client/config.example.toml 抄）。
+services:
+  relay:
+    build:
+      context: .
+    image: github-local-action:0.1.0
+    container_name: github-local-action
+    restart: unless-stopped
+    ports:
+      - "18091:18091"
+    environment:
+      # 容器里宿主机浏览器从网桥网关过来，不是 127.0.0.1。写 gateway 让程序
+      # 自己从 /proc/net/route 认出那个地址，不用手填 172.17.0.1。
+      # 不写的话：网页能看，但「改配置 / 机器管理 / GitHub」这些本机接口全 403。
+      GLA_TRUSTED_PEERS: gateway
+      # 复用本机 gh 登录态：宿主机上 `gh auth token` 取出来的就是它。
+      # 留空也没关系，只是 /github/* 这些接口会提示没登录。
+      GH_TOKEN: ${GH_TOKEN:-}
+    volumes:
+      # 配置与 events.db 都在这里。Linux 上要让容器内的 uid 10001 能写：
+      #   sudo chown -R 10001:10001 ./data
+      # （macOS / Windows 的 Docker Desktop 会自动处理，不用管）
+      - ./data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18091/health', timeout=3).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

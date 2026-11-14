@@ -10,7 +10,7 @@ GitHub ──webhook──▶ remote-worker ──WebSocket──▶ local-clien
         (public entry)   (Cloudflare)        (outbound from your box)   (localhost port)
 ```
 
-[简体中文](README.zh-CN.md) · [Quickstart](docs/quickstart.md) · [Architecture](docs/architecture.md) · [Known limitations](docs/known-limitations.md)
+[简体中文](README.zh-CN.md) · [Quickstart](docs/quickstart.md) · [Architecture](docs/architecture.md) · [Docker](docs/docker.md) · [Known limitations](docs/known-limitations.md)
 
 ![Overview](docs/images/overview.png)
 
@@ -109,6 +109,7 @@ Every guide below is available in English and Chinese (add `.zh-CN.md` for the C
 |---|---|
 | [Quickstart](docs/quickstart.md) | From zero to your first event, including GitHub App setup |
 | [Architecture](docs/architecture.md) | Two-stage relay, protocol, dedup and resume, free-tier measurements |
+| [Docker](docs/docker.md) | Containerising the daemon half, reusing your host `gh` login, why the Worker is not in the image |
 | [Self-hosted runners](docs/self-hosted-runner.md) | Install, one-click SSH onboarding, platform differences |
 | [Known limitations](docs/known-limitations.md) | What does not work, why, and workarounds |
 | [Lab notes](docs/lab-notes.md) | Full-chain timeline of a real push, on-demand runner experiments |

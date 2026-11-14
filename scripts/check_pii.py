@@ -24,6 +24,9 @@ SAFE_IPS = {
     "0.0.0.0", "0.0.0.1", "127.0.0.1",
     "10.0.0.5", "10.0.0.9", "10.0.0.21", "10.0.0.22",
     "192.168.0.0", "172.16.0.0",
+    # Docker 默认网桥网关。它在每台跑 Docker 的机器上都一样，是文档常量，
+    # 不指向任何人的具体机器——写 Docker 说明绕不开它
+    "172.17.0.1",
 }
 # 允许出现的邮箱域名：示例域 + GitHub 的 noreply
 SAFE_EMAIL_DOMAINS = {"example.com", "example.org", "users.noreply.github.com", "example.net"}

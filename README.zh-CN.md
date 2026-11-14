@@ -10,7 +10,7 @@ GitHub ──webhook──▶ remote-worker ──WebSocket──▶ local-clien
          (公网入口)     (Cloudflare)      (你要连出去的线)     (本机端口)
 ```
 
-[English](README.md) · [快速开始](docs/quickstart.zh-CN.md) · [架构](docs/architecture.zh-CN.md) · [已知边界](docs/known-limitations.zh-CN.md)
+[English](README.md) · [快速开始](docs/quickstart.zh-CN.md) · [架构](docs/architecture.zh-CN.md) · [Docker](docs/docker.zh-CN.md) · [已知边界](docs/known-limitations.zh-CN.md)
 
 ![状态页](docs/images/overview.png)
 
@@ -96,6 +96,7 @@ MCP 两种传输都支持，7 个工具全只读：
 |---|---|
 | [快速开始](docs/quickstart.zh-CN.md) | 从零到收到第一条事件，含 GitHub App 配置 |
 | [架构](docs/architecture.zh-CN.md) | 两级中继、协议、去重与续传、免费额度实测 |
+| [Docker](docs/docker.zh-CN.md) | 只容器化常驻端、复用本机 gh 登录、为什么 Worker 不进镜像 |
 | [自建 runner](docs/self-hosted-runner.zh-CN.md) | 安装、SSH 一键接入、三平台差异 |
 | [已知边界](docs/known-limitations.zh-CN.md) | 哪些做不到、为什么做不到、绕法 |
 | [实测笔记](docs/lab-notes.zh-CN.md) | 一次真实 push 的全链路时间线、按需 runner 实验 |

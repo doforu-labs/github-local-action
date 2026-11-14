@@ -8,6 +8,8 @@
 首个公开版本。接口还会变，尤其是 MCP 工具签名和面板接口。
 
 ### 加入
+- Docker：`Dockerfile` + `docker-compose.yml`，只容器化常驻端（Worker 仍用宿主机的 wrangler 部署）；`docs/docker.md` / `docs/docker.zh-CN.md`
+- 本机闸新增 `trusted_peers`：容器里宿主机浏览器从网桥网关过来，不认它会 403。写 `"gateway"` 让程序自己从 `/proc/net/route` 算默认网关；环境变量 `GLA_TRUSTED_PEERS` 也能给。名单只从文件读，不开放给 HTTP 接口
 - 首次公开发布
 - README 顶部加 CI 徽章与许可证徽章。徽章地址必须硬写「组织/仓库」，与门禁的「组织名不许进仓库」正面冲突，解法不是放宽门禁而是给它加一条**从 `git remote` 现读**的窄例外（`check_pii.py` 的 `redact_self()`）：只放行完整的 `<组织>/<仓库>`，`com.<组织>.xxx` 与裸组织名照样拦；组织名本身仍不写进源码，fork 后自动指向 fork 自己的地址。两个方向都被 `unit_pii_self_url.py` 钉住
 - MIT 许可证、`SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`
@@ -28,6 +30,7 @@
 - `scripts/check_pii.py` 新增两条规则：`*.workers.dev` / `*.pages.dev` 的账号子域、品牌/组织名（`LEGACY_SERVICE_LABELS` 那一行例外，因为它是用来清旧安装的）
 
 ### 修复
+- `Config` 的 `ws_url` / `token` 补上默认值：没有配置文件时日志写着「使用默认值（不会连上任何地方）」，下一行却 `TypeError` 直接退出。容器第一次 `up`（data 目录是空的）必踩；现在能起来，`ws_loop` 也不再拿空地址去连（改为等待，提示只打一次）
 - `scripts/run_tests.py`：仓库第一次在 GitHub Actions 上真跑时 `windows-latest` 连红两次。一是子进程输出用默认 cp1252 解码（测试输出是中文）→ 读线程抛异常、`proc.stdout` 变 `None`、接着 `proc.stdout + proc.stderr` 抛 `TypeError` 把真实失败盖住；二是修完解码后，汇总器自己 `print()` 中文测试名在 cp1252 管道上 `UnicodeEncodeError`。两处都已修（`encoding="utf-8"` + `errors="replace"`、`or ""` 兜底、`_force_utf8_output()`），新增 `unit_run_tests.py` 钉住（含反向对照：不修就必须炸）
 - `remote-worker/schema.sql` 缺少 `webhook_secrets` 表：按文档新建的部署在「自动配 webhook」时会 500
 - `README` 里 `wrangler d1 create` 的库名与该文件里的 `database_name` 不一致，新人部署必卡

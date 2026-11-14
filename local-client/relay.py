@@ -94,8 +94,10 @@ def read_index() -> str:
 
 @dataclass
 class Config:
-    ws_url: str
-    token: str
+    # 都有默认值：没配置文件时也得能起来（不然「使用默认值」那句日志就是谎话，
+    # 实际会 TypeError 直接退出）。容器里第一次跑 data 目录是空的，全靠这个。
+    ws_url: str = ""
+    token: str = ""
     http_host: str = "0.0.0.0"
     http_port: int = 18091
     db_path: str = "events.db"
@@ -105,6 +107,11 @@ class Config:
     # 装 runner 时要写进机器上 .env 的代理（空 = 直连）。自建机器常常连不上或极慢地
     # 连 github.com，这里填一次，以后每台新机器装 runner 都自动带上，不用逐台手改。
     proxy: str = ""
+    # 容器里跑时，宿主机浏览器过来的连接源地址是 docker 网桥网关（如 172.17.0.1）或
+    # 宿主在网桥里的地址，不是 127.0.0.1，于是「只许本机」的那些接口会把宿主机也当外
+    # 人（403）。这里把可信的地址显式列出来；默认空表 = 只有真回环算本机，行为不变。
+    # 只从配置文件读，不开给 /config 接口——闸的名单不该能在线改。
+    trusted_peers: tuple[str, ...] = ()
     path: Optional[Path] = None   # 配置文件位置，设置页保存时写回这里
 
     @classmethod
@@ -120,6 +127,11 @@ class Config:
         raw.pop("path", None)
         cfg = cls(**raw)
         cfg.path = path
+        # 容器环境变量也能列可信地址：第一次跑时配置文件里还没有这一行，
+        # 而这时又需要先从浏览器把 ws_url / 令牌填进去。两个来源合并。
+        extra = [p.strip() for p in os.environ.get("GLA_TRUSTED_PEERS", "").split(",") if p.strip()]
+        if extra:
+            cfg.trusted_peers = tuple(dict.fromkeys((*cfg.trusted_peers, *extra)))
         return cfg
 
 
@@ -555,12 +567,25 @@ async def app_pinger(ws: aiohttp.ClientWebSocketResponse, interval: int) -> None
 
 async def ws_loop(cfg: Config, store: Store, bus: Bus, state: State, stop: asyncio.Event) -> None:
     delay = 1
+    warned_unconfigured = False
 
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=15)
     connector = aiohttp.TCPConnector(force_close=False, enable_cleanup_closed=True)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         while not stop.is_set():
+            # 还没填地址：拿空串去连只会每轮报一次 InvalidURL。停下来等人在设置页填，
+            # 提示只打一次——daemon 日志里每 15 秒刷一行没必要。
+            if not cfg.ws_url:
+                if not warned_unconfigured:
+                    log.warning("还没有配置中继地址：打开 http://%s:%s 在设置页填 ws_url 与令牌",
+                                cfg.http_host, cfg.http_port)
+                    warned_unconfigured = True
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=15)
+                except asyncio.TimeoutError:
+                    pass
+                continue
             # 地址和令牌每轮重算：它们可以热改（POST /config），算在循环外的话
             # 改了地址只有重启进程才生效，日志却已经显示新地址，排查时极度误导。
             url = f"{cfg.ws_url}{'&' if '?' in cfg.ws_url else '?'}token={cfg.token}"
@@ -962,8 +987,68 @@ def _gh_error_text(raw: str, repo: str) -> str:
 _gh_auth: dict[str, Any] = {"at": 0.0, "value": None}
 
 
+def _default_gateway(text: Optional[str] = None) -> str:
+    """容器里的默认网关 = 宿主机在 docker 网桥上的地址（一般是 172.17.0.1）。
+
+    为什么要它：容器内看到的浏览器来源地址就是这个网关，不是 127.0.0.1。让人去
+    手查这个 IP 太不友好，所以配置里可以直接写 `"gateway"`，启动时自己算。
+
+    读 /proc/net/route（Linux 容器里一定有；macOS 上没这个文件，返回空串）：
+    Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+    Destination 为 00000000 且 Flags 含 0x2 的就是默认路由，Gateway 是小端十六进制。
+    """
+    try:
+        raw_lines = (text if text is not None else
+                     Path("/proc/net/route").read_text(encoding="utf-8")).splitlines()[1:]
+    except OSError:
+        return ""
+    for row in raw_lines:
+        parts = row.split()
+        if len(parts) < 4 or parts[1] != "00000000":
+            continue
+        try:
+            flags = int(parts[3], 16)
+            packed = int(parts[2], 16)
+        except ValueError:
+            continue
+        if flags & 0x2:
+            return ".".join(str((packed >> shift) & 0xFF) for shift in (0, 8, 16, 24))
+    return ""
+
+
+_gateway_cache: dict[str, str] = {"ip": ""}
+
+
+def container_gateway() -> str:
+    """默认网关算一次就够，失败也不重试（容器里路由不会中途变）。"""
+    if not _gateway_cache["ip"]:
+        _gateway_cache["ip"] = _default_gateway()
+    return _gateway_cache["ip"]
+
+
+def trusted_peers(request: web.Request) -> tuple[str, ...]:
+    """配置里列的自家人地址；`"gateway"` 是一个令牌，不是 IP。"""
+    try:
+        return tuple(request.app["cfg"].trusted_peers or ())
+    except (KeyError, AttributeError, TypeError):
+        return ()              # 测试里的假 request 没有 app
+
+
 def is_local(request: web.Request) -> bool:
-    return request.remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+    """这个请求算不算「跑接收端的那台机器上发起的」。
+
+    除了真回环，配置里的 `trusted_peers` 也算——容器里跑时宿主机的浏览器从网桥
+    网关过来，不认这个就整个设置页/机器管理都 403。
+    """
+    remote = request.remote
+    if remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        return True
+    peers = trusted_peers(request)
+    if not peers:
+        return False
+    if remote in peers:
+        return True
+    return "gateway" in peers and remote == container_gateway()
 
 
 def _local_only(
@@ -3600,6 +3685,7 @@ def config_public(cfg: Config) -> dict[str, Any]:
         "app_ping": cfg.app_ping,
         "reconnect_max": cfg.reconnect_max,
         "proxy": cfg.proxy,
+        "trusted_peers": list(cfg.trusted_peers),
         "token_set": bool(cfg.token),
         "token_hint": mask_token(cfg.token),
         "config_path": str(cfg.path) if cfg.path else "",
@@ -3649,6 +3735,8 @@ def _toml_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     text = str(value).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{text}"'
 
@@ -3683,6 +3771,7 @@ def save_config(cfg: Config) -> None:
         "app_ping": cfg.app_ping,
         "reconnect_max": cfg.reconnect_max,
         "proxy": cfg.proxy,
+        "trusted_peers": list(cfg.trusted_peers),
     }
     body = lines[start + 1:end]
     seen: set[str] = set()
