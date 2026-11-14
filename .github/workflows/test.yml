@@ -21,7 +21,7 @@ jobs:
     name: 脱敏扫描
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -38,7 +38,7 @@ jobs:
           - { os: ubuntu-latest, python: "3.13" }
           - { os: macos-latest, python: "3.13" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -59,7 +59,7 @@ jobs:
           - { os: macos-latest, node: "22" }
           - { os: windows-latest, node: "22" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -74,7 +74,7 @@ jobs:
     name: e2e（假 Hub 全链路）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -85,7 +85,7 @@ jobs:
     name: worker 类型检查
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -100,7 +100,7 @@ jobs:
     name: 镜像构建 + 冒烟
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 构建镜像
         run: docker build -t github-local-action:ci .
       # 只构建不跑容器：真正的运行时验证（本机闸 403/200、配置写回）在
