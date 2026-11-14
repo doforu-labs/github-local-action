@@ -59,15 +59,18 @@ curl -N http://<内网IP>:18091/stream
 后者是真的发布，会短时间摸一下 Cloudflare。为什么要它：地址以前靠人手抄，
 抄错一个字母就是「连接失败」，日志里又看不出是抄错了还是网断了。
 
+`POST /config` 同理只认本机：它会重写 `ws_url` 和令牌，局域网里能改等于能把整条事件流指到别处。
+读（`GET /config`）不限制，令牌已经掩码。
+
 `/health` 里的 `seconds_since_last_event` 是判断「真的安静」还是「连接死了」的关键：配合 `connected` 看，连接为 true 但该值持续增大，说明链路活着但仓库确实没动静；连接为 false 则是真断了。
 
 ## 验收
 
 ```bash
-python3 tests/e2e.py
+python3 tests/e2e.py          # 或回到仓库根目录 make test
 ```
 
-起一个假 Hub，验证 22 项：连接、实时事件、SSE 推送、断线、自动重连、断线期间补发、全程无重复、游标不回退、历史接口排序、状态页、统计接口、账号与仓库识别、挂着 SSE 客户端时能快速退出。不需要 Cloudflare 账号。
+起一个假 Hub（`tests/mock_hub.py`，行为对齐真 Hub：token 校验、游标补发、心跳），验证 170+ 项断言：连接、实时事件、SSE 推送、断线、自动重连、断线期间补发、全程无重复、游标不回退、历史接口排序、状态页、统计接口、账号与仓库识别、动作页去重、webhook 自动配置、挂着 SSE 客户端时能快速退出。不需要 Cloudflare 账号。
 
 想看看状态页长什么样，可以造一份 24 小时的历史数据：
 
@@ -77,7 +80,7 @@ python3 tests/seed_preview.py /tmp/preview.db
 
 ## 端口
 
-默认 `18091`，避开 the desktop app 自己的 `3000`（Vite）和 `17890`（后端 HTTP）。改 `config.toml` 里的 `http_port`。
+默认 `18091`。改 `config.toml` 里的 `http_port`，改完要重启进程。
 
 ## 两个参数怎么调
 

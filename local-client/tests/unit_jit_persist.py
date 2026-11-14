@@ -45,7 +45,7 @@ def ck(ok: bool, label: str, detail: str = "") -> None:
 
 
 def _machine(name: str, os_: str = "macos", arch: str = "arm64") -> dict:
-    return {"name": name, "os": os_, "arch": arch, "host": "10.0.0.1",
+    return {"name": name, "os": os_, "arch": arch, "host": "10.0.0.21",
             "port": (2222 if os_ == "windows" else 22), "user": "dev", "dir": "/Users/dev/actions-runner"}
 
 
@@ -97,10 +97,10 @@ def main() -> None:
         # ── 2. 打开一个仓库 → 落库 ────────────────────────────────────
         _fresh_pool()
         relay.SSH_MACHINES = {"Mac": _machine("Mac"), "win": _machine("win", "windows", "x64")}
-        r = asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "OWNER/a", "on": True})))
+        r = asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "example-org/a", "on": True})))
         ck(r.status == 200, "开关：打开一个仓库返回 200", f"status={r.status}")
         body = json.loads(_raw_meta(store) or "{}")
-        ck(body.get("repos") == ["OWNER/a"], "开关：开着的仓库写进了库", json.dumps(body, ensure_ascii=False))
+        ck(body.get("repos") == ["example-org/a"], "开关：开着的仓库写进了库", json.dumps(body, ensure_ascii=False))
         ck(sorted(body.get("machines") or []) == ["Mac", "win"],
            "开关：机器池跟着一起写（不填就按当前能连的算）", str(body.get("machines")))
         ck(body.get("max_parallel") == 2, "开关：并发数跟着写", str(body.get("max_parallel")))
@@ -108,17 +108,17 @@ def main() -> None:
            "开关：运行时状态没有混进去", list(body.keys()))
 
         # ── 3. 关掉一个仓库 → 记录里不能再有它 ────────────────────────
-        asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "OWNER/a", "on": False})))
+        asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "example-org/a", "on": False})))
         body = json.loads(_raw_meta(store) or "{}")
         ck(body.get("repos") == [], "开关：关掉的仓库不留在记录里", json.dumps(body.get("repos"), ensure_ascii=False))
 
         # ── 4. 重启：换一批机器，仓库开关得回来 ───────────────────────
-        asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "OWNER/a", "on": True})))
-        asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "OWNER/b", "on": True})))
+        asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "example-org/a", "on": True})))
+        asyncio.run(relay.handle_runner_jit_repo(FakeReq(store, {"repo": "example-org/b", "on": True})))
         _fresh_pool()                       # 进程重启：内存全空
         relay.SSH_MACHINES = {"Mac": _machine("Mac")}   # win 那台已经删了
         relay._jit_restore(store)
-        ck(sorted(relay.JIT_POOL["repos"]) == ["OWNER/a", "OWNER/b"],
+        ck(sorted(relay.JIT_POOL["repos"]) == ["example-org/a", "example-org/b"],
            "重启：开着的仓库都回来了", str(relay.JIT_POOL["repos"]))
         ck(all(relay.JIT_POOL["repos"].values()), "重启：回来的都是开着的（不是开着却算关）")
         ck(relay.JIT_POOL["machines"] == ["Mac"],
@@ -134,11 +134,11 @@ def main() -> None:
         ck(relay.JIT_POOL["repos"] == {}, "停止：重启之后仍然是关的（不会自说自话开回来）")
 
         # ── 6. 脏数据一律不炸 ────────────────────────────────────────
-        store.meta_set(relay.JIT_META_KEY, json.dumps({"repos": ["OWNER/a", "../etc/passwd", "", 42]}))
+        store.meta_set(relay.JIT_META_KEY, json.dumps({"repos": ["example-org/a", "../etc/passwd", "", 42]}))
         _fresh_pool()
         try:
             relay._jit_restore(store)
-            ok = relay.JIT_POOL["repos"] == {"OWNER/a": True}
+            ok = relay.JIT_POOL["repos"] == {"example-org/a": True}
         except Exception as exc:                        # noqa: BLE001
             ok, exc  # noqa: B018
             ck(False, "脏数据：不像 owner/name 的被丢掉", repr(exc))
@@ -167,8 +167,8 @@ def main() -> None:
         relay.SSH_MACHINES = {"Mac": _machine("Mac")}
         try:
             r = asyncio.run(relay.handle_runner_jit_repo(
-                FakeReq(BrokenStore(), {"repo": "OWNER/a", "on": True})))
-            ck(r.status == 200 and relay.JIT_POOL["repos"] == {"OWNER/a": True},
+                FakeReq(BrokenStore(), {"repo": "example-org/a", "on": True})))
+            ck(r.status == 200 and relay.JIT_POOL["repos"] == {"example-org/a": True},
                "写库失败：这一轮照样开，只是没记住")
         except Exception as exc:                        # noqa: BLE001
             ck(False, "写库失败：这一轮照样开，只是没记住", repr(exc))

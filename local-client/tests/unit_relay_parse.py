@@ -38,11 +38,11 @@ WHOAMI = """
 ────────────────────
 Getting User settings...
 👋 You are logged in with an OAuth Token, associated with the email demo@example.com.
-🔐 Credentials are stored in: /Users/dev/.wrangler/config/default.toml
+🔐 Credentials are stored in: /Users/you/.wrangler/config/default.toml
 ┌──────────────────────────────┬──────────────────────────────────┐
 │ Account Name                 │ Account ID                       │
 ├──────────────────────────────┼──────────────────────────────────┤
-│ Demo@example.com's Account │ 0123456789abcdef0123456789abcdef │
+│ Demo@example.com's Account    │ 0123456789abcdef0123456789abcdef │
 └──────────────────────────────┴──────────────────────────────────┘
 🔓 Token Permissions:
 Scope (Access)
@@ -73,7 +73,7 @@ WHOAMI_ANON = """
 WHOAMI_READONLY = """
  ⛅️ wrangler 4.156.2
 ────────────────────
-👋 You are logged in with an OAuth Token, associated with the email a@b.com.
+👋 You are logged in with an OAuth Token, associated with the email a@example.com.
 │ Someone │ 0123456789abcdef0123456789abcdef │
 🔓 Token Permissions:
 Scope (Access)

@@ -3,12 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2025-06-01"
 
 # D1：事件日志。自增 id 就是客户端续传用的游标。
-# 库名还是老的 gh_relay：D1 没有重命名接口，免费计划每账号只给 10 个库、
-# 现在正好占满，要改只能「删旧库再建新库 + 导入 8MB 的转储」，属于有风险的改动。
-# 库名只出现在 wrangler d1 list 里，不出现在任何 URL 和界面上。
+# 库名和 id 都要换成你自己的：
+#   npx wrangler d1 create github_local_action
+# 把输出里的 database_id 贴到下面（库名只用在这个文件里，不出现在任何 URL 和界面上）。
 [[d1_databases]]
 binding = "DB"
-database_name = "gh_relay"
+database_name = "github_local_action"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 # Durable Object：持有 WebSocket 连接、负责广播。

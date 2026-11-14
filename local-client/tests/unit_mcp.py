@@ -160,7 +160,7 @@ class ArgCoercion(unittest.TestCase):
 
     def test_repo_without_owner_is_error_not_empty(self):
         # 缺 owner 时上游返回空集，以前会被当成「真没跑过」
-        out = mcp_server.call_tool("list_runs", {"repo": "demo-test"})
+        out = mcp_server.call_tool("list_runs", {"repo": "relay-test"})
         self.assertTrue(out["isError"])
         self.assertIn("owner/name", out["content"][0]["text"])
 
@@ -168,8 +168,8 @@ class ArgCoercion(unittest.TestCase):
         for bad in ("a/b/c", "a b", "a/"):
             with self.assertRaises(mcp_server.ToolError, msg=bad):
                 mcp_server._check_repo(bad)
-        self.assertEqual(mcp_server._check_repo("example-org/demo-test"),
-                         "example-org/demo-test")
+        self.assertEqual(mcp_server._check_repo("example-org/relay-test"),
+                         "example-org/relay-test")
 
     def test_string_false_is_false(self):
         for raw in ("false", "False", "0", "no", "off", "", "null"):

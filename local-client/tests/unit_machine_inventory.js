@@ -27,9 +27,9 @@ const context = vm.createContext({$: node,
   esc: s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;')});
 vm.runInContext(code, context);
 const machines = [
-  {name: 'mac', host: '192.168.1.2', port: 22, user: 'a', repo: 'org/repo'},
-  {name: 'mac-2', host: '192.168.1.2', port: 22, user: 'b', repo: 'org/repo'},
-  {name: 'worker', host: '192.168.1.3', port: 22, user: 'a', pure: true},
+  {name: 'mac', host: '10.0.0.21', port: 22, user: 'a', repo: 'org/repo'},
+  {name: 'mac-2', host: '10.0.0.21', port: 22, user: 'b', repo: 'org/repo'},
+  {name: 'worker', host: '10.0.0.22', port: 22, user: 'a', pure: true},
 ];
 assert.equal(context.groupMachines(machines).length, 2, 'same SSH endpoint counts once');
 assert.equal(context.groupMachines([]).length, 0);
@@ -55,12 +55,12 @@ for (const [state,label,error] of [
   };
   await context.loadMachines(false);
   assert.equal(node('machineCount').textContent, '2 台');
-  assert.match(node('machines').innerHTML, /192.168.1.2/);
+  assert.match(node('machines').innerHTML, /10.0.0.21/);
   assert.doesNotMatch(node('machines').innerHTML, /org\/repo|常驻|关联/);
   context.fetch = async () => { throw new Error('offline'); };
   await context.loadMachines(false);
   assert.match(node('machines').innerHTML, /offline/);
-  assert.match(node('machines').innerHTML, /192.168.1.2/, 'failed refresh retains existing machines');
+  assert.match(node('machines').innerHTML, /10.0.0.21/, 'failed refresh retains existing machines');
   context.fetch = async () => ({ok:true, json:async () => ({machines:[]})});
   await context.loadMachines(false);
   assert.equal(node('machineCount').textContent, '0 台');

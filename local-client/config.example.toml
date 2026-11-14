@@ -5,7 +5,7 @@ ws_url = "wss://github-local-action.YOUR-SUBDOMAIN.workers.dev/ws"
 # 和 wrangler secret put CLIENT_TOKEN 填的值一致
 token = "REPLACE_WITH_A_LONG_RANDOM_STRING"
 
-# 本地 SSE 端口。默认 18091（本机 17891/17892 常被 the desktop app 占着）
+# 本地 SSE 端口。默认 18091
 http_port = 18091
 
 # 监听 0.0.0.0 才能被同网段的设备访问；只想本机用就改 127.0.0.1

@@ -39,7 +39,7 @@ function safeEqual(a: string, b: string): boolean {
 
 /**
  * 验签。两种密钥都认：
- *   1) 全局 GITHUB_WEBHOOK_SECRET —— 老仓库（demo-test）继续用它，路径不变
+ *   1) 全局 GITHUB_WEBHOOK_SECRET —— 老仓库继续用它，路径不变
  *   2) webhook_secrets 表里该仓库自己的密钥 —— 新仓库不用再找全局密钥，
  *      本地生成一个就配上，一个仓库泄了不影响别的
  *

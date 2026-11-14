@@ -83,7 +83,7 @@ class MachineDeletes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status, 404)
         # 局域网设备不能删本机凭据
         r = await relay.handle_machine_delete(
-            Request({"name": "stable-id"}, remote="192.168.1.2"))
+            Request({"name": "stable-id"}, remote="10.0.0.21"))
         self.assertEqual(r.status, 403)
         self.assertEqual(len(self.store), 3, "校验失败时不能动数据")
 

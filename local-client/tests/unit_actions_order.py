@@ -49,7 +49,7 @@ def ev(run_id: int, status: str, conclusion: str | None = None, updated: str | N
         "head_commit": {"message": "测试提交\n\n正文", "timestamp": "2026-11-11T19:37:00Z"}, "event": "push",
         "html_url": f"https://example.invalid/{run_id}", "head_sha": "abcdef1234567",
     }
-    return {"repo": "OWNER/demo", "action": status, "at": 1, "payload": json.dumps({"workflow_run": wr})}
+    return {"repo": "example-org/demo", "action": status, "at": 1, "payload": json.dumps({"workflow_run": wr})}
 
 
 class FakeStore:

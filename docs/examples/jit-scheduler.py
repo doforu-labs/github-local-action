@@ -14,7 +14,7 @@ import time
 
 HOST = "10.0.0.5"
 PASSWORD = os.environ.get("SSH_PASS", "")   # 密码从环境变量来，不要写进仓库
-REPO = "example-org/demo-a"
+REPO = "example-org/jit-lab-a"
 WORKFLOW = "five.yml"
 
 MACHINES = [

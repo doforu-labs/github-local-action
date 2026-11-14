@@ -70,7 +70,7 @@ def run_case(jobs: list[dict], runners: list[dict] | None = None, boom: bool = F
     old = relay._repo_runners
     relay._repo_runners = fake
     try:
-        asyncio.run(relay._mark_stale_jobs(jobs, "OWNER/demo"))
+        asyncio.run(relay._mark_stale_jobs(jobs, "example-org/demo"))
     finally:
         relay._repo_runners = old
     return jobs, fake
@@ -84,7 +84,7 @@ def main() -> int:
     # 1) 该标的：跑了十分钟，机器空了
     jobs, fake = run_case([_job()], idle)
     ck(jobs[0].get("stale") == "runner_idle", "机器空闲 → 标 runner_idle", repr(jobs[0].get("stale")))
-    ck(fake.calls == ["OWNER/demo"], "确实去问了那个仓库的 runner", repr(fake.calls))
+    ck(fake.calls == ["example-org/demo"], "确实去问了那个仓库的 runner", repr(fake.calls))
 
     # 2) 该标的：runner 掉线了，job 还挂着
     jobs, _ = run_case([_job()], gone)

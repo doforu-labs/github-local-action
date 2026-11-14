@@ -54,7 +54,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 def _posix_script() -> str:
     p = {"dir": "~/actions-runner", "os": "linux", "user": "dev",
-         "repo": "OWNER/x", "name": "t1"}
+         "repo": "example-org/x", "name": "t1"}
     return relay._posix_install_script(
         p, "TOKEN", "https://example.invalid/x.tar.gz", "self-hosted,Linux,X64")
 
@@ -130,7 +130,7 @@ def test_env_keeps_other_vars() -> None:
 
 def test_win_has_env_step() -> None:
     p = {"dir": "~/actions-runner", "os": "windows", "user": "Docker",
-         "repo": "OWNER/x", "name": "w1"}
+         "repo": "example-org/x", "name": "w1"}
     s = relay._win_install_script(p, "T", "https://example.invalid/x.zip",
                                  "self-hosted,Windows,X64")
     check("Windows：脚本里写了 .env", "'.env'" in s or '.env' in s)

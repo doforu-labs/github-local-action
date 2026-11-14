@@ -2,7 +2,7 @@
 
 > 状态：已验证可行（2026-11-11，真机实测）
 > 相关代码：`local-client/relay.py` 的 `_gh_scope()` / `_gh_registration_token()`
-> 实验仓库：`example-org/demo-a`、`example-org/demo-b`
+> 实验仓库：`example-org/jit-lab-a`、`example-org/jit-lab-b`
 
 ## 1. 要解决的问题
 
@@ -62,17 +62,17 @@ POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig
 
 ## 4. 实测数据
 
-两个私有仓库 `demo-a` / `demo-b`，同一个 workflow（`runs-on: [self-hosted, jit-lab]`，里面 `sleep 30`），同一台 Linux（`lab-linux-1`，6 核 31G）。
+两个私有仓库 `jit-lab-a` / `jit-lab-b`，同一个 workflow（`runs-on: [self-hosted, jit-lab]`，里面 `sleep 30`），同一台 Linux（`lab-linux-1`，6 核 31G）。
 
 ### 4.1 只有一个名额（同时 1 个 JIT runner）
 
 ```
-  3.4s 触发 demo-a
-  6.5s 触发 demo-b
- 30.2s 发票并拉起 jit-one-1  -> demo-a
+  3.4s 触发 jit-lab-a
+  6.5s 触发 jit-lab-b
+ 30.2s 发票并拉起 jit-one-1  -> jit-lab-a
  36.2s A:in_progress          B:queued          ← B 在排队
  75.6s A success（名额释放）
- 89.0s 发票并拉起 jit-one-2  -> demo-b
+ 89.0s 发票并拉起 jit-one-2  -> jit-lab-b
  95.3s B:in_progress
 132.9s B success
 ```
@@ -82,10 +82,10 @@ POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig
 ### 4.2 两个名额（同时 2 个 JIT runner）
 
 ```
-  2.6s 触发 demo-a
-  5.2s 触发 demo-b
- 30.3s 发票并拉起 jit-two-1  -> demo-a
- 44.8s 发票并拉起 jit-two-2  -> demo-b
+  2.6s 触发 jit-lab-a
+  5.2s 触发 jit-lab-b
+ 30.3s 发票并拉起 jit-two-1  -> jit-lab-a
+ 44.8s 发票并拉起 jit-two-2  -> jit-lab-b
  51.7s A:in_progress          B:in_progress     ← 同时跑
  76.0s A success
  88.7s B success
@@ -212,7 +212,7 @@ webhook: workflow_job (action=queued)
 
 调度器主体是 `jit_loop()`：跟着事件总线走，只看 `workflow_job` 的 `queued` 和 `completed` 两种。
 
-**一条实测链路**（`example-org/demo-test`，真实机器）：
+**一条实测链路**（`example-org/relay-test`，真实机器）：
 
 ```
 + 0s  触发 jit-probe.yml（runs-on: [self-hosted, jit-lab]）
@@ -227,7 +227,7 @@ GitHub 那边对应的是：run `completed/success`，job 落在
 ### 用之前得知道的三件事
 
 1. **仓库必须有 webhook**。调度器靠事件驱动，没配 webhook 的仓库永远不会有人给它发票。
-   实测在 `demo-a`（没 webhook）上触发，等了 48 秒一条事件都不到；换成 `demo-test` 立刻就好了。
+   实测在 `jit-lab-a`（没 webhook）上触发，等了 48 秒一条事件都不到；换成 `relay-test` 立刻就好了。
 2. **机器凭据来自「添加一台机器」那次填的密码**，只在内存里活 30 分钟。过期了池子就是空的，
    页面会直接说——它不会偷偷用旧凭据。
 3. **`prepare` 只做一次**。机器上得先有一份 `~/jitlab`，之后每次接活只是起进程；

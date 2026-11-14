@@ -1,7 +1,7 @@
 // Run: node tests/unit_run_row.js (no browser or network required).
 //
 // 动作页选「全部仓库」时，三个仓库的运行是混在一张列表里的。卡片上不写仓库名，
-// 遇到重名的工作流（example-org/demo-a 和 demo-b 都有「JIT Parallel Probe」）
+// 遇到重名的工作流（example-org/jit-lab-a 和 jit-lab-b 都有「JIT Parallel Probe」）
 // 就分不清谁说谁。这里钉住两件事：
 //   1. 混排时卡片带仓库名，展开详情里也有一行「仓库」
 //   2. 已经按具体仓库筛过之后不再重复显示（那时候写了也是噪音）
@@ -35,9 +35,9 @@ vm.runInContext(`
 vm.runInContext(code, context);
 
 const run = {
-  id: 12345678901, repo: 'example-org/demo-test', name: 'JIT Parallel Probe',
+  id: 12345678901, repo: 'example-org/relay-test', name: 'JIT Parallel Probe',
   run_number: 6, run_attempt: 1, status: 'completed', conclusion: 'success',
-  title: '探测', sha: '4a0953f', author: 'OWNER', actor: 'OWNER',
+  title: '探测', sha: '4a0953f', author: 'example-org', actor: 'example-org',
   trigger: 'workflow_dispatch', branch: 'main', path: '.github/workflows/probe.yml',
   url: 'https://github.com/x/y/actions/runs/1', started_at: 1762900000000,
   commit_at: 1762898400000,      // 提交比运行早 26 分钟（手动触发就是这样）
@@ -47,7 +47,7 @@ const run = {
 // 1) 全部仓库：卡片上要能看见是哪个仓库
 let out = context.runRowHtml(run);
 assert.match(out, /class="repo"/, '混排时卡片带仓库名');
-assert.match(out, /OWNER\/demo-test/);
+assert.match(out, /example-org\/relay-test/);
 assert.match(out, /JIT Parallel Probe/);
 assert.match(out, /4a0953f/);
 // 窄面板里标题会被截成「Electro…」，鼠标悬停得能看到全文
@@ -74,7 +74,7 @@ assert.doesNotMatch(noCommit, /提交于 /, '详情里也不提');
 const sub = out.match(/<div class="run-sub">([\s\S]*?)<\/div>/)[1];
 assert.match(sub, /class="repo"/, '仓库名在 run-sub 这一行里');
 const side = out.match(/<div class="run-side">([\s\S]*?)<\/div>/)[1];
-assert.doesNotMatch(side, /demo-test/, '别把仓库名塞进窄屏会隐藏的右上角');
+assert.doesNotMatch(side, /relay-test/, '别把仓库名塞进窄屏会隐藏的右上角');
 
 // 3) 展开详情里也有一行「仓库」
 const detail = out.match(/<div class="run-detail"[\s\S]*<\/div>\s*<\/div>$/)[0];
@@ -82,7 +82,7 @@ assert.match(detail, /仓库/, '详情里有仓库这一行');
 assert.match(detail, /\.github\/workflows\/probe\.yml/, '工作流文件那行还在');
 
 // 4) 已经按仓库筛选过：不再重复显示
-context.actRepo = 'example-org/demo-test';
+context.actRepo = 'example-org/relay-test';
 out = context.runRowHtml(run);
 assert.doesNotMatch(out, /class="repo"/, '筛过之后不重复显示仓库');
 assert.match(out, /<div class="kv"><span class="k">仓库<\/span>/, '详情里仍然给一行，确认自己看的是哪条');
