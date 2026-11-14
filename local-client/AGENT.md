@@ -49,9 +49,9 @@ curl -s http://127.0.0.1:18091/health
 
 服务没有登录态，靠**来源 IP** 区分：
 
-- **只对本机（127.0.0.1）开放**：全部 `/github/*`、`/webhook/*`、`/runners*`、`/config`。
+- **只对本机（127.0.0.1）开放**：全部 `/github/*`、`/webhook/*`、`/runners*`，以及 `/config` 的**写入**（`POST /config`）。
   这些会用到本机 `gh` 的 GitHub 凭据、机器 SSH 凭据、或者能改配置。
-- **局域网也能读**：`/`（网页）、`/stream`、`/events`、`/stats`、`/actions`、`/health`。
+- **局域网也能读**：`/`（网页）、`/stream`、`/events`、`/stats`、`/actions`、`/config`（`GET`，令牌已掩码）、`/health`。
 
 所以「从局域网另一台机器调 `/github/jobs`」会拿到
 `403 {"error": "GitHub 凭据只对本机开放；局域网设备请用 webhook 那套数据"}` —— 这是设计，不是故障。

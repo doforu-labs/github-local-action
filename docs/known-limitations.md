@@ -63,7 +63,7 @@ The genuinely sensitive endpoints (`/github/*`, `/runners/*`, `/relay/deploy`, w
 
 Public repository + self-hosted means any PR can execute code on your machine. GitHub warns about this too. Either restrict it to private repositories or add an approval gate in the workflow (`environment` with required reviewers).
 
-## Windows tests are not in CI
+## Python unit tests do not run on Windows
 
 `unit_machines` asserts that the key file's permissions are `600`, which has no equivalent in the Windows permission model. So Windows only runs the four JS frontend tests; the Python unit tests run on Linux and macOS.
 

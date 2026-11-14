@@ -42,7 +42,7 @@ Your machine dials **out** over WebSocket (NAT does not block outbound), so ther
 
 ```bash
 # 1) remote (Cloudflare)
-cd remote-worker && npm install
+cd remote-worker && npm install   # needs Node >= 22.12 (wrangler 4)
 npx wrangler d1 create github_local_action     # paste database_id into wrangler.toml
 npx wrangler d1 execute github_local_action --file schema.sql --remote
 npx wrangler secret put GITHUB_WEBHOOK_SECRET  # same value you put in the GitHub App
@@ -119,7 +119,7 @@ Every guide below is available in English and Chinese (add `.zh-CN.md` for the C
 ## Development
 
 ```bash
-make test          # 19 unit tests + e2e (170+ assertions), ~1 minute
+make test          # 22 unit tests + e2e (170+ assertions), ~1 minute
 make test-fast     # unit tests only
 make pii           # scan for leaked emails / private IPs / tokens / real hostnames
 cd remote-worker && npm run typecheck

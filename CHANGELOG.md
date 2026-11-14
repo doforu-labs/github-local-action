@@ -14,7 +14,7 @@
 - README 顶部加 CI 徽章与许可证徽章。徽章地址必须硬写「组织/仓库」，与门禁的「组织名不许进仓库」正面冲突，解法不是放宽门禁而是给它加一条**从 `git remote` 现读**的窄例外（`check_pii.py` 的 `redact_self()`）：只放行完整的 `<组织>/<仓库>`，`com.<组织>.xxx` 与裸组织名照样拦；组织名本身仍不写进源码，fork 后自动指向 fork 自己的地址。两个方向都被 `unit_pii_self_url.py` 钉住
 - MIT 许可证、`SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`
 - CI：Python 3.11/3.13、Node 20/22、Windows 前端测试、e2e、worker 类型检查、脱敏扫描
-- `scripts/run_tests.py`：一条命令跑完 20 个单测 + e2e；`Makefile` 提供 `make test` / `make test-fast` / `make pii` / `make typecheck`
+- `scripts/run_tests.py`：一条命令跑完 22 个单测 + e2e；`Makefile` 提供 `make test` / `make test-fast` / `make pii` / `make typecheck`
 - `scripts/check_pii.py`：拦住真实邮箱、内网 IP、令牌、真机主机名、真实资源 id
 - `local-client/pyproject.toml`：可 `pip install .`，装完有 `github-local-action` 命令，状态页与 `/agent.md` 随包安装
 - `remote-worker/package-lock.json`：`npm ci` 可复现

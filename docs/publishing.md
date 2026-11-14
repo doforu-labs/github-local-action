@@ -22,9 +22,9 @@ Run through this before flipping a private repository to public. The first two s
 
 ## 2. Git history: rewritten once already
 
-**Status: done** (2026-11-14). The original history carried the lab machine's address / username / password, an account email, the Cloudflare account id and account subdomain, real hostnames, private repository names, and the organisation name — making it public would have published all of it permanently. It was replaced item by item with `git filter-repo`; all 86 commits survived and the old values inside commit messages were replaced too.
+**Status: done** (2026-11-14). The code was written while solving the problem on real machines, so the history carried real infrastructure identifiers: host addresses, SSH credentials, an account email, the cloud account id and subdomain, real hostnames, and the organisation name. Making it public would have published all of it permanently. It was replaced item by item with `git filter-repo`; all 86 commits survived and the old values inside commit messages were replaced too.
 
-**A complete backup was taken first**: `~/Desktop/github-local-action-backup-20261114.bundle` (a git bundle with the entire pre-rewrite history). To restore, `git clone <that bundle> <directory>`.
+**Take a complete backup first** and keep it outside the repository — a `git bundle` of the pre-rewrite history, `git clone <bundle> <dir>` to get it back. You will want it if the rewrite broke something.
 
 Doing the same again later (say, another credential slips into a commit):
 

@@ -63,7 +63,7 @@ ssh -L 18091:localhost:18091 you@10.0.0.5
 
 公开仓库 + self-hosted 意味着任何人的 PR 都能在你机器上执行代码。GitHub 自己也会警告。要么只给私有仓库用，要么在 workflow 里加审批闸（`environment` + required reviewers）。
 
-## Windows 上的测试没进 CI
+## Python 单测不在 Windows 上跑
 
 `unit_machines` 会断言密钥文件权限是 `600`，这在 Windows 的权限模型里没有对应概念。所以 Windows 只跑前端那 4 个 JS 测试，Python 单测在 Linux / macOS 上跑。
 

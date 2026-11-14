@@ -51,9 +51,9 @@ curl -s http://127.0.0.1:18091/health
 
 The service has no login state; it distinguishes callers by **source IP**:
 
-- **Localhost only**: every `/github/*`, `/webhook/*`, `/runners*`, `/config`, `/mcp`.
+- **Localhost only**: every `/github/*`, `/webhook/*`, `/runners*`, `/mcp`, and **writes** to `/config` (`POST /config`).
   These use the machine's `gh` credentials or machine SSH credentials, or can change config.
-- **Readable from the LAN**: `/` (the web page), `/stream`, `/events`, `/stats`, `/actions`, `/health`.
+- **Readable from the LAN**: `/` (the web page), `/stream`, `/events`, `/stats`, `/actions`, `/config` (`GET`, token already masked), `/health`.
 
 So calling `/github/jobs` from another machine on the LAN returns
 `403 {"error": "..."}` — that is by design, not a fault.

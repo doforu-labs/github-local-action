@@ -8,7 +8,7 @@ PYTHON ?= python3
 .PHONY: help test test-fast test-worker typecheck pii shot clean
 
 help:
-	@echo "make test        跑全部测试（19 个单测 + e2e，约 1 分钟）"
+	@echo "make test        跑全部测试（22 个单测 + e2e，约 1 分钟）"
 	@echo "make test-fast   只跑单测，不跑 e2e"
 	@echo "make test-worker Worker 的 TS 类型检查"
 	@echo "make pii         扫仓库里有没有不该公开的邮箱 / 内网 IP / 令牌"

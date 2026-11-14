@@ -9,6 +9,7 @@ From nothing to the first event showing up in the panel: about 10 minutes.
 - A GitHub account (able to create a GitHub App and install it on your own account)
 - A Cloudflare account (the free plan is enough, no card required)
 - An always-on machine: macOS 10.15+ / Linux / Windows, with Python **3.11+** (TOML is read with the stdlib `tomllib`)
+- **Node 22.12+** for the deploy half only (`wrangler` 4 refuses to start on older Node; the local receiver never touches Node)
 - Optional: `gh` (GitHub CLI), already logged in. Without it you cannot see jobs and steps, fetch run history, or install runners from the panel
 
 ---

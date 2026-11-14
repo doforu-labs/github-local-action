@@ -9,6 +9,7 @@
 - 一个 GitHub 账户（能建 GitHub App、能装到自己的账户上）
 - 一个 Cloudflare 账户（免费计划够用，不用绑卡）
 - 一台常开的机器：macOS 10.15+ / Linux / Windows 都行，Python **3.11+**（读 TOML 用的是标准库 `tomllib`）
+- **Node 22.12+**：只管部署那一半（`wrangler` 4 在更旧的 Node 上直接起不来；本地接收端完全不碰 Node）
 - 可选：`gh`（GitHub CLI）并已 `gh auth login`。装了它才能看 job 与步骤、拉历史运行、在面板上装 runner
 
 ---

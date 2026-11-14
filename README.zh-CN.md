@@ -40,7 +40,7 @@ GitHub 只能往公网地址推 webhook，你家的网它进不去；而 GitHub 
 
 ```bash
 # 1) 远端（Cloudflare）
-cd remote-worker && npm install
+cd remote-worker && npm install   # 需要 Node >= 22.12（wrangler 4 的要求）
 npx wrangler d1 create github_local_action     # 把 database_id 填进 wrangler.toml
 npx wrangler d1 execute github_local_action --file schema.sql --remote
 npx wrangler secret put GITHUB_WEBHOOK_SECRET  # 和 GitHub App 里填的一致
@@ -106,7 +106,7 @@ MCP 两种传输都支持，7 个工具全只读：
 ## 开发
 
 ```bash
-make test          # 19 个单测 + e2e（170+ 项断言），约 1 分钟
+make test          # 22 个单测 + e2e（170+ 项断言），约 1 分钟
 make test-fast     # 只跑单测
 make pii           # 扫一遍仓库里有没有不该公开的邮箱 / 内网 IP / 令牌
 cd remote-worker && npm run typecheck
