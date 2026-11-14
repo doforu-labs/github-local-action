@@ -8,11 +8,12 @@
 
 为什么不是 pytest：这些测试从第一天就是「自己打印 PASS/FAIL、退出码定生死」的
 独立脚本，没依赖 pytest 的 fixture，迁移只会带来风险，不带来信息。这里只负责
-把 17 个脚本串起来、汇总失败数、失败时给出文件名。
+把 19 个脚本（15 个 Python + 4 个 JS）串起来、汇总失败数、失败时给出文件名。
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,8 +24,14 @@ TESTS = CLIENT / "tests"
 
 
 def _run(cmd: list[str]) -> tuple[bool, str]:
-    proc = subprocess.run(cmd, cwd=CLIENT, capture_output=True, text=True)
-    out = (proc.stdout + proc.stderr).strip()
+    # encoding 必须写死 utf-8：测试输出都是中文，Windows 默认拿 cp1252 解码会在读线程里
+    # 抛 UnicodeDecodeError，那个线程一死 stdout 就变成 None（见下面那次真实翻车）。
+    # 子进程也统一给 PYTHONIOENCODING，免得它自己往管道里写中文时先崩。
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.run(cmd, cwd=CLIENT, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env)
+    # proc.stdout 可能是 None（读线程崩了、或者输出被吞），别拿它直接做字符串加法
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     return proc.returncode == 0, out.splitlines()[-1] if out else "（无输出）"
 
 

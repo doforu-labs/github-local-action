@@ -44,7 +44,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: 装依赖
         run: pip install -r local-client/requirements.txt
-      - name: 单测（15 个 Python 测试）
+      - name: 单测（local-client/tests/unit_*.py）
         run: python scripts/run_tests.py --only py
 
   js:
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: 前端单测（4 个 JS 测试）
+      - name: 前端单测（local-client/tests/unit_*.js）
         # 前端代码是页面里的纯函数，用 node 直接跑，不需要浏览器
         run: python scripts/run_tests.py --only js
 
