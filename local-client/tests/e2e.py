@@ -24,6 +24,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import socket
+
 import aiohttp
 
 HERE = Path(__file__).resolve().parent
@@ -31,9 +33,25 @@ ROOT = HERE.parent
 MOCK = HERE / "mock_hub.py"
 RELAY = ROOT / "relay.py"
 
-MOCK_PORT = 17901
-RELAY_PORT = 17902
+# 端口不写死：两个 e2e 同时跑会互相串线（实测踩过——并行跑测试和审查时，
+# 一个实例的动作页读到了另一个实例的事件）。启动时各挑一个空闲端口。
+MOCK_PORT = 0
+RELAY_PORT = 0
 TOKEN = "test-token"
+
+
+def free_ports(n: int) -> list[int]:
+    """一次占住 n 个空闲端口再一起放掉，避免两次调用拿到同一个号。"""
+    socks = []
+    try:
+        for _ in range(n):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(("127.0.0.1", 0))
+            socks.append(s)
+        return [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            s.close()
 
 
 class Checker:
@@ -97,6 +115,8 @@ async def collect_sse(
 
 
 async def main() -> int:
+    global MOCK_PORT, RELAY_PORT
+    MOCK_PORT, RELAY_PORT = free_ports(2)
     tmp = tempfile.mkdtemp(prefix="ghrelay-e2e-")
     db = str(Path(tmp) / "events.db")
     cfg = Path(tmp) / "config.toml"
@@ -347,7 +367,7 @@ reconnect_max = 2
             bad_run = await s.get(f"{BASE}/github/jobs?repo=a/b&run=abc")
             ck.check(bad_run.status == 400, "github job 接口校验 run id", str(bad_run.status))
             if auth.get("logged_in"):
-                missing = await s.get(f"{BASE}/github/runs?repo=OWNER/__no_such_repo__")
+                missing = await s.get(f"{BASE}/github/runs?repo=example-org/__no_such_repo__")
                 ck.check(missing.status == 502, "仓库不存在时把 gh 的报错透出来", str(missing.status))
             else:
                 refused = await s.get(f"{BASE}/github/runs?repo=a/b")
@@ -367,7 +387,7 @@ reconnect_max = 2
                                json={"repo": "a/b", "id": "abc"})
             ck.check(bad.status == 400, "runner 移除校验 id", str(bad.status))
             if auth.get("logged_in"):
-                got = await s.get(f"{BASE}/github/runners?repo=example-org/demo-test")
+                got = await s.get(f"{BASE}/github/runners?repo=example-org/relay-test")
                 # 网络被重置时给 502 可以接受，500 不行——那说明解析崩了
                 ck.check(got.status in (200, 502), "runner 列表不会 500", str(got.status))
                 if got.status == 200:
@@ -658,7 +678,7 @@ reconnect_max = 2
 
             # ── 6j. webhook 能不能自动配 ──
             ws = await s.get(f"{BASE}/webhook/status",
-                             params={"repo": "example-org/demo-test"})
+                             params={"repo": "example-org/relay-test"})
             ck.check(ws.status == 200, "webhook 状态：接口可用", str(ws.status))
             wd = await ws.json()
             ck.check({"hook", "target", "ready"} <= set(wd),

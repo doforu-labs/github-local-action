@@ -13,3 +13,12 @@ CREATE TABLE IF NOT EXISTS gh_events (
 CREATE INDEX IF NOT EXISTS idx_gh_events_id ON gh_events(id);
 -- 清理旧数据用
 CREATE INDEX IF NOT EXISTS idx_gh_events_created ON gh_events(created_at);
+
+-- 每个仓库自己的 webhook 密钥。
+-- 面板的「自动配 webhook」走 /gh/secret 往这张表写；验签时先试全局
+-- GITHUB_WEBHOOK_SECRET，不匹配再按仓库名查这里。只用全局密钥的话可以空着。
+CREATE TABLE IF NOT EXISTS webhook_secrets (
+  repo       TEXT PRIMARY KEY,          -- owner/name
+  secret     TEXT NOT NULL,
+  created_at INTEGER NOT NULL           -- 毫秒时间戳
+);

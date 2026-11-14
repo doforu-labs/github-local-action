@@ -11,7 +11,7 @@ relay.py —— 本地 WS 接收端
 为什么要本地再转一手：远端是公网，局域网设备不该直接连它；
 而且本地有库，断网期间设备重连还能从库里补。
 
-端口默认 18091，避开 the desktop app 的 3000 / 17890~17892。
+端口默认 18091。
 """
 
 from __future__ import annotations
@@ -51,7 +51,26 @@ except ModuleNotFoundError:  # pragma: no cover
 log = logging.getLogger("relay")
 
 # 状态页：按 mtime 缓存，改完 HTML 刷新浏览器即可生效，不用重启进程
-WEB_DIR = Path(__file__).resolve().parent / "web"
+#
+# 为什么要在两个地方找：从源码目录跑时 web/ 就在旁边；`pip install` 之后
+# 它被装到 <prefix>/share/github-local-action/web（见 pyproject.toml 的 data-files），
+# 源码目录里根本没有这个子目录。
+def _data_roots() -> tuple[Path, ...]:
+    here = Path(__file__).resolve().parent
+    roots = [here, here.parent]
+    for prefix in (sys.prefix, sys.base_prefix):
+        roots.append(Path(prefix) / "share" / "github-local-action")
+    return tuple(roots)
+
+
+def _web_dir() -> Path:
+    for root in _data_roots():
+        if (root / "web" / "index.html").is_file():
+            return root / "web"
+    return Path(__file__).resolve().parent / "web"
+
+
+WEB_DIR = _web_dir()
 INDEX_FILE = WEB_DIR / "index.html"
 _index_cache: tuple[float, str] = (-1.0, "")
 
@@ -947,12 +966,13 @@ def is_local(request: web.Request) -> bool:
     return request.remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
-def _local_only(request: web.Request) -> Optional[web.Response]:
+def _local_only(
+    request: web.Request,
+    reason: str = "GitHub 凭据只对本机开放；局域网设备请用 webhook 那套数据",
+) -> Optional[web.Response]:
     if is_local(request):
         return None
-    return web.json_response(
-        {"error": "GitHub 凭据只对本机开放；局域网设备请用 webhook 那套数据"}, status=403
-    )
+    return web.json_response({"error": reason}, status=403)
 
 
 # api.github.com 在有些网络里会时不时 TLS 直接断（Go 报 EOF / connection reset）。
@@ -3695,6 +3715,15 @@ async def handle_config(request: web.Request) -> web.Response:
 
 
 async def handle_config_save(request: web.Request) -> web.Response:
+    # 读配置无所谓（令牌已掩码），改配置就是另一回事：ws_url 一改，整条事件流
+    # 就被指到别人的服务器上了。所以保存只允许在本机做，跟 /github/*、/runners/* 同一道闸。
+    blocked = _local_only(
+        request,
+        "改配置会重写 ws_url 与令牌，只允许在跑接收端的那台机器上保存；"
+        "局域网设备能看（/config），不能改",
+    )
+    if blocked:
+        return blocked
     cfg: Config = request.app["cfg"]
     state: State = request.app["state"]
 
@@ -3750,7 +3779,7 @@ def agent_doc(lang: str = "zh") -> str:
     for want in ([lang, "zh"] if lang != "zh" else ["zh"]):
         name = _AGENT_NAMES.get(want, "AGENT.md")
         cache = _agent_doc_cache.setdefault(want, {"mtime": 0.0, "text": ""})
-        for root in (Path(__file__).resolve().parent, Path(__file__).resolve().parent.parent):
+        for root in _data_roots():
             path = root / name
             try:
                 stamp = path.stat().st_mtime
@@ -3773,7 +3802,7 @@ async def handle_agent_doc(request: web.Request) -> web.Response:
     text = agent_doc(lang)
     if not text:
         return web.Response(
-            text="AGENT.md 没找到；仓库根目录应该有一份。\n",
+            text="AGENT.md 没找到；local-client/ 目录里应该有一份。\n",
             content_type="text/plain",
             charset="utf-8",
             status=404,
