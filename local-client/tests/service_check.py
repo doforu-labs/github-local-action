@@ -88,7 +88,7 @@ def check_command() -> None:
 
 def check_macos_text() -> None:
     print("A2. launchd plist")
-    log = "/Users/a b/Library/Logs/github-local-action.log"
+    log = "/Users/dev/Library/Logs/github-local-action.log"
     cmd = ["/usr/bin/python3", "/path/relay & <x>.py", "-c", "/tmp/c.toml"]
     text = relay._service_plist("com.example.test", cmd, "/work dir", log)
     try:
