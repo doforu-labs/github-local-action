@@ -4864,6 +4864,9 @@ async def handle_runner_jit_prepare(request: web.Request) -> web.Response:
 # Linux 要开机就起得再开 linger）。服务文件里的绝对路径全部现场拼，换机器不用改。
 
 SERVICE_LABEL = "local.github-local-action"
+# 改名前的 label：旧版装过的机器上还留着这个 plist 而且可能正在跑。装/卸新版时
+# 一并清掉，否则新旧两个进程会抢同一个端口。
+LEGACY_SERVICE_LABELS = ("local.github-local-action",)
 SERVICE_UNIT = "github-local-action.service"
 SERVICE_TIMEOUT = 15.0
 # launchd / systemd 拉起的进程没有登录 shell 的 PATH，gh 在 /opt/homebrew/bin 或
@@ -4980,6 +4983,31 @@ async def _service_launchd_state(label: str) -> tuple[bool, bool, int]:
     return True, running, pid
 
 
+def _legacy_service_files() -> list[Path]:
+    """旧 label 留下的服务文件（Linux 的 unit 名一直没变，只涉及 macOS）。"""
+    if _service_platform() != "macos":
+        return []
+    return [p for label in LEGACY_SERVICE_LABELS
+            if (p := _service_paths(label)["file"]).exists()]
+
+
+async def _service_drop_legacy() -> None:
+    """把旧 label 的服务停掉、删掉。换 label 只能这么做，不然端口会撞。"""
+    if _service_platform() != "macos":
+        return
+    domain = await _service_domain()
+    for label in LEGACY_SERVICE_LABELS:
+        old = _service_paths(label)["file"]
+        if not old.exists():
+            continue
+        await _svc_run(["launchctl", "bootout", f"{domain}/{label}"])
+        await _svc_run(["launchctl", "disable", f"{domain}/{label}"])
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
 async def _service_status() -> dict[str, Any]:
     plat = _service_platform()
     paths = _service_paths()
@@ -5002,6 +5030,11 @@ async def _service_status() -> dict[str, Any]:
             info["hint"] = "当前这个进程就是 launchd 拉起来的"
         elif info["installed"]:
             info["hint"] = "已装好，下次登录/开机自动启动"
+        legacy = _legacy_service_files()
+        if legacy:
+            info["legacy_files"] = [str(p) for p in legacy]
+            tip = "检测到改名前的旧服务，装/卸新版时会一并清掉（两个同时跑会抢同一个端口）"
+            info["hint"] = f"{info['hint']}；{tip}" if info["hint"] else tip
         return info
     rc, out = await _svc_run(["systemctl", "--user", "is-enabled", SERVICE_UNIT])
     info["enabled"] = out.strip() == "enabled"
@@ -5035,6 +5068,7 @@ async def _service_install(cfg: Config) -> dict[str, Any]:
     paths = _service_paths()
     cmd = _service_command(cfg)
     workdir = str(Path(__file__).resolve().parent)
+    await _service_drop_legacy()
     try:
         paths["file"].parent.mkdir(parents=True, exist_ok=True)
         paths["log"].parent.mkdir(parents=True, exist_ok=True)
@@ -5073,13 +5107,14 @@ async def _service_uninstall() -> dict[str, Any]:
         if rc != 0:
             note = (out or "").strip()[:200]
         await _svc_run(["systemctl", "--user", "daemon-reload"])
-    removed = False
+        removed = False
     try:
         if paths["file"].exists():
             paths["file"].unlink()
             removed = True
     except OSError as exc:
         return {"ok": False, "error": f"删服务文件失败：{exc}", "note": note}
+    await _service_drop_legacy()
     return {"ok": True, "removed": removed, "note": note}
 
 

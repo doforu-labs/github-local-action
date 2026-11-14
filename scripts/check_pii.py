@@ -29,6 +29,11 @@ SAFE_IPS = {
 SAFE_EMAIL_DOMAINS = {"example.com", "example.org", "users.noreply.github.com", "example.net"}
 # 明显是假值的 32 位十六进制（账号 id 的占位符）
 FAKE_HEX = {"0123456789abcdef0123456789abcdef"}
+# 品牌/组织名规则的例外：这行必须保留旧品牌名，它是升级时用来清掉旧版安装的
+# launchd label，删了就清不掉旧服务（两个进程会抢端口）。
+SAFE_BRAND_LINE_MARKERS = {"LEGACY_SERVICE_LABELS"}
+# 允许出现的 workers.dev 账号子域（Cloudflare 账号子域是账号级标识，能反查到人）
+SAFE_WORKER_SUBDOMAINS = {"x", "demo-sub", "your-subdomain"}
 # /Users/<name> 里允许的用户名（示例名，不代表真人）
 SAFE_HOME_USERS = {"dev", "you", "tester", "user", "runner", "me"}
 
@@ -42,6 +47,10 @@ PRIVATE_IP = re.compile(
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 HOME_DIR = re.compile(r"/Users/([A-Za-z0-9._-]+)")
 UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+# 完整 URL 里的 workers.dev / pages.dev 账号子域：<worker>.<账号子域>.workers.dev
+WORKER_URL = re.compile(
+    r"(?:https?|wss?)://[a-z0-9.-]*?([a-z0-9][a-z0-9-]*)\.(?:workers|pages)\.dev", re.I
+)
 
 HARD_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), "把令牌删掉，改用 secret put"),
@@ -50,7 +59,8 @@ HARD_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("私钥", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "私钥不能进仓库"),
     ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "把令牌删掉"),
     ("真机主机名", re.compile(r"lab-linux|lab-mac|lab-win|lab-mac"), "换成 lab-linux-1 / lab-mac-1 这类示例名"),
-    ("私有仓库名", re.compile(r"demo-test|demo-[ab]|example-org/(?:core|desktop)"), "换成 example-org/xxx"),
+    ("私有仓库名", re.compile(r"demo-test|demo-[ab]"), "换成 example-org/xxx"),
+    ("品牌/组织名", re.compile(r"the desktop app", re.I), "项目不绑组织：换成 OWNER 或 contributors"),
 ]
 
 
@@ -73,8 +83,11 @@ def scan(path: Path) -> list[tuple[int, str, str, str]]:
     for lineno, line in enumerate(text.splitlines(), 1):
         for name, pattern, hint in HARD_RULES:
             m = pattern.search(line)
-            if m:
-                hits.append((lineno, name, m.group(0), hint))
+            if not m:
+                continue
+            if name == "品牌/组织名" and any(k in line for k in SAFE_BRAND_LINE_MARKERS):
+                continue
+            hits.append((lineno, name, m.group(0), hint))
         for m in PRIVATE_IP.finditer(line):
             ip = m.group(0)
             # 10.0.0.0/8 这种网段写法是配置默认值，不是某台机器
@@ -99,6 +112,10 @@ def scan(path: Path) -> list[tuple[int, str, str, str]]:
         for m in re.finditer(r"\b[0-9a-f]{32}\b", line):
             if m.group(0) not in FAKE_HEX:
                 hits.append((lineno, "Cloudflare 账号 id", m.group(0), "换成 0123456789abcdef0123456789abcdef"))
+        for m in WORKER_URL.finditer(line):
+            if m.group(1).lower() not in SAFE_WORKER_SUBDOMAINS:
+                hits.append((lineno, "Workers 账号子域", m.group(1),
+                             "换成 demo-sub，别留自己账号的子域"))
     return hits
 
 

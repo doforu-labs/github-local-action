@@ -88,11 +88,11 @@ Total Upload: 9.57 KiB / gzip: 3.37 KiB
 Your Worker has access to the following bindings:
 Binding                 Resource            
 env.HUB (Hub)           Durable Object     
-env.DB (gh_relay)       D1 Database         
+env.DB (github_local_action)       D1 Database         
 Uploaded github-local-action (4.01 sec)
 Deployed github-local-action triggers (0.99 sec)
   https://github-local-action.demo-sub.workers.dev
-Current Version ID: 2664f76d-c1ca-4e51-abde-f39f2cf897ad
+Current Version ID: 00000000-0000-4000-8000-000000000000
 """
 
 DEPLOY_FAIL = """

@@ -5,7 +5,7 @@
 ## 先跑起来
 
 ```bash
-git clone https://github.com/OWNER/github-local-action
+git clone https://github.com/OWNER/github-local-action   # 换成你自己的 fork / 仓库地址
 cd github-local-action
 
 # 本地接收端（不需要 Cloudflare 账号就能跑测试）

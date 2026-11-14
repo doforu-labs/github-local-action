@@ -17,9 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         n: [1, 2]
-    # 公开仓库里任何人都能 fork / 开 PR；这条 workflow 会把 job 派到作者自己的
-    # self-hosted 机器上，所以用仓库名把自己锁住：在任何 fork 里都不会跑。
-    if: github.repository == 'OWNER/github-local-action'
+    # 这条 workflow 会把 job 派到 self-hosted 机器上，所以不跟仓库名绑定：
+    # 用仓库变量当开关，没设 RUN_SELF_HOSTED=true 就不跑（fork 里天然是关的）。
+    if: vars.RUN_SELF_HOSTED == 'true'
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 15
     steps:
@@ -37,9 +37,9 @@ jobs:
       fail-fast: false
       matrix:
         n: [1, 2]
-    # 公开仓库里任何人都能 fork / 开 PR；这条 workflow 会把 job 派到作者自己的
-    # self-hosted 机器上，所以用仓库名把自己锁住：在任何 fork 里都不会跑。
-    if: github.repository == 'OWNER/github-local-action'
+    # 这条 workflow 会把 job 派到 self-hosted 机器上，所以不跟仓库名绑定：
+    # 用仓库变量当开关，没设 RUN_SELF_HOSTED=true 就不跑（fork 里天然是关的）。
+    if: vars.RUN_SELF_HOSTED == 'true'
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 15
     steps:

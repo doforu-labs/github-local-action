@@ -8,12 +8,19 @@
 ### 加入
 - MIT 许可证、`SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`
 - CI：Python 3.11/3.13、Node 20/22、Windows 前端测试、e2e、worker 类型检查、脱敏扫描
-- `scripts/run_tests.py`：一条命令跑完 18 个单测 + e2e；`Makefile` 提供 `make test` / `make test-fast` / `make pii` / `make typecheck`
+- `scripts/run_tests.py`：一条命令跑完 19 个单测 + e2e；`Makefile` 提供 `make test` / `make test-fast` / `make pii` / `make typecheck`
 - `scripts/check_pii.py`：拦住真实邮箱、内网 IP、令牌、真机主机名、真实资源 id
 - `local-client/pyproject.toml`：可 `pip install .`，装完有 `github-local-action` 命令，状态页与 `/agent.md` 随包安装
 - `remote-worker/package-lock.json`：`npm ci` 可复现
 - 文档拆分：`docs/quickstart.md`、`architecture.md`、`self-hosted-runner.md`、`known-limitations.md`、`lab-notes.md`、`publishing.md`，配三张真界面截图
 - 英文版 README
+
+### 更改
+- 自动启动服务的 launchd label 去掉了组织/品牌前缀，改成 `local.github-local-action`。升级时 `service/install` 与 `service/uninstall` 会自动停掉并删掉旧 label 的 plist，`service/status` 会报出 `legacy_files`（不清理就会两个进程抢同一个端口）。systemd unit 名 `github-local-action.service` 没变
+- `platform-*.yml` 的 self-hosted 闸从写死仓库名改成仓库变量 `RUN_SELF_HOSTED`，谁 fork 都不会往自己的机器上派 job
+- `LICENSE` 版权方、`pyproject.toml` 的 authors / Homepage 不再写具体组织，改成 `The github-local-action contributors` 与 `OWNER` 占位
+- 测试 fixture 里的 Cloudflare 账号子域（`*.demo-sub.workers.dev`）换成 `demo-sub`
+- `scripts/check_pii.py` 新增两条规则：`*.workers.dev` / `*.pages.dev` 的账号子域、品牌/组织名（`LEGACY_SERVICE_LABELS` 那一行例外，因为它是用来清旧安装的）
 
 ### 修复
 - `remote-worker/schema.sql` 缺少 `webhook_secrets` 表：按文档新建的部署在「自动配 webhook」时会 500

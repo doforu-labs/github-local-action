@@ -15,7 +15,7 @@
 | 脱敏 | 真实邮箱、内网 IP、真机主机名、Cloudflare 账号 id、D1 资源 id 已换成示例值；`make pii` 会把它们再抓出来 |
 | 陌生人能不能跑起来 | `remote-worker/schema.sql` 补上了 `webhook_secrets` 表（原来自动配 webhook 会 500）；README 里 `d1 create` 的库名与 `wrangler.toml` 对齐 |
 | 安全边界 | `POST /config` 补上本机闸（原来局域网设备能改 `ws_url` 与令牌），新增 `tests/unit_local_only.py` 锁住这道闸 |
-| self-hosted workflow 的闸 | `platform-*.yml` 每个 job 加了 `if: github.repository == 'OWNER/github-local-action'`，在 fork 里不会往你的机器上派活 |
+| self-hosted workflow 的闸 | `platform-*.yml` 每个 job 用仓库变量当开关：`if: vars.RUN_SELF_HOSTED == 'true'`，没设就不跑（fork 里天然是关的，也不跟组织/仓库名绑定） |
 | 文档 | README 拆成首页 + `docs/quickstart` / `architecture` / `self-hosted-runner` / `known-limitations` / `lab-notes`，配三张真界面截图 |
 
 ## 二、翻转前必须先想清楚：git 历史
@@ -69,10 +69,10 @@ git branch -M clean-main main && git push --force origin main
 
 ## 三、翻转仓库可见性
 
-1. **确认组织的可见性**：匿名访问 `api.github.com/orgs/<org>` 与 `api.github.com/repos/<org>/<repo>` 现在都返回 404，说明两者都不是公开状态。私有组织下的仓库能不能直接转 public，各计划策略不同，先到 **Settings → General → Danger Zone → Change visibility** 试一次，被拒会有明确报错。
+1. **确认账号的可见性**：匿名访问 `api.github.com/orgs/<org>` 与 `api.github.com/repos/<账号>/<repo>` 返回 404 说明不是公开状态。挂私有组织下的仓库能不能直接转 public，各计划策略不同，先到 **Settings → General → Danger Zone → Change visibility** 试一次，被拒会有明确报错。
 2. **建议先复制一份试水**，而不是直接翻转：
    ```bash
-   git push --mirror git@github.com:OWNER/github-local-action-public.git
+   git push --mirror git@github.com:<你的账号>/github-local-action-public.git
    ```
    在副本上把 README、issue 模板、CI 全跑一遍，看过两天再决定主仓库翻不翻。
 3. 翻转是不可逆的：历史会被永久公开、会被立刻 fork 抓走，后悔只能整仓删除。

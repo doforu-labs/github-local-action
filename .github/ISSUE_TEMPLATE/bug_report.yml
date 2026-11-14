@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        先过一遍 [已知边界](https://github.com/OWNER/github-local-action/blob/main/docs/known-limitations.md)——
+        先过一遍 `docs/known-limitations.md`（已知边界）——
         「运行中看不到日志」「动作页空的」这类现象多半写在里面。
 
         **别贴**：令牌、config.toml 原文、内网地址、SSH 密码。日志里请把它们涂掉。

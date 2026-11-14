@@ -102,7 +102,7 @@ MCP 两种传输都支持，7 个工具全只读：
 ## 开发
 
 ```bash
-make test          # 18 个单测 + e2e（170+ 项断言），约 1 分钟
+make test          # 19 个单测 + e2e（170+ 项断言），约 1 分钟
 make test-fast     # 只跑单测
 make pii           # 扫一遍仓库里有没有不该公开的邮箱 / 内网 IP / 令牌
 cd remote-worker && npm run typecheck

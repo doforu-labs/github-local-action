@@ -80,7 +80,7 @@ Seven read-only tools: `health` `get_stats` `list_runs` `get_run_detail` `get_jo
 ## Development
 
 ```bash
-make test          # 18 unit tests + e2e (170+ assertions), ~1 minute
+make test          # 19 unit tests + e2e (170+ assertions), ~1 minute
 make test-fast     # unit tests only
 make pii           # scan for leaked emails / private IPs / tokens / real hostnames
 cd remote-worker && npm run typecheck

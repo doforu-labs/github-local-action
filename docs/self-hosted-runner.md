@@ -78,6 +78,7 @@ Windows 上最容易踩的三个：
 ## 安全前提
 
 - **私有仓库才适合自建 runner**。公开仓库 + self-hosted 意味着任何人的 PR 都能在你的机器上执行代码，GitHub 自己也会警告。
+- **仓库里的 self-hosted workflow 默认不跑**：`platform-check.yml` / `platform-queue.yml` 的每个 job 都带 `if: vars.RUN_SELF_HOSTED == 'true'`。要用就在 Settings → Secrets and variables → Actions → **Variables** 里建一个 `RUN_SELF_HOSTED` = `true`；fork 里没有这个变量，天然不会把 job 派到别人的机器上（也不用把仓库名写死在 workflow 里）。
 - **runner 只是执行器，不是特权**：它以普通用户跑，`sudo` 要自己在机器上配；job 拿到的是仓库代码，不是你的登录态。
 - **这台机器的 SSH 密码会经过面板**（只在本机内存里活 30 分钟、不落盘）。所以 `/runners/*` 和 `/github/*` 这些接口**只接受本机请求**，局域网设备访问会拿到 403。
 
