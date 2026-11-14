@@ -1,6 +1,6 @@
 # 参与贡献
 
-欢迎 issue 和 PR。这个项目的代码注释、commit message、文档都以中文为主，中文 PR 完全没问题；英文 issue 也看得懂。
+欢迎 issue 和 PR。默认 README 是英文（`README.zh-CN.md` 是中文版），`docs/` 下的指南和代码注释、commit message 以中文为主；中文和英文 PR 都欢迎。
 
 ## 先跑起来
 
