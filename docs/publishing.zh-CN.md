@@ -98,7 +98,7 @@ tar -tzf /tmp/t.tar.gz | head    # 截图和文档都得在包里
 
 - **Settings → Code security**：Secret scanning + Push protection（防止以后有人手滑提交令牌）
 - **Settings → General → Features**：Discussions（问答不用堆在 issue 里）
-- **Settings → Branches**：保护 `main`，要求 CI 通过 + 至少一次 review
+- **Settings → Branches**：保护 `main`，要求 CI 通过 + 至少一次 review。本仓库自己只禁了强推和删除——维护者的令牌没有 `workflow` scope，Dependabot 那种动 `.github/workflows/*` 的 PR 经 API 根本合不了，只能推。等你手里有带该 scope 的令牌，再把「必须走 PR」打开。
 - **Settings → Actions → General**：Fork PR 的 workflow 需要 maintainer 批准
 - **About**：一句话描述 + topics：
   `github-webhook` `cloudflare-workers` `self-hosted-runner` `sse` `sqlite` `mcp` `local-first`

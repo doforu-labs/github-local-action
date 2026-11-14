@@ -99,7 +99,7 @@ Flipping the original repository instead is irreversible: history becomes perman
 
 - **Settings → Code security**: Secret scanning + Push protection (so a future accidental token commit is blocked)
 - **Settings → General → Features**: Discussions (so questions do not pile up as issues)
-- **Settings → Branches**: protect `main`, require CI plus at least one review
+- **Settings → Branches**: protect `main`, require CI plus at least one review. This repository itself only blocks force-pushes and deletions: its maintainer token carries no `workflow` scope, so a Dependabot PR touching `.github/workflows/*` cannot be merged through the API at all — it has to be pushed. Add the pull-request requirement once you hold a token with that scope.
 - **Settings → Actions → General**: require maintainer approval for workflow runs from fork PRs
 - **About**: a one-line description plus topics:
   `github-webhook` `cloudflare-workers` `self-hosted-runner` `sse` `sqlite` `mcp` `local-first`
