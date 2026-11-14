@@ -44,7 +44,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: 装依赖
         run: pip install -r local-client/requirements.txt
-      - name: 单测（14 个 Python 测试）
+      - name: 单测（15 个 Python 测试）
         run: python scripts/run_tests.py --only py
 
   js:
