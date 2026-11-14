@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""一条命令跑完所有测试，CI 和本地都用它。
+
+    python3 scripts/run_tests.py              # 全跑（单测 + e2e）
+    python3 scripts/run_tests.py --no-e2e     # 只跑单测（e2e 要占两个端口）
+    python3 scripts/run_tests.py --only js    # 只跑前端单测
+
+为什么不是 pytest：这些测试从第一天就是「自己打印 PASS/FAIL、退出码定生死」的
+独立脚本，没依赖 pytest 的 fixture，迁移只会带来风险，不带来信息。这里只负责
+把 17 个脚本串起来、汇总失败数、失败时给出文件名。
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CLIENT = ROOT / "local-client"
+TESTS = CLIENT / "tests"
+
+
+def _run(cmd: list[str]) -> tuple[bool, str]:
+    proc = subprocess.run(cmd, cwd=CLIENT, capture_output=True, text=True)
+    out = (proc.stdout + proc.stderr).strip()
+    return proc.returncode == 0, out.splitlines()[-1] if out else "（无输出）"
+
+
+def main() -> int:
+    only = ""
+    for i, arg in enumerate(sys.argv):
+        if arg == "--only" and i + 1 < len(sys.argv):
+            only = sys.argv[i + 1]
+    no_e2e = "--no-e2e" in sys.argv
+
+    failed: list[str] = []
+    py_tests = sorted(TESTS.glob("unit_*.py"))
+    js_tests = sorted(TESTS.glob("unit_*.js"))
+
+    if only in ("", "py", "python"):
+        for path in py_tests:
+            ok, last = _run([sys.executable, str(path)])
+            print(f"  {'PASS' if ok else 'FAIL'}  {path.name:<28} {last[:70]}")
+            if not ok:
+                failed.append(path.name)
+
+    if only in ("", "js"):
+        for path in js_tests:
+            ok, last = _run(["node", str(path)])
+            print(f"  {'PASS' if ok else 'FAIL'}  {path.name:<28} {last[:70]}")
+            if not ok:
+                failed.append(path.name)
+
+    if only in ("", "e2e") and not no_e2e:
+        print("  … e2e（起假 Hub，约 40 秒）")
+        ok, last = _run([sys.executable, str(TESTS / "e2e.py")])
+        print(f"  {'PASS' if ok else 'FAIL'}  {'e2e.py':<28} {last[:70]}")
+        if not ok:
+            failed.append("e2e.py")
+
+    print()
+    if failed:
+        print(f"FAIL：{len(failed)} 个测试文件没过 —— {', '.join(failed)}")
+        return 1
+    print("全部通过。")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

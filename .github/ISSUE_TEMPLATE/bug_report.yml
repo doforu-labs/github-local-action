@@ -1,0 +1,74 @@
+name: Bug 报告
+description: 有东西没按预期工作
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先过一遍 [已知边界](https://github.com/OWNER/github-local-action/blob/main/docs/known-limitations.md)——
+        「运行中看不到日志」「动作页空的」这类现象多半写在里面。
+
+        **别贴**：令牌、config.toml 原文、内网地址、SSH 密码。日志里请把它们涂掉。
+
+  - type: dropdown
+    id: part
+    attributes:
+      label: 哪一半
+      options:
+        - local-client（本地接收端 / 面板 / SSE）
+        - remote-worker（Cloudflare 中继）
+        - 自建 runner（SSH 接入）
+        - 文档
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: commit sha 或 release 版本号
+      placeholder: b28a206 / v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: 系统与版本、Python 版本；改了 worker 的话加上 wrangler 版本
+      placeholder: macOS 15.8 / Python 3.13 / wrangler 4.156
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 现象、报错原文（涂掉敏感信息）
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 启动 relay.py
+        2. ...
+        3. 看到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: 本地测试结果
+      description: 贴 `make test` 的末尾几行（如果有失败）
+      render: text

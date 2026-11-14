@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /remote-worker
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      worker-dev:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: pip
+    directory: /local-client
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

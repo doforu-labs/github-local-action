@@ -17,3 +17,8 @@ config.toml
 # 系统文件
 .DS_Store
 *.log
+
+# 打包产物
+build/
+*.egg-info/
+*.whl

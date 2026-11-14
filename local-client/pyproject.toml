@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "github-local-action"
+version = "0.1.0"
+description = "把 GitHub 仓库的事件实时送进局域网，并把 Actions job 派到自己的机器上跑"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "The github-local-action contributors" }]
+keywords = ["github", "webhook", "self-hosted-runner", "sse", "cloudflare-workers", "mcp"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+dependencies = ["aiohttp>=3.9,<4"]
+
+[project.optional-dependencies]
+# 通过 SSH 装 self-hosted runner 才需要；没装只是那一块不可用
+ssh = ["paramiko>=3.4"]
+
+[project.urls]
+Homepage = "https://github.com/OWNER/github-local-action"
+Issues = "https://github.com/OWNER/github-local-action/issues"
+
+[project.scripts]
+github-local-action = "relay:main"
+github-local-action-mcp = "mcp_server:main"
+
+# 两个都是单文件模块，没有包结构：relay.py 是接收端，mcp_server.py 是只读 MCP 网关。
+[tool.setuptools]
+py-modules = ["relay", "mcp_server"]
+
+# 状态页和 AGENT.md 是运行时读的文件，必须跟着装进去：
+#   share/github-local-action/{web/index.html,AGENT.md}
+# relay.py 找不到同目录的 web/ 时会退到 sys.prefix/share 下（见 _web_dir）。
+[tool.setuptools.data-files]
+"share/github-local-action/web" = ["web/index.html"]
+"share/github-local-action" = ["AGENT.md", "AGENT.en.md"]

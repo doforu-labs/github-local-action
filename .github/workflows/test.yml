@@ -1,0 +1,97 @@
+name: CI
+
+# 跑在 GitHub 托管的机器上，跟 .github/workflows/platform-*.yml 那两条不是一回事：
+# 那两条是「往我自己的机器上派活」的验收（要 self-hosted），这两条是给外人用的密码线。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pii:
+    name: 脱敏扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python scripts/check_pii.py --verbose
+
+  python:
+    name: py${{ matrix.python }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.11" }   # requires-python 的下限
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 装依赖
+        run: pip install -r local-client/requirements.txt
+      - name: 单测（14 个 Python 测试）
+        run: python scripts/run_tests.py --only py
+
+  js:
+    name: node${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: "20" }
+          - { os: ubuntu-latest, node: "22" }
+          - { os: macos-latest, node: "22" }
+          - { os: windows-latest, node: "22" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 前端单测（4 个 JS 测试）
+        # 前端代码是页面里的纯函数，用 node 直接跑，不需要浏览器
+        run: python scripts/run_tests.py --only js
+
+  e2e:
+    name: e2e（假 Hub 全链路）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r local-client/requirements.txt
+      - run: python scripts/run_tests.py --only e2e
+
+  worker:
+    name: worker 类型检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: remote-worker/package-lock.json
+      - working-directory: remote-worker
+        run: npm ci
+      - working-directory: remote-worker
+        run: npm run typecheck

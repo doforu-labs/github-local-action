@@ -1,0 +1,39 @@
+name: 功能建议
+description: 想要一个新能力
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的具体问题
+      description: 描述场景，而不是先给方案。"我想在手机上收通知"比"加个推送"有用得多。
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你想到的做法（可选）
+
+  - type: dropdown
+    id: part
+    attributes:
+      label: 涉及哪一半
+      options:
+        - local-client（本地接收端 / 面板 / SSE）
+        - remote-worker（Cloudflare 中继）
+        - 自建 runner
+        - 文档 / 打包
+        - 不确定
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 先确认几件事
+      options:
+        - label: 我读过「已知边界」，这不是上游限制（比如运行中的日志）
+          required: true
+        - label: 我愿意提 PR
+          required: false

@@ -17,6 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         n: [1, 2]
+    # 公开仓库里任何人都能 fork / 开 PR；这条 workflow 会把 job 派到作者自己的
+    # self-hosted 机器上，所以用仓库名把自己锁住：在任何 fork 里都不会跑。
+    if: github.repository == 'OWNER/github-local-action'
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 15
     steps:
@@ -34,6 +37,9 @@ jobs:
       fail-fast: false
       matrix:
         n: [1, 2]
+    # 公开仓库里任何人都能 fork / 开 PR；这条 workflow 会把 job 派到作者自己的
+    # self-hosted 机器上，所以用仓库名把自己锁住：在任何 fork 里都不会跑。
+    if: github.repository == 'OWNER/github-local-action'
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 15
     steps:

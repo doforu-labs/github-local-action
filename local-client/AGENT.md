@@ -2,7 +2,7 @@
 
 这份文件是给 AI agent / 脚本看的：读完就能操作本机这个服务，不用猜接口。
 人看的说明在 [README.md](README.md)；按需 runner 的细节在
-[docs/jit-on-demand-runner.md](docs/jit-on-demand-runner.md)。
+[docs/jit-on-demand-runner.md](../docs/jit-on-demand-runner.md)。
 
 > 本机服务自己也会把这份文件原样吐出来：
 > `curl -s http://127.0.0.1:18091/agent.md`（`/llms.txt` 同内容）。
@@ -91,11 +91,11 @@ B=http://127.0.0.1:18091
 curl -s "$B/actions?limit=5" | jq -r '.runs[] | "\(.name) #\(.run_number) \(.status)/\(.conclusion) \(.sha)"'
 
 # 2. 某次运行的 job 与每一步（成功收尾的会命中本地缓存，很快）
-curl -s "$B/github/jobs?repo=example-org/demo-test&run=43068925672" \
+curl -s "$B/github/jobs?repo=example-org/relay-test&run=12345678901" \
   | jq '.jobs[] | {name, status, conclusion, steps: [.steps[] | "\(.number). \(.name) \(.conclusion // .status)"]}'
 
 # 3. 某个 job 的日志（job 还在跑时 GitHub 返回 404，接口会给你 pending:true）
-curl -s "$B/github/joblog?repo=example-org/demo-test&job=130687887377" | jq -r .text | tail -40
+curl -s "$B/github/joblog?repo=example-org/relay-test&job=42000000001" | jq -r .text | tail -40
 
 # 4. 跟 30 秒实时事件（Ctrl-C 退出；断线重连带 after=<最后一条 id> 不漏）
 curl -N "$B/stream"
@@ -167,7 +167,7 @@ curl -s "$B/runners" | jq '.machines[] | "\(.name) \(.os)/\(.arch) \(.host):\(.p
 
 **限制**：`/mcp` 只收本机（127.0.0.1）。因为工具里有 `/github/*`（吃本机 gh 的凭据），
 要是对局域网开放，等于绕过了那道墙。要从别的机器用就起个隧道：
-`ssh -L 18091:localhost:18091 dev@10.0.0.5`。
+`ssh -L 18091:localhost:18091 you@10.0.0.5`。
 
 ### stdio 接法
 

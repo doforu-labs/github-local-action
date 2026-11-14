@@ -3,7 +3,7 @@
 This file is written for AI agents and scripts: read it and you can drive the service
 running on this machine without guessing at endpoints.
 The human-facing docs are [README.md](README.md) and
-[docs/jit-on-demand-runner.md](docs/jit-on-demand-runner.md).
+[docs/jit-on-demand-runner.md](../docs/jit-on-demand-runner.md).
 
 > The service serves this file as-is: `curl -s http://127.0.0.1:18091/agent.en.md`
 > (the Chinese original is at `/agent.md`).
@@ -94,11 +94,11 @@ B=http://127.0.0.1:18091
 curl -s "$B/actions?limit=5" | jq -r '.runs[] | "\(.name) #\(.run_number) \(.status)/\(.conclusion) \(.sha)"'
 
 # 2. Jobs and every step of one run (finished runs hit the local cache, so it is fast)
-curl -s "$B/github/jobs?repo=example-org/demo-test&run=43068925672" \
+curl -s "$B/github/jobs?repo=example-org/relay-test&run=12345678901" \
   | jq '.jobs[] | {name, status, conclusion, steps: [.steps[] | "\(.number). \(.name) \(.conclusion // .status)"]}'
 
 # 3. The log of one job (GitHub returns 404 while the job runs; this API returns pending:true)
-curl -s "$B/github/joblog?repo=example-org/demo-test&job=130687887377" | jq -r .text | tail -40
+curl -s "$B/github/joblog?repo=example-org/relay-test&job=42000000001" | jq -r .text | tail -40
 
 # 4. Follow live events for 30 seconds (Ctrl-C to stop; reconnect with after=<last id>, nothing is lost)
 curl -N "$B/stream"
