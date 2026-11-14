@@ -18,54 +18,42 @@
 | self-hosted workflow 的闸 | `platform-*.yml` 每个 job 用仓库变量当开关：`if: vars.RUN_SELF_HOSTED == 'true'`，没设就不跑（fork 里天然是关的，也不跟组织/仓库名绑定） |
 | 文档 | README 拆成首页 + `docs/quickstart` / `architecture` / `self-hosted-runner` / `known-limitations` / `lab-notes`，配三张真界面截图 |
 
-## 二、翻转前必须先想清楚：git 历史
+## 二、git 历史：已经重写过一次
 
-**现状**：历史里有一处真实的机器凭据——早期的 `local-client/tests/unit_machines.py` 用过实验室真机的地址、用户名、密码，后来（commits 里那条「测试数据换成假值」）改掉了，但**旧的那几条 commit 还在历史里**。翻 public 等于把它们永久公开。
+**状态：已完成**（2026-11-14）。原来的历史里带着实验室真机的地址 / 用户名 / 密码、账号邮箱、Cloudflare 账号 id 与账号子域、真机主机名、私有仓库名，以及组织名——翻 public 等于全部永久公开。已经用 `git filter-repo` 逐条替换掉，86 条 commit 一条没丢，commit message 里的旧值也一起换掉了。
 
-三个处置方式，选一个：
+**重写前打了完整备份**：`~/Desktop/github-local-action-backup-20261114.bundle`（git bundle，含重写前的全部历史）。要还原就 `git clone <那个 bundle> <目录>`。
 
-**A. 重写历史（推荐，仓库从没公开过，代价为零）**
+以后再用同样的手法清理（比如又手滑提交了别的凭据）：
 
 ```bash
-# 1) 先备份，这一步别省
+# 1) 备份，这一步别省
 git bundle create ~/gla-backup-$(date +%Y%m%d).bundle --all
-git clone ~/gla-backup-*.bundle /tmp/gla-restore-check   # 顺手验证备份能用
 
-# 2) 装 filter-repo
-pip install git-filter-repo
+# 2) 替换清单放仓库外面，逐行「原值==>新值」
+#    注意：filter-repo 不认 # 注释，整行都会被当成表达式——
+#    一行裸 # 会被当成「匹配所有井号」的规则，把全仓库的注释符换成删除标记（踩过这个坑）
+printf '%s\n' '原地址==>10.0.0.21' '原用户名==>tester' > /tmp/redact.txt
 
-# 3) 写一份替换清单（不要提交进仓库！）
-cat > /tmp/redact.txt <<'EOF'
-原地址==>10.0.0.21
-原用户名==>tester
-原密码==>P@ssw0rd-not-real
-原主机名==>lab-linux-1
-EOF
+# 3) 文件内容和 commit message 都要替换
+git filter-repo --replace-text /tmp/redact.txt --replace-message /tmp/redact.txt
 
-# 4) 重写
-git filter-repo --replace-text /tmp/redact.txt
-
-# 5) 验收：三条都应该是空的
-git log --all -S'原地址' --oneline
-git log --all -S'原密码' --oneline
-git grep -n '原地址' $(git rev-list --all) | head
+# 4) 验收：应该是空的
+git log -p | grep -nE '原地址|原用户名'
 ```
 
-重写之后所有 commit hash 都会变，远端要 `git push --force`。推之前确认没有别的协作者/别的克隆。
+重写之后所有 commit hash 都变了，远端要 `git push --force`。推之前确认没有别的协作者、没有别的克隆。
 
-**B. 不重写，但先改那台机器的密码**
+### 还剩一件：commit 作者
 
-最省事，前提是那台机器还归你管、而且密码确实换了。翻 public 之后历史就永久公开了，改不回来。
-
-**C. 压成一条初始提交**
+86 条 commit 的作者都是同一个组织账号（noreply 地址里带组织名）。这在 `git log` 里看得见，但它属于「你打算用哪个账号发布」，不是泄漏——换成个人账号是一条命令：
 
 ```bash
-git checkout --orphan clean-main
-git add -A && git commit -m "初始提交：GitHub 事件中继 + 本地接收端"
-git branch -M clean-main main && git push --force origin main
+printf '%s\n' 'Your Name <123456+you@users.noreply.github.com> 旧组织名 <旧的 noreply>' > /tmp/mailmap
+git filter-repo --mailmap /tmp/mailmap
 ```
 
-最干净，代价是 78 条 commit message 全丢——那批 message 里其实写了不少「为什么这么改」的结论，倾向保留（选 A）。
+代价是所有 commit 不再关联到原组织账号（那正是目的）。改作者不可逆，所以留给你按发布账号决定。
 
 ## 三、翻转仓库可见性
 
