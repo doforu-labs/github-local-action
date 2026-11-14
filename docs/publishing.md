@@ -58,15 +58,42 @@ git filter-repo --mailmap /tmp/mailmap
 
 The cost is that commits no longer link to the original organisation account (which is the point). Rewriting authorship is irreversible, so it is left for you to decide based on the publishing account.
 
-## 3. Flipping repository visibility
+## 3. Publishing (the path actually taken)
 
-1. **Check the account's visibility**: if anonymous access to `api.github.com/orgs/<org>` and `api.github.com/repos/<account>/<repo>` returns 404, it is not public. Whether a repository under a private organisation can be converted directly to public varies by plan — try **Settings → General → Danger Zone → Change visibility** once; a refusal comes with a clear error.
-2. **Prefer a copy first** over flipping the original:
-   ```bash
-   git push --mirror git@github.com:<your-account>/github-local-action-public.git
-   ```
-   Run the README, issue templates and CI on the copy, watch it for a couple of days, then decide about the main repository.
-3. Flipping is irreversible: history becomes permanently public and is immediately captured by forks. Undoing it means deleting the whole repository.
+The original repository's history carried real credentials. Even after the `git filter-repo` pass, those old objects still exist on GitHub's side, so flipping that repository is a gamble on the rewrite having been perfect. What actually works better: leave the old repository private as a backup and publish a fresh one with the clean history.
+
+```bash
+# 1) free up the name — the old repository stays private
+gh api -X PATCH repos/<owner>/github-local-action -f name=github-local-action-pre-rewrite
+
+# 2) create the public one and push
+gh repo create <owner>/github-local-action --public --description "one line about the project"
+git remote set-url origin git@github.com:<owner>/github-local-action.git
+git push -u origin main
+```
+
+**The push is rejected if you go through gh's OAuth token.** That token has no `workflow` scope, and this repository contains `.github/workflows/*`:
+
+```
+! [remote rejected] main -> main (refusing to allow an OAuth App to create or
+  update workflow `.github/workflows/platform-check.yml` without `workflow` scope)
+```
+
+Either run `gh auth refresh -s workflow`, or push over SSH — SSH keys carry no scopes and it takes one command.
+
+Then verify anonymity (no token, no login):
+
+```bash
+curl -o /dev/null -w '%{http_code}\n' https://api.github.com/repos/<owner>/<repo>
+curl -o /dev/null -w '%{http_code}\n' https://raw.githubusercontent.com/<owner>/<repo>/main/README.md
+curl -sL -o /tmp/t.tar.gz -w '%{http_code} %{size_download}\n' \
+  https://codeload.github.com/<owner>/<repo>/tar.gz/refs/heads/main
+tar -tzf /tmp/t.tar.gz | head    # screenshots and docs must be inside the tarball
+```
+
+The first real CI run will find things no local run could. This repository went red twice on `windows-latest`, both times inside `scripts/run_tests.py` (a cp1252 locale decoding test output, then failing to print Chinese test names): read it with `gh run view <id> --log-failed`, fix, push again. Dependabot also starts the moment the repository is public — security updates are on by default, so a handful of major-version PRs arriving at once is normal, not a problem you introduced.
+
+Flipping the original repository instead is irreversible: history becomes permanently public and is immediately captured by forks. Undoing that means deleting the whole repository.
 
 ## 4. Worth enabling after going public
 

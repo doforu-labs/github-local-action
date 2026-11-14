@@ -57,15 +57,42 @@ git filter-repo --mailmap /tmp/mailmap
 
 代价是所有 commit 不再关联到原组织账号（那正是目的）。改作者不可逆，所以留给你按发布账号决定。
 
-## 三、翻转仓库可见性
+## 三、把仓库公开（实际走过的路）
 
-1. **确认账号的可见性**：匿名访问 `api.github.com/orgs/<org>` 与 `api.github.com/repos/<账号>/<repo>` 返回 404 说明不是公开状态。挂私有组织下的仓库能不能直接转 public，各计划策略不同，先到 **Settings → General → Danger Zone → Change visibility** 试一次，被拒会有明确报错。
-2. **建议先复制一份试水**，而不是直接翻转：
-   ```bash
-   git push --mirror git@github.com:<你的账号>/github-local-action-public.git
-   ```
-   在副本上把 README、issue 模板、CI 全跑一遍，看过两天再决定主仓库翻不翻。
-3. 翻转是不可逆的：历史会被永久公开、会被立刻 fork 抓走，后悔只能整仓删除。
+原仓库的历史里出现过真实凭据。`git filter-repo` 之后本地是干净的，但远端那份旧历史在 GitHub 上留过，翻它等于赌重写一定完美。实测更稳的办法是：**老仓库留着当私有备份，另起一个干净历史的新仓库对外**。
+
+```bash
+# 1) 先把名字腾出来（老仓库保持 private）
+gh api -X PATCH repos/<owner>/github-local-action -f name=github-local-action-pre-rewrite
+
+# 2) 建公开仓库并推
+gh repo create <owner>/github-local-action --public --description "一句话介绍"
+git remote set-url origin git@github.com:<owner>/github-local-action.git
+git push -u origin main
+```
+
+**用 gh 的 OAuth token 推会被拒。** 那个 token 没有 `workflow` scope，而这个仓库带 `.github/workflows/*`：
+
+```
+! [remote rejected] main -> main (refusing to allow an OAuth App to create or
+  update workflow `.github/workflows/platform-check.yml` without `workflow` scope)
+```
+
+两条路：`gh auth refresh -s workflow`，或者直接换成 SSH 地址推——SSH 密钥没有 scope 限制，一条命令就完事。
+
+推完做匿名验收（不带任何凭据）：
+
+```bash
+curl -o /dev/null -w '%{http_code}\n' https://api.github.com/repos/<owner>/<repo>
+curl -o /dev/null -w '%{http_code}\n' https://raw.githubusercontent.com/<owner>/<repo>/main/README.md
+curl -sL -o /tmp/t.tar.gz -w '%{http_code} %{size_download}\n' \
+  https://codeload.github.com/<owner>/<repo>/tar.gz/refs/heads/main
+tar -tzf /tmp/t.tar.gz | head    # 截图和文档都得在包里
+```
+
+**第一次真跑 CI 一定会红**——本地能过不代表能过。本项目第一次在 `windows-latest` 上连红两次，两次都在 `scripts/run_tests.py` 里（先是 cp1252 locale 解不了测试输出，再是打印中文测试名失败）。用 `gh run view <id> --log-failed` 看日志，改完再推。另外仓库一转公开 Dependabot 就会开工（公共仓库默认开 security updates），一次冒出几个 major 版本 PR 是正常的，不是你改坏了什么。
+
+反过来说，直接把原仓库翻成 public 是不可逆的：历史永久公开、会被立刻 fork 抓走，后悔只能整仓删除。
 
 ## 四、公开之后建议打开
 

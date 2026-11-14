@@ -3,12 +3,16 @@
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.1.0] - 2026-11-14
+
+首个公开版本。接口还会变，尤其是 MCP 工具签名和面板接口。
 
 ### 加入
+- 首次公开发布
+- README 不加状态徽章：徽章地址必须硬写「组织/仓库」，而脱敏门禁（`scripts/check_pii.py`）明确不许组织名进仓库，两者冲突时让路给门禁。需要徽章就自己加，并在门禁里为仓库自己的地址留一条例外
 - MIT 许可证、`SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`
 - CI：Python 3.11/3.13、Node 20/22、Windows 前端测试、e2e、worker 类型检查、脱敏扫描
-- `scripts/run_tests.py`：一条命令跑完 19 个单测 + e2e；`Makefile` 提供 `make test` / `make test-fast` / `make pii` / `make typecheck`
+- `scripts/run_tests.py`：一条命令跑完 20 个单测 + e2e；`Makefile` 提供 `make test` / `make test-fast` / `make pii` / `make typecheck`
 - `scripts/check_pii.py`：拦住真实邮箱、内网 IP、令牌、真机主机名、真实资源 id
 - `local-client/pyproject.toml`：可 `pip install .`，装完有 `github-local-action` 命令，状态页与 `/agent.md` 随包安装
 - `remote-worker/package-lock.json`：`npm ci` 可复现
@@ -24,6 +28,7 @@
 - `scripts/check_pii.py` 新增两条规则：`*.workers.dev` / `*.pages.dev` 的账号子域、品牌/组织名（`LEGACY_SERVICE_LABELS` 那一行例外，因为它是用来清旧安装的）
 
 ### 修复
+- `scripts/run_tests.py`：仓库第一次在 GitHub Actions 上真跑时 `windows-latest` 连红两次。一是子进程输出用默认 cp1252 解码（测试输出是中文）→ 读线程抛异常、`proc.stdout` 变 `None`、接着 `proc.stdout + proc.stderr` 抛 `TypeError` 把真实失败盖住；二是修完解码后，汇总器自己 `print()` 中文测试名在 cp1252 管道上 `UnicodeEncodeError`。两处都已修（`encoding="utf-8"` + `errors="replace"`、`or ""` 兜底、`_force_utf8_output()`），新增 `unit_run_tests.py` 钉住（含反向对照：不修就必须炸）
 - `remote-worker/schema.sql` 缺少 `webhook_secrets` 表：按文档新建的部署在「自动配 webhook」时会 500
 - `README` 里 `wrangler d1 create` 的库名与该文件里的 `database_name` 不一致，新人部署必卡
 - `AGENT.md` / `AGENT.en.md` 移到 `local-client/`，这样 `pip install` 之后 `/agent.md` 也能读到

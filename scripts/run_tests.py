@@ -8,7 +8,7 @@
 
 为什么不是 pytest：这些测试从第一天就是「自己打印 PASS/FAIL、退出码定生死」的
 独立脚本，没依赖 pytest 的 fixture，迁移只会带来风险，不带来信息。这里只负责
-把 19 个脚本（15 个 Python + 4 个 JS）串起来、汇总失败数、失败时给出文件名。
+把 20 个脚本（16 个 Python + 4 个 JS）串起来、汇总失败数、失败时给出文件名。
 """
 
 from __future__ import annotations
