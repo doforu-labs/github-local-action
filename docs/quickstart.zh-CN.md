@@ -146,5 +146,6 @@ es.onmessage = e => console.log(JSON.parse(e.data));
 | 局域网别的设备打不开 | `http_host` 是 `0.0.0.0` 吗？这台机器的防火墙放行 18091 了吗？ |
 | `wrangler deploy` 报 D1 不存在 | `wrangler.toml` 里的 `database_id` 还是占位符 |
 | 动作页点「加载 job」报错 | 本机没装 `gh` 或没 `gh auth login`；`gh auth status` 里要有 `repo` scope |
+| 装了 `gh`、终端里也能用，面板仍报「本机没装 gh」 | 开机自启的服务是 launchd / systemd 拉起来的，没有登录 shell 的 PATH，找不到 `/opt/homebrew/bin` 里的 `gh`。plist 的 `EnvironmentVariables` 要有 `PATH`（unit 里是 `Environment=PATH=`）；把开机自启关掉再打开，面板会按当前代码重写一份带 PATH 的配置 |
 
 端口默认 18091，改 `http_port` 需要重启进程；改 `ws_url` / `token` / 心跳参数不需要——面板里保存就重连。

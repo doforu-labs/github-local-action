@@ -148,5 +148,6 @@ The same card also lets you:
 | Other LAN devices cannot open it | Is `http_host` set to `0.0.0.0`? Does the firewall allow port 18091 on that machine? |
 | `wrangler deploy` says the D1 database does not exist | `database_id` in `wrangler.toml` is still the placeholder |
 | "Load jobs" on the Actions view errors | `gh` is missing or not logged in on that machine; `gh auth status` must show the `repo` scope |
+| `gh` is installed and works in a terminal, but the panel still says it is not installed | A service started at login is launched by launchd / systemd, which has no login-shell PATH, so `gh` under `/opt/homebrew/bin` is not found. The plist needs `PATH` under `EnvironmentVariables` (on Linux, `Environment=PATH=` in the unit); toggling auto-start off and on rewrites the file from the current code, PATH included |
 
 The default port is 18091; changing `http_port` needs a process restart. Changing `ws_url` / `token` / heartbeat settings does not — saving in the panel reconnects.
